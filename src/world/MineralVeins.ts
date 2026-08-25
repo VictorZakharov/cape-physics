@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { NearestPointLightPool, type LocalLightSource } from '../lighting/NearestPointLightPool';
+import type { WorldSphereCollider } from '../physics/colliders';
 import { SeededRandom } from '../utils/random';
 import { caveCenterX, caveHalfWidth } from './caveProfile';
 
@@ -11,6 +12,7 @@ interface VeinCluster extends LocalLightSource {
 
 export class MineralVeins {
   public readonly group = new THREE.Group();
+  public readonly worldColliders: WorldSphereCollider[] = [];
   private readonly clusters: VeinCluster[] = [];
   private readonly lightPool = new NearestPointLightPool(2, 'Mineral');
 
@@ -111,6 +113,12 @@ export class MineralVeins {
       scale.set(random.range(0.45, 1.6), random.range(0.8, 2.9), random.range(0.45, 1.2));
       matrix.compose(position, quaternion, scale);
       crystals.setMatrixAt(index, matrix);
+      this.worldColliders.push({
+        center: position.clone(),
+        radius: THREE.MathUtils.clamp(0.11 * Math.max(scale.x, scale.y, scale.z), 0.07, 0.34),
+        walkable: false,
+        kind: 'mineral',
+      });
     }
     crystals.instanceMatrix.needsUpdate = true;
     this.group.add(crystals);

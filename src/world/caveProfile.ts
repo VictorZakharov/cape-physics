@@ -1,5 +1,4 @@
-import * as THREE from 'three';
-import { CAVE, PLAYER } from '../config';
+import { CaveShellSampler } from './CaveShellSampler';
 
 export function caveCenterX(z: number): number {
   return Math.sin((z - 10) * 0.055) * 2.05 + Math.sin((z + 5) * 0.137) * 0.38;
@@ -20,10 +19,21 @@ export function floorHeightAt(x: number, z: number): number {
   return base + Math.max(0, edge - 0.68) ** 2 * 0.34;
 }
 
-export function constrainToCave(position: THREE.Vector3): void {
-  position.z = THREE.MathUtils.clamp(position.z, CAVE.endZ + 2.2, CAVE.startZ - 2.1);
-  const center = caveCenterX(position.z);
-  const halfWidth = caveHalfWidth(position.z) - PLAYER.radius - 0.42;
-  position.x = THREE.MathUtils.clamp(position.x, center - halfWidth, center + halfWidth);
-  position.y = floorHeightAt(position.x, position.z);
+const caveShellSampler = new CaveShellSampler({
+  centerX: caveCenterX,
+  halfWidth: caveHalfWidth,
+  ceiling: caveCeiling,
+});
+
+export function caveGroundHeightAt(x: number, z: number): number {
+  return Math.max(floorHeightAt(x, z), caveShellSampler.getLowerHeight(x, z) + 0.008);
+}
+
+export function caveInteriorHalfWidthAtHeight(y: number, z: number, clearance = 0): number {
+  const ceiling = caveCeiling(z);
+  const centerY = ceiling * 0.5 - 0.25;
+  const verticalRadius = ceiling * 0.5 + 0.45;
+  const normalizedY = (y - centerY) / verticalRadius;
+  const section = Math.sqrt(Math.max(0.015, 1 - normalizedY * normalizedY));
+  return Math.max(0.08, caveHalfWidth(z) * section - clearance - 0.16);
 }

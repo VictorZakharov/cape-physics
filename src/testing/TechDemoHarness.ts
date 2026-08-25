@@ -4,10 +4,11 @@ import { createRockTextures } from '../graphics/proceduralTextures';
 import { CapeSimulation } from '../physics/CapeSimulation';
 import { Character } from '../player/Character';
 import { CaveWorld } from '../world/CaveWorld';
-import { caveCenterX, floorHeightAt } from '../world/caveProfile';
+import { caveCenterX } from '../world/caveProfile';
 import { MineralVeins } from '../world/MineralVeins';
 import { TorchSystem } from '../world/TorchSystem';
 import { WaterSystem } from '../world/WaterSystem';
+import { WorldCollisionResolver } from '../world/WorldCollisionResolver';
 
 interface SceneBudget {
   readonly objects: number;
@@ -25,6 +26,9 @@ export interface TechDemoHarnessReport {
   readonly simulatedSeconds: number;
   readonly capeMaximumStructuralError: number;
   readonly capeMaximumBodyPenetration: number;
+  readonly capeMaximumEnvironmentPenetration: number;
+  readonly capeMinimumSelfSeparation: number;
+  readonly capeHemDrop: number;
   readonly capeStateFinite: boolean;
   readonly water: ReturnType<WaterSystem['getDiagnostics']>;
   readonly scene: SceneBudget;
@@ -33,6 +37,7 @@ export interface TechDemoHarnessReport {
     readonly minerals: ReturnType<MineralVeins['getLightDiagnostics']>;
   };
   readonly proceduralTextureBytes: number;
+  readonly worldColliderCount: number;
 }
 
 function invariant(condition: unknown, message: string): asserts condition {
@@ -96,10 +101,16 @@ export function runTechDemoHarness(simulatedSeconds = 12): TechDemoHarnessReport
   const water = new WaterSystem();
   const torches = new TorchSystem();
   const veins = new MineralVeins();
+  const worldColliders = [
+    ...cave.worldColliders,
+    ...torches.worldColliders,
+    ...veins.worldColliders,
+  ];
+  const worldCollision = new WorldCollisionResolver(worldColliders);
   const character = new Character();
   const startZ = 11.8;
   const startX = caveCenterX(startZ);
-  character.root.position.set(startX, floorHeightAt(startX, startZ), startZ);
+  character.root.position.set(startX, worldCollision.getPlayerRootHeight(startX, startZ), startZ);
   character.root.updateMatrixWorld(true);
   const cape = new CapeSimulation(character.getCapeAnchors());
   const scene = new THREE.Scene();
@@ -114,7 +125,7 @@ export function runTechDemoHarness(simulatedSeconds = 12): TechDemoHarnessReport
     const z = startZ - time * 2.45;
     const x = caveCenterX(z) + Math.sin(time * 0.72) * 0.34;
     priorPosition.copy(character.root.position);
-    character.root.position.set(x, floorHeightAt(x, z), z);
+    character.root.position.set(x, worldCollision.getPlayerRootHeight(x, z), z);
     character.velocity.copy(character.root.position).sub(priorPosition).divideScalar(PHYSICS_STEP);
     if (character.velocity.lengthSq() > 0.001) {
       character.root.rotation.y = Math.atan2(-character.velocity.x, -character.velocity.z);
@@ -124,7 +135,8 @@ export function runTechDemoHarness(simulatedSeconds = 12): TechDemoHarnessReport
     cape.step(
       PHYSICS_STEP,
       character.getCapeAnchors(),
-      character.getBodySpheres(),
+      character.getCapeColliders(),
+      worldColliders,
       character.velocity,
       time,
     );
@@ -143,9 +155,12 @@ export function runTechDemoHarness(simulatedSeconds = 12): TechDemoHarnessReport
   const capeMaximumStructuralError = cape.getMaximumStructuralError();
   const finalAnchors = character.getCapeAnchors();
   const capeMaximumBodyPenetration = cape.getMaximumBodyPenetration(
-    character.getBodySpheres(),
+    character.getCapeColliders(),
     finalAnchors.back,
   );
+  const capeMaximumEnvironmentPenetration = cape.getMaximumEnvironmentPenetration(worldColliders);
+  const capeMinimumSelfSeparation = cape.getMinimumSelfSeparation();
+  const capeHemDrop = cape.getHemDrop();
   const waterDiagnostics = water.getDiagnostics();
   const sceneBudget = analyzeScene(scene);
   const torchLights = torches.getLightDiagnostics();
@@ -162,6 +177,10 @@ export function runTechDemoHarness(simulatedSeconds = 12): TechDemoHarnessReport
   invariant(capeStateFinite, 'cape state became non-finite');
   invariant(capeMaximumStructuralError < 0.055, `cape constraint error ${capeMaximumStructuralError.toFixed(4)} exceeded budget`);
   invariant(capeMaximumBodyPenetration < 0.002, `cape body penetration ${capeMaximumBodyPenetration.toFixed(4)} exceeded budget`);
+  invariant(capeMaximumEnvironmentPenetration < 0.002, `cape cave penetration ${capeMaximumEnvironmentPenetration.toFixed(4)} exceeded budget`);
+  invariant(capeMinimumSelfSeparation > 0.05, `cape self-separation ${capeMinimumSelfSeparation.toFixed(4)} collapsed`);
+  invariant(capeHemDrop > 0.72, `cape settled into an inverted pose (hem drop ${capeHemDrop.toFixed(3)})`);
+  invariant(worldColliders.length >= 600, 'procedural cave-object collision coverage regressed');
   invariant(waterDiagnostics.puddles >= 5, 'walkable puddle count regressed');
   invariant(waterDiagnostics.drops >= 10, 'water-drop emitters are missing');
   invariant(waterDiagnostics.activeRipples >= expectedActiveRipples, 'footsteps and drips did not produce enough ripple events');
@@ -182,6 +201,9 @@ export function runTechDemoHarness(simulatedSeconds = 12): TechDemoHarnessReport
     simulatedSeconds,
     capeMaximumStructuralError,
     capeMaximumBodyPenetration,
+    capeMaximumEnvironmentPenetration,
+    capeMinimumSelfSeparation,
+    capeHemDrop,
     capeStateFinite,
     water: waterDiagnostics,
     scene: sceneBudget,
@@ -190,5 +212,6 @@ export function runTechDemoHarness(simulatedSeconds = 12): TechDemoHarnessReport
       minerals: mineralLights,
     },
     proceduralTextureBytes,
+    worldColliderCount: worldColliders.length,
   };
 }

@@ -1,8 +1,10 @@
 import * as THREE from 'three';
 import { CAPE } from '../config';
 import { createCapeFabricTextures } from '../graphics/proceduralTextures';
-import type { BodySphere, CapeAnchors } from '../player/Character';
-import { floorHeightAt } from '../world/caveProfile';
+import type { CapeAnchors } from '../player/Character';
+import { CapeContactSolver, type WorldContactDiagnostics } from './CapeContactSolver';
+import { ClothSelfCollision } from './ClothSelfCollision';
+import type { CapsuleCollider, WorldSphereCollider } from './colliders';
 
 interface DistanceConstraint {
   readonly first: number;
@@ -12,7 +14,7 @@ interface DistanceConstraint {
   readonly structural: boolean;
 }
 
-const BODY_CLEARANCE = 0.018;
+const VELOCITY_DAMPING = 0.982;
 
 export class CapeSimulation {
   public readonly mesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshPhysicalMaterial>;
@@ -21,6 +23,8 @@ export class CapeSimulation {
   private readonly inverseMass: Float32Array;
   private readonly constraints: DistanceConstraint[] = [];
   private readonly positionAttribute: THREE.BufferAttribute;
+  private readonly selfCollision: ClothSelfCollision;
+  private readonly contactSolver: CapeContactSolver;
   private readonly velocity = new THREE.Vector3();
   private readonly airflow = new THREE.Vector3();
   private readonly normal = new THREE.Vector3();
@@ -30,12 +34,13 @@ export class CapeSimulation {
   private readonly delta = new THREE.Vector3();
   private readonly anchorTarget = new THREE.Vector3();
   private readonly anchorCenter = new THREE.Vector3();
-  private readonly previousAnchorCenter = new THREE.Vector3();
-  private initializedAnchorCenter = false;
+  private opacity = 1;
 
   public constructor(initialAnchors: CapeAnchors) {
     const particleCount = CAPE.columns * CAPE.rows;
     this.inverseMass = new Float32Array(particleCount);
+    this.selfCollision = new ClothSelfCollision(particleCount, CAPE.columns);
+    this.contactSolver = new CapeContactSolver(this.positions, this.previous);
     this.initializeParticles(initialAnchors);
     this.createConstraints();
     const geometry = this.createGeometry();
@@ -57,6 +62,7 @@ export class CapeSimulation {
       sheenRoughness: 0.72,
       clearcoat: 0.04,
       side: THREE.DoubleSide,
+      transparent: true,
     });
     material.onBeforeCompile = (shader) => {
       shader.fragmentShader = shader.fragmentShader.replace(
@@ -68,7 +74,7 @@ export class CapeSimulation {
         diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.34, 0.12, 0.035), capeTrim * 0.72);`,
       );
     };
-    material.customProgramCacheKey = () => 'cape-fabric-trim-v1';
+    material.customProgramCacheKey = () => 'cape-fabric-trim-v2';
     material.name = 'Woven crimson cape';
     this.mesh = new THREE.Mesh(geometry, material);
     this.mesh.name = 'PBD cape';
@@ -80,11 +86,13 @@ export class CapeSimulation {
   public step(
     deltaTime: number,
     anchors: CapeAnchors,
-    bodySpheres: readonly BodySphere[],
+    bodyColliders: readonly CapsuleCollider[],
+    worldColliders: readonly WorldSphereCollider[],
     characterVelocity: THREE.Vector3,
     time: number,
   ): void {
     this.pinAnchors(anchors);
+    this.contactSolver.beginStep(this.anchorCenter, worldColliders);
     this.airflow.set(
       Math.sin(time * 0.47) * 0.38 + Math.sin(time * 1.91) * 0.16,
       0.08 + Math.sin(time * 0.71) * 0.05,
@@ -99,7 +107,7 @@ export class CapeSimulation {
         const previous = this.previous[index];
         if (!position || !previous) continue;
 
-        this.velocity.copy(position).sub(previous).multiplyScalar(0.988);
+        this.velocity.copy(position).sub(previous).multiplyScalar(VELOCITY_DAMPING);
         previous.copy(position);
         this.estimateNormal(column, row);
         const pressure = this.airflow.dot(this.normal);
@@ -113,9 +121,11 @@ export class CapeSimulation {
 
     for (let iteration = 0; iteration < CAPE.solverIterations; iteration += 1) {
       for (const constraint of this.constraints) this.solveConstraint(constraint);
+      this.selfCollision.solve(this.positions, this.previous, this.inverseMass);
+      this.contactSolver.solveBody(bodyColliders, anchors.back);
+      this.contactSolver.solveWorld();
+      this.contactSolver.solveCave();
       this.pinAnchors(anchors);
-      this.solveBodyCollisions(bodySpheres, anchors.back);
-      this.solveFloorCollision();
     }
 
     this.guardAgainstInvalidState(anchors);
@@ -132,6 +142,21 @@ export class CapeSimulation {
     this.mesh.geometry.computeVertexNormals();
     const normalAttribute = this.mesh.geometry.getAttribute('normal');
     if (normalAttribute) normalAttribute.needsUpdate = true;
+  }
+
+  public reset(anchors: CapeAnchors): void {
+    this.positions.length = 0;
+    this.previous.length = 0;
+    this.initializeParticles(anchors);
+    this.pinAnchors(anchors);
+  }
+
+  public setOpacity(opacity: number): void {
+    const nextOpacity = THREE.MathUtils.clamp(opacity, 0.5, 1);
+    if (Math.abs(nextOpacity - this.opacity) < 0.002) return;
+    this.opacity = nextOpacity;
+    this.mesh.material.opacity = nextOpacity;
+    this.mesh.material.depthWrite = nextOpacity > 0.995;
   }
 
   public getParticlePosition(column: number, row: number): THREE.Vector3 {
@@ -153,24 +178,30 @@ export class CapeSimulation {
   }
 
   public getMaximumBodyPenetration(
-    bodySpheres: readonly BodySphere[],
+    bodyColliders: readonly CapsuleCollider[],
     back: THREE.Vector3,
   ): number {
-    let maximum = 0;
-    for (let index = CAPE.columns; index < this.positions.length; index += 1) {
-      const position = this.positions[index];
-      if (!position) continue;
-      for (const sphere of bodySpheres) {
-        this.delta.copy(position).sub(sphere.center);
-        const depth = this.delta.dot(back);
-        const lateralSquared = Math.max(0, this.delta.lengthSq() - depth * depth);
-        const radius = sphere.radius + BODY_CLEARANCE;
-        if (lateralSquared >= radius * radius) continue;
-        const requiredDepth = Math.sqrt(radius * radius - lateralSquared);
-        maximum = Math.max(maximum, requiredDepth - depth);
-      }
+    return this.contactSolver.getMaximumBodyPenetration(bodyColliders, back);
+  }
+
+  public getMaximumEnvironmentPenetration(worldColliders: readonly WorldSphereCollider[]): number {
+    return this.contactSolver.getMaximumEnvironmentPenetration(worldColliders);
+  }
+
+  public getMinimumSelfSeparation(): number {
+    return this.selfCollision.getMinimumSeparation(this.positions);
+  }
+
+  public getHemDrop(): number {
+    let height = 0;
+    for (let column = 0; column < CAPE.columns; column += 1) {
+      height += this.positions[this.index(column, CAPE.rows - 1)]?.y ?? this.anchorCenter.y;
     }
-    return Math.max(0, maximum);
+    return this.anchorCenter.y - height / CAPE.columns;
+  }
+
+  public getWorldContactDiagnostics(): WorldContactDiagnostics {
+    return this.contactSolver.getDiagnostics();
   }
 
   private initializeParticles(anchors: CapeAnchors): void {
@@ -185,7 +216,7 @@ export class CapeSimulation {
         const across = column / (CAPE.columns - 1) - 0.5;
         const position = center.clone()
           .addScaledVector(right, across * width)
-          .addScaledVector(anchors.back, 0.035 + down * 0.26)
+          .addScaledVector(anchors.back, 0.02 + down * 0.2)
           .add(new THREE.Vector3(0, -down * CAPE.length * (1 - Math.abs(across) * 0.085), 0));
         if (row === 0) position.lerpVectors(anchors.left, anchors.right, column / (CAPE.columns - 1));
         this.positions.push(position);
@@ -201,11 +232,13 @@ export class CapeSimulation {
         if (column + 1 < CAPE.columns) this.addConstraint(column, row, column + 1, row, 0.93, true);
         if (row + 1 < CAPE.rows) this.addConstraint(column, row, column, row + 1, 0.96, true);
         if (column + 1 < CAPE.columns && row + 1 < CAPE.rows) {
-          this.addConstraint(column, row, column + 1, row + 1, 0.78, false);
-          this.addConstraint(column + 1, row, column, row + 1, 0.78, false);
+          this.addConstraint(column, row, column + 1, row + 1, 0.8, false);
+          this.addConstraint(column + 1, row, column, row + 1, 0.8, false);
         }
-        if (column + 2 < CAPE.columns) this.addConstraint(column, row, column + 2, row, 0.46, false);
-        if (row + 2 < CAPE.rows) this.addConstraint(column, row, column, row + 2, 0.52, false);
+        if (column + 2 < CAPE.columns) this.addConstraint(column, row, column + 2, row, 0.58, false);
+        if (row + 2 < CAPE.rows) this.addConstraint(column, row, column, row + 2, 0.64, false);
+        if (column + 3 < CAPE.columns) this.addConstraint(column, row, column + 3, row, 0.16, false);
+        if (row + 3 < CAPE.rows) this.addConstraint(column, row, column, row + 3, 0.24, false);
       }
     }
   }
@@ -262,10 +295,6 @@ export class CapeSimulation {
 
   private pinAnchors(anchors: CapeAnchors): void {
     this.anchorCenter.copy(anchors.left).add(anchors.right).multiplyScalar(0.5);
-    if (!this.initializedAnchorCenter) {
-      this.previousAnchorCenter.copy(this.anchorCenter);
-      this.initializedAnchorCenter = true;
-    }
     for (let column = 0; column < CAPE.columns; column += 1) {
       const index = this.index(column, 0);
       const position = this.positions[index];
@@ -275,7 +304,6 @@ export class CapeSimulation {
       position.copy(this.anchorTarget);
       previous.copy(this.anchorTarget);
     }
-    this.previousAnchorCenter.copy(this.anchorCenter);
   }
 
   private solveConstraint(constraint: DistanceConstraint): void {
@@ -308,46 +336,12 @@ export class CapeSimulation {
     this.normal.crossVectors(this.tangentAcross, this.tangentDown).normalize();
   }
 
-  private solveBodyCollisions(spheres: readonly BodySphere[], back: THREE.Vector3): void {
-    for (let index = CAPE.columns; index < this.positions.length; index += 1) {
-      const position = this.positions[index];
-      const previous = this.previous[index];
-      if (!position || !previous) continue;
-      for (const sphere of spheres) {
-        this.delta.copy(position).sub(sphere.center);
-        const depth = this.delta.dot(back);
-        const lateralSquared = Math.max(0, this.delta.lengthSq() - depth * depth);
-        const radius = sphere.radius + BODY_CLEARANCE;
-        if (lateralSquared >= radius * radius) continue;
-        const requiredDepth = Math.sqrt(radius * radius - lateralSquared);
-        const penetration = requiredDepth - depth;
-        if (penetration <= 0) continue;
-
-        // This one-sided posterior projection cannot select the body's front
-        // hemisphere after a fast reversal. Its curved depth requirement makes
-        // neighboring particles naturally wrap and slide around the silhouette.
-        position.addScaledVector(back, penetration);
-        previous.addScaledVector(back, penetration);
-      }
-    }
-  }
-
-  private solveFloorCollision(): void {
-    for (let index = CAPE.columns; index < this.positions.length; index += 1) {
-      const position = this.positions[index];
-      if (!position) continue;
-      const floor = floorHeightAt(position.x, position.z) + 0.035;
-      if (position.y < floor) position.y = floor;
-    }
-  }
-
   private guardAgainstInvalidState(anchors: CapeAnchors): void {
-    const center = this.anchorCenter;
-    const invalid = this.positions.some((position) => !Number.isFinite(position.lengthSq()) || position.distanceToSquared(center) > 25);
+    const invalid = this.positions.some(
+      (position) => !Number.isFinite(position.lengthSq()) || position.distanceToSquared(this.anchorCenter) > 25,
+    );
     if (!invalid) return;
-    this.positions.length = 0;
-    this.previous.length = 0;
-    this.initializeParticles(anchors);
+    this.reset(anchors);
   }
 
   private index(column: number, row: number): number {

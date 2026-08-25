@@ -12,6 +12,7 @@ export const CAVE = {
 export const PLAYER = {
   radius: 0.34,
   height: 1.82,
+  footOffset: 0.14,
   walkSpeed: 3.45,
   acceleration: 15,
   deceleration: 19,

@@ -118,6 +118,10 @@ try {
     command,
     `window.__CAPE_DEMO__.setCameraPose(${JSON.stringify({ position, target })})`,
   );
+  const setPlayerPose = (position, yaw = 0) => evaluate(
+    command,
+    `window.__CAPE_DEMO__.setPlayerPose(${JSON.stringify({ position, yaw })})`,
+  );
   const setMovement = (horizontal, forward) => evaluate(
     command,
     `window.__CAPE_DEMO__.setMovement(${horizontal}, ${forward})`,
@@ -130,6 +134,18 @@ try {
     command,
     `window.__CAPE_DEMO__.profile(${JSON.stringify({ duration, frameStep })})`,
   );
+  const dragOrbit = async (button, fromY, toY) => {
+    const buttons = button === 'left' ? 1 : 2;
+    await command('Input.dispatchMouseEvent', {
+      type: 'mousePressed', x: 800, y: fromY, button, buttons, clickCount: 1,
+    });
+    await command('Input.dispatchMouseEvent', {
+      type: 'mouseMoved', x: 800, y: toY, button, buttons,
+    });
+    await command('Input.dispatchMouseEvent', {
+      type: 'mouseReleased', x: 800, y: toY, button, buttons: 0, clickCount: 1,
+    });
+  };
 
   const initial = await diagnostics();
   assert(initial.ready, 'demo harness did not report ready');
@@ -137,6 +153,7 @@ try {
   assert(initial.water.drops >= 10, 'ceiling drips are missing');
   assert(initial.torches.lights.visibleLights === initial.torches.lights.lights, 'torch light pool is not compile-stable');
   assert(initial.minerals.lights.visibleLights === initial.minerals.lights.lights, 'mineral light pool is not compile-stable');
+  assert(initial.cape.worldColliders > 350, 'procedural cave-object collision proxies are missing');
 
   await command('Emulation.setDeviceMetricsOverride', {
     width: 3840,
@@ -157,6 +174,27 @@ try {
   await evaluate(command, 'window.dispatchEvent(new Event("resize")); true');
   await delay(120);
   await advance(1.2);
+
+  await setView(0.08, 0, 4.5);
+  const leftDragBefore = await diagnostics();
+  await dragOrbit('left', 470, 280);
+  const sharpLookUp = await advance(0.04, 1 / 120);
+  assert(sharpLookUp.camera.pitch < leftDragBefore.camera.pitch - 0.55, 'LMB upward drag was not reversed');
+  assert(sharpLookUp.camera.groundClearance >= 0.17, 'sharp look-up put the camera through the cave floor');
+  await capture('camera-sharp-look-up');
+
+  await setView(0.08, 0, 4.5);
+  const rightDragBefore = await diagnostics();
+  await dragOrbit('right', 310, 430);
+  const rightDragAfter = await advance(0.04, 1 / 120);
+  assert(rightDragAfter.camera.pitch > rightDragBefore.camera.pitch + 0.3, 'RMB downward drag was not reversed');
+
+  const closeCamera = await setView(0.08, -0.82, 1.15);
+  assert(closeCamera.camera.distance >= 0.45, 'close orbit collapsed into the player');
+  assert(closeCamera.camera.groundClearance >= 0.17, 'close orbit fell through the ground');
+  assert(closeCamera.player.opacity >= 0.5 && closeCamera.player.opacity < 0.9, 'player did not fade near the camera');
+  await capture('camera-close-fade');
+
   await setView(0.08, 0.22, 4.5);
   await capture('rear-cape');
 
@@ -177,11 +215,18 @@ try {
   assert(afterWalk.water.footstepRipples >= 2, 'walking did not emit footstep ripples');
   assert(afterWalk.cape.maximumStructuralError < 0.04, 'cape constraints drifted during visual traversal');
   assert(afterWalk.cape.maximumBodyPenetration < 0.002, 'cape penetrated the animated character');
+  assert(afterWalk.cape.maximumEnvironmentPenetration < 0.002, 'cape penetrated the cave during visual traversal');
   assert(
     Math.abs(afterWalk.cape.hemCenter[2] - beforeWalk.cape.hemCenter[2]) > 1,
     'cape hem did not respond dynamically to traversal',
   );
   await capture('water-footsteps');
+
+  await setCameraPose(
+    [afterWalk.player.position[0] + 2.35, afterWalk.player.position[1] + 0.72, afterWalk.player.position[2] + 1.65],
+    [afterWalk.player.position[0], afterWalk.player.position[1] + 0.04, afterWalk.player.position[2]],
+  );
+  await capture('water-smooth-close');
 
   const beforeDrips = await diagnostics();
   const dynamicBefore = await capture('water-dynamic-before');
@@ -224,8 +269,42 @@ try {
   assert(wrapState.cape.maximumBodyPenetration < 0.002, 'cape penetrated the body during visual reversal');
   await capture('cape-wrap-reversal');
 
+  const settledCape = await advance(3.2, 1 / 120);
+  assert(settledCape.cape.maximumBodyPenetration < 0.002, 'settled cape penetrated the character');
+  assert(settledCape.cape.maximumEnvironmentPenetration < 0.002, 'settled cape penetrated cave geometry');
+  assert(settledCape.cape.minimumSelfSeparation > 0.05, 'settled cape collapsed through itself');
+  assert(settledCape.cape.hemDrop > 0.72, 'cape retained a physically impossible inverted resting pose');
+  await setView(0.08, 0.2, 4.25);
+  await capture('cape-wrap-settled');
+
   await setView(Math.PI, 0.15, 4.2);
   await capture('front-character');
+
+  await setPlayerPose([0.8, 0, -8], 0);
+  await advance(0.35, 1 / 120);
+  await setView(0, 0.16, 4.1);
+  const bankBefore = await diagnostics();
+  await setMovement(1, 0);
+  await advance(0.38, 1 / 120);
+  await setMovement(0, 0);
+  const bankAfter = await advance(0.24, 1 / 120);
+  assert(bankAfter.player.position[0] > bankBefore.player.position[0] + 0.65, 'player did not move onto the cave bank');
+  assert(bankAfter.player.position[1] > bankBefore.player.position[1] + 0.35, 'player clipped into the bank instead of climbing it');
+  assert(Math.abs(bankAfter.player.groundClearance) < 0.002, 'player feet detached from the procedural bank');
+  await advance(0.65, 1 / 120);
+  await setCameraPose(
+    [bankAfter.player.position[0] - 3.1, bankAfter.player.position[1] + 0.35, bankAfter.player.position[2] + 2.35],
+    [bankAfter.player.position[0], bankAfter.player.position[1] + 0.62, bankAfter.player.position[2]],
+  );
+  await capture('terrain-bank-walk');
+
+  const contactsBefore = (await diagnostics()).cape.worldContacts.total;
+  await setPlayerPose([1.68, 0, -31.6], 0);
+  await advance(2.4, 1 / 120);
+  const formationContact = await setView(-1.3, 0.14, 3.25);
+  assert(formationContact.cape.worldContacts.total > contactsBefore, 'cape never contacted the nearby stalagmite proxy');
+  assert(formationContact.cape.maximumEnvironmentPenetration < 0.002, 'cape passed through the contacted stalagmite');
+  await capture('cape-formation-contact');
 
   const runtimeFailures = events.filter((event) => (
     event.method === 'Runtime.exceptionThrown'
@@ -247,6 +326,12 @@ try {
     afterDrips,
     frameProfile,
     wrapState,
+    settledCape,
+    sharpLookUp,
+    closeCamera,
+    bankBefore,
+    bankAfter,
+    formationContact,
     final,
   };
   writeFileSync(join(outputRoot, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);

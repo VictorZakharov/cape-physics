@@ -1,15 +1,11 @@
 import * as THREE from 'three';
 import { PLAYER } from '../config';
+import type { CapsuleCollider } from '../physics/colliders';
 
 export interface CapeAnchors {
   readonly left: THREE.Vector3;
   readonly right: THREE.Vector3;
   readonly back: THREE.Vector3;
-}
-
-export interface BodySphere {
-  readonly center: THREE.Vector3;
-  readonly radius: number;
 }
 
 function enableShadows(object: THREE.Object3D): void {
@@ -39,15 +35,15 @@ export class Character {
     right: this.rightAnchorWorld,
     back: this.backWorld,
   };
-  private readonly bodySpheres: BodySphere[] = [
-    { center: new THREE.Vector3(), radius: 0.23 },
-    { center: new THREE.Vector3(), radius: 0.23 },
-    { center: new THREE.Vector3(), radius: 0.35 },
-    { center: new THREE.Vector3(), radius: 0.31 },
-    { center: new THREE.Vector3(), radius: 0.28 },
-    { center: new THREE.Vector3(), radius: 0.16 },
-    { center: new THREE.Vector3(), radius: 0.16 },
+  private readonly capeColliders: CapsuleCollider[] = [
+    { start: new THREE.Vector3(), end: new THREE.Vector3(), radius: 0.255, name: 'shoulders' },
+    { start: new THREE.Vector3(), end: new THREE.Vector3(), radius: 0.355, name: 'upper torso' },
+    { start: new THREE.Vector3(), end: new THREE.Vector3(), radius: 0.36, name: 'hips and belt' },
+    { start: new THREE.Vector3(), end: new THREE.Vector3(), radius: 0.155, name: 'left arm' },
+    { start: new THREE.Vector3(), end: new THREE.Vector3(), radius: 0.155, name: 'right arm' },
   ];
+  private readonly materials: THREE.Material[] = [];
+  private opacity = 1;
   private walkPhase = 0;
 
   public constructor() {
@@ -78,31 +74,33 @@ export class Character {
     return this.capeAnchors;
   }
 
-  public getBodySpheres(): readonly BodySphere[] {
-    const [
-      leftShoulder,
-      rightShoulder,
-      upperTorso,
-      lowerTorso,
-      hips,
-      leftUpperArm,
-      rightUpperArm,
-    ] = this.bodySpheres;
-    if (!leftShoulder || !rightShoulder || !upperTorso || !lowerTorso || !hips || !leftUpperArm || !rightUpperArm) {
+  public getCapeColliders(): readonly CapsuleCollider[] {
+    const [shoulders, upperTorso, hips, leftArm, rightArm] = this.capeColliders;
+    if (!shoulders || !upperTorso || !hips || !leftArm || !rightArm) {
       throw new Error('Character cape collider configuration is incomplete.');
     }
 
-    // Centers sit slightly chestward, making each rear hemisphere coincide
-    // with the visible armor. Separate shoulder and arm lobes give the cloth
-    // a continuous silhouette to slide around during gait animation.
-    this.rig.localToWorld(leftShoulder.center.set(-0.31, 1.46, -0.05));
-    this.rig.localToWorld(rightShoulder.center.set(0.31, 1.46, -0.05));
-    this.rig.localToWorld(upperTorso.center.set(0, 1.31, -0.13));
-    this.rig.localToWorld(lowerTorso.center.set(0, 1.04, -0.1));
-    this.rig.localToWorld(hips.center.set(0, 0.82, -0.06));
-    this.leftArm.localToWorld(leftUpperArm.center.set(0, -0.24, 0));
-    this.rightArm.localToWorld(rightUpperArm.center.set(0, -0.24, 0));
-    return this.bodySpheres;
+    this.setWorldCapsule(shoulders, this.rig, [-0.39, 1.48, -0.04], [0.39, 1.48, -0.04]);
+    this.setWorldCapsule(upperTorso, this.rig, [0, 1.46, -0.085], [0, 1.13, -0.085]);
+    this.setWorldCapsule(hips, this.rig, [0, 1.12, -0.055], [0, 0.78, -0.055]);
+    this.setWorldCapsule(leftArm, this.leftArm, [0, -0.03, 0], [0, -0.72, 0]);
+    this.setWorldCapsule(rightArm, this.rightArm, [0, -0.03, 0], [0, -0.72, 0]);
+    return this.capeColliders;
+  }
+
+  public setOpacity(opacity: number): void {
+    const nextOpacity = THREE.MathUtils.clamp(opacity, 0.5, 1);
+    if (Math.abs(nextOpacity - this.opacity) < 0.002) return;
+    this.opacity = nextOpacity;
+    const opaque = nextOpacity > 0.995;
+    for (const material of this.materials) {
+      material.opacity = nextOpacity;
+      material.depthWrite = opaque;
+    }
+  }
+
+  public getOpacity(): number {
+    return this.opacity;
   }
 
   private buildBody(): void {
@@ -117,6 +115,8 @@ export class Character {
     const leather = new THREE.MeshStandardMaterial({ color: 0x24140f, roughness: 0.82, metalness: 0.03 });
     const trim = new THREE.MeshStandardMaterial({ color: 0x8e7146, roughness: 0.3, metalness: 0.82 });
     const cloth = new THREE.MeshStandardMaterial({ color: 0x161b1d, roughness: 0.92, metalness: 0 });
+    this.materials.push(armor, darkMetal, leather, trim, cloth);
+    for (const material of this.materials) material.transparent = true;
 
     const hips = new THREE.Mesh(new THREE.CapsuleGeometry(0.27, 0.25, 5, 10), armor);
     hips.position.y = 0.84;
@@ -165,8 +165,8 @@ export class Character {
     rightShoulder.rotation.z = -0.35;
     this.rig.add(leftShoulder, rightShoulder);
 
-    this.leftCapeAnchor.position.set(-0.48, 1.52, 0.18);
-    this.rightCapeAnchor.position.set(0.48, 1.52, 0.18);
+    this.leftCapeAnchor.position.set(-0.48, 1.52, 0.27);
+    this.rightCapeAnchor.position.set(0.48, 1.52, 0.27);
     this.rig.add(this.leftCapeAnchor, this.rightCapeAnchor);
   }
 
@@ -197,5 +197,15 @@ export class Character {
     const boot = new THREE.Mesh(new THREE.BoxGeometry(0.17, 0.13, 0.3), metal);
     boot.position.set(0, -0.86, -0.065);
     leg.add(thigh, shin, boot);
+  }
+
+  private setWorldCapsule(
+    collider: CapsuleCollider,
+    space: THREE.Object3D,
+    start: readonly [number, number, number],
+    end: readonly [number, number, number],
+  ): void {
+    space.localToWorld(collider.start.set(...start));
+    space.localToWorld(collider.end.set(...end));
   }
 }
