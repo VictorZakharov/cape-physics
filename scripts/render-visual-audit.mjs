@@ -289,11 +289,23 @@ try {
   const frameProfile = await profile(profileDurationSeconds, 1 / 144);
   await setMovement(0, 0);
   await setRunning(false);
+  console.log(
+    `144 Hz profile: ${frameProfile.frames} frames, `
+    + `${frameProfile.averageFrameMilliseconds.toFixed(2)} ms avg, `
+    + `${frameProfile.p95FrameMilliseconds.toFixed(2)} ms p95, `
+    + `${frameProfile.maximumFrameMilliseconds.toFixed(2)} ms max`,
+  );
   const expectedProfileFrames = Math.round(profileDurationSeconds * 144);
   assert(frameProfile.frames === expectedProfileFrames, '144 Hz traversal did not render every requested frame');
   assert(frameProfile.programsAfter === frameProfile.programsBefore, 'light traversal compiled new shader programs');
-  assert(frameProfile.p95FrameMilliseconds < p95FrameBudget, 'sustained rendered traversal exceeded the p95 frame budget');
-  assert(frameProfile.maximumFrameMilliseconds < maximumFrameBudget, 'rendered traversal contained a severe long frame');
+  assert(
+    frameProfile.p95FrameMilliseconds < p95FrameBudget,
+    `rendered p95 ${frameProfile.p95FrameMilliseconds.toFixed(2)} ms exceeded ${p95FrameBudget} ms`,
+  );
+  assert(
+    frameProfile.maximumFrameMilliseconds < maximumFrameBudget,
+    `rendered maximum ${frameProfile.maximumFrameMilliseconds.toFixed(2)} ms exceeded ${maximumFrameBudget} ms`,
+  );
   assert(frameProfile.diagnostics.cape.maximumBodyPenetration < 0.002, 'cape penetrated the body during profiled traversal');
   assert(frameProfile.diagnostics.cape.maximumEnvironmentFacePenetration < 0.002, 'a formation pierced a cape face during profiled traversal');
 
