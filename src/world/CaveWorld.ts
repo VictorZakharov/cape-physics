@@ -172,8 +172,8 @@ export class CaveWorld {
       quaternion.setFromEuler(new THREE.Euler(random.range(-0.12, 0.12), random.range(0, Math.PI), random.range(-0.12, 0.12)));
       scale.set(random.range(0.55, 1.6), random.range(0.55, 2.25), random.range(0.55, 1.6));
       matrix.compose(position, quaternion, scale);
-      this.colliderBuilder.addSpeleothem(position, quaternion, scale, false);
       const variant = index % ceilingFormations.length;
+      this.colliderBuilder.addSpeleothem(variantGeometries[variant]!, matrix);
       ceilingFormations[variant]?.setMatrixAt(Math.floor(index / ceilingFormations.length), matrix);
       attachmentPosition.copy(position);
       attachmentPosition.y -= 0.08;
@@ -192,10 +192,13 @@ export class CaveWorld {
     });
 
     const floorCounts = [10, 9, 9];
-    const floorFormations = variantGeometries.map((geometry, variant) => {
+    const floorGeometries = variantGeometries.map((geometry) => {
       const floorGeometry = geometry.clone();
       floorGeometry.rotateZ(Math.PI);
-      const mesh = new THREE.InstancedMesh(floorGeometry, material, floorCounts[variant] ?? 0);
+      return floorGeometry;
+    });
+    const floorFormations = floorGeometries.map((geometry, variant) => {
+      const mesh = new THREE.InstancedMesh(geometry, material, floorCounts[variant] ?? 0);
       mesh.name = `Stalagmites organic variant ${variant + 1}`;
       mesh.castShadow = true;
       mesh.receiveShadow = true;
@@ -210,8 +213,8 @@ export class CaveWorld {
       quaternion.setFromEuler(new THREE.Euler(random.range(-0.08, 0.08), random.range(0, Math.PI), random.range(-0.08, 0.08)));
       scale.set(random.range(0.55, 1.35), random.range(0.45, 1.75), random.range(0.55, 1.35));
       matrix.compose(position, quaternion, scale);
-      this.colliderBuilder.addSpeleothem(position, quaternion, scale, true);
       const variant = index % floorFormations.length;
+      this.colliderBuilder.addSpeleothem(floorGeometries[variant]!, matrix);
       const cursor = floorCursors[variant] ?? 0;
       floorFormations[variant]?.setMatrixAt(cursor, matrix);
       floorCursors[variant] = cursor + 1;
@@ -257,7 +260,7 @@ export class CaveWorld {
       scale.set(random.range(0.25, 1.25), random.range(0.18, 0.72), random.range(0.35, 1.4));
       matrix.compose(position, quaternion, scale);
       rocks.setMatrixAt(index, matrix);
-      this.colliderBuilder.addRock(position, scale);
+      this.colliderBuilder.addRock(geometry, matrix);
     }
     rocks.instanceMatrix.needsUpdate = true;
     this.group.add(rocks);

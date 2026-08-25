@@ -14,7 +14,10 @@ interface DistanceConstraint {
   readonly structural: boolean;
 }
 
-const VELOCITY_DAMPING = 0.982;
+const ACTIVE_VELOCITY_DAMPING = 0.982;
+const IDLE_VELOCITY_DAMPING = 0.94;
+const SLEEP_AFTER_IDLE_SECONDS = 2.4;
+const WAKE_SPEED = 0.08;
 
 export class CapeSimulation {
   public readonly mesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshPhysicalMaterial>;
@@ -34,14 +37,19 @@ export class CapeSimulation {
   private readonly delta = new THREE.Vector3();
   private readonly anchorTarget = new THREE.Vector3();
   private readonly anchorCenter = new THREE.Vector3();
+  private readonly stepStart: THREE.Vector3[] = [];
   private opacity = 1;
+  private idleSeconds = 0;
+  private sleeping = false;
+  private maximumParticleMotion = 0;
 
   public constructor(initialAnchors: CapeAnchors) {
     const particleCount = CAPE.columns * CAPE.rows;
     this.inverseMass = new Float32Array(particleCount);
     this.selfCollision = new ClothSelfCollision(particleCount, CAPE.columns);
-    this.contactSolver = new CapeContactSolver(this.positions, this.previous);
+    this.contactSolver = new CapeContactSolver(this.positions, this.previous, this.inverseMass);
     this.initializeParticles(initialAnchors);
+    this.positions.forEach((position) => this.stepStart.push(position.clone()));
     this.createConstraints();
     const geometry = this.createGeometry();
     this.positionAttribute = geometry.getAttribute('position') as THREE.BufferAttribute;
@@ -91,13 +99,27 @@ export class CapeSimulation {
     characterVelocity: THREE.Vector3,
     time: number,
   ): void {
+    this.captureStepStart();
+    const characterSpeed = characterVelocity.length();
+    if (characterSpeed > WAKE_SPEED) {
+      this.idleSeconds = 0;
+      this.sleeping = false;
+    } else {
+      this.idleSeconds += deltaTime;
+    }
     this.pinAnchors(anchors);
     this.contactSolver.beginStep(this.anchorCenter, worldColliders);
+    if (this.sleeping) {
+      this.measureStepMotion();
+      return;
+    }
+    const movementBlend = THREE.MathUtils.smoothstep(characterSpeed, WAKE_SPEED, 2.4);
     this.airflow.set(
       Math.sin(time * 0.47) * 0.38 + Math.sin(time * 1.91) * 0.16,
       0.08 + Math.sin(time * 0.71) * 0.05,
       0.62 + Math.cos(time * 0.31) * 0.24,
-    ).addScaledVector(characterVelocity, -1.38);
+    ).multiplyScalar(THREE.MathUtils.lerp(0.14, 1, movementBlend))
+      .addScaledVector(characterVelocity, -1.38);
 
     const deltaSquared = deltaTime * deltaTime;
     for (let row = 1; row < CAPE.rows; row += 1) {
@@ -107,7 +129,9 @@ export class CapeSimulation {
         const previous = this.previous[index];
         if (!position || !previous) continue;
 
-        this.velocity.copy(position).sub(previous).multiplyScalar(VELOCITY_DAMPING);
+        this.velocity.copy(position).sub(previous).multiplyScalar(
+          THREE.MathUtils.lerp(IDLE_VELOCITY_DAMPING, ACTIVE_VELOCITY_DAMPING, movementBlend),
+        );
         previous.copy(position);
         this.estimateNormal(column, row);
         const pressure = this.airflow.dot(this.normal);
@@ -128,6 +152,12 @@ export class CapeSimulation {
       this.pinAnchors(anchors);
     }
 
+    if (movementBlend < 0.1) this.dampResidualMotion(0.32);
+    if (this.idleSeconds >= SLEEP_AFTER_IDLE_SECONDS && this.getHemDrop() > 0.7) {
+      this.sleeping = true;
+      this.positions.forEach((position, index) => this.previous[index]?.copy(position));
+    }
+    this.measureStepMotion();
     this.guardAgainstInvalidState(anchors);
   }
 
@@ -149,10 +179,18 @@ export class CapeSimulation {
     this.previous.length = 0;
     this.initializeParticles(anchors);
     this.pinAnchors(anchors);
+    this.positions.forEach((position, index) => {
+      const start = this.stepStart[index];
+      if (start) start.copy(position);
+      else this.stepStart.push(position.clone());
+    });
+    this.idleSeconds = 0;
+    this.sleeping = false;
+    this.maximumParticleMotion = 0;
   }
 
   public setOpacity(opacity: number): void {
-    const nextOpacity = THREE.MathUtils.clamp(opacity, 0.5, 1);
+    const nextOpacity = THREE.MathUtils.clamp(opacity, 0.18, 1);
     if (Math.abs(nextOpacity - this.opacity) < 0.002) return;
     this.opacity = nextOpacity;
     this.mesh.material.opacity = nextOpacity;
@@ -188,6 +226,10 @@ export class CapeSimulation {
     return this.contactSolver.getMaximumEnvironmentPenetration(worldColliders);
   }
 
+  public getMaximumEnvironmentFacePenetration(worldColliders: readonly WorldSphereCollider[]): number {
+    return this.contactSolver.getMaximumEnvironmentFacePenetration(worldColliders);
+  }
+
   public getMinimumSelfSeparation(): number {
     return this.selfCollision.getMinimumSeparation(this.positions);
   }
@@ -198,6 +240,14 @@ export class CapeSimulation {
       height += this.positions[this.index(column, CAPE.rows - 1)]?.y ?? this.anchorCenter.y;
     }
     return this.anchorCenter.y - height / CAPE.columns;
+  }
+
+  public getMaximumParticleMotion(): number {
+    return this.maximumParticleMotion;
+  }
+
+  public isSleeping(): boolean {
+    return this.sleeping;
   }
 
   public getWorldContactDiagnostics(): WorldContactDiagnostics {
@@ -218,7 +268,7 @@ export class CapeSimulation {
           .addScaledVector(right, across * width)
           .addScaledVector(anchors.back, 0.02 + down * 0.2)
           .add(new THREE.Vector3(0, -down * CAPE.length * (1 - Math.abs(across) * 0.085), 0));
-        if (row === 0) position.lerpVectors(anchors.left, anchors.right, column / (CAPE.columns - 1));
+        if (row === 0) this.setAnchorTarget(anchors, column / (CAPE.columns - 1), position);
         this.positions.push(position);
         this.previous.push(position.clone());
         this.inverseMass[this.index(column, row)] = row === 0 ? 0 : 1;
@@ -300,10 +350,43 @@ export class CapeSimulation {
       const position = this.positions[index];
       const previous = this.previous[index];
       if (!position || !previous) continue;
-      this.anchorTarget.lerpVectors(anchors.left, anchors.right, column / (CAPE.columns - 1));
+      this.setAnchorTarget(anchors, column / (CAPE.columns - 1), this.anchorTarget);
       position.copy(this.anchorTarget);
       previous.copy(this.anchorTarget);
     }
+  }
+
+  private setAnchorTarget(anchors: CapeAnchors, progress: number, target: THREE.Vector3): void {
+    const neckline = Math.sin(progress * Math.PI);
+    target.lerpVectors(anchors.left, anchors.right, progress);
+    target.y += neckline * 0.065;
+    target.addScaledVector(anchors.back, -neckline * 0.055);
+  }
+
+  private dampResidualMotion(strength: number): void {
+    for (let index = CAPE.columns; index < this.positions.length; index += 1) {
+      const position = this.positions[index];
+      const previous = this.previous[index];
+      if (position && previous) previous.lerp(position, strength);
+    }
+  }
+
+  private captureStepStart(): void {
+    this.positions.forEach((position, index) => {
+      const start = this.stepStart[index];
+      if (start) start.copy(position);
+      else this.stepStart.push(position.clone());
+    });
+  }
+
+  private measureStepMotion(): void {
+    let maximum = 0;
+    for (let index = CAPE.columns; index < this.positions.length; index += 1) {
+      const position = this.positions[index];
+      const start = this.stepStart[index];
+      if (position && start) maximum = Math.max(maximum, position.distanceTo(start));
+    }
+    this.maximumParticleMotion = maximum;
   }
 
   private solveConstraint(constraint: DistanceConstraint): void {

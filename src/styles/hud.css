@@ -184,6 +184,12 @@ kbd {
   box-shadow: inset 0 -2px rgb(0 0 0 / 20%);
 }
 
+kbd.key-wide {
+  width: 38px;
+  font-size: 0.43rem;
+  letter-spacing: 0.04em;
+}
+
 .mouse-icon {
   position: relative;
   display: block;

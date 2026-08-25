@@ -10,6 +10,7 @@ export class InputController {
   private lastPointer = new THREE.Vector2();
   private interacted = false;
   private virtualMovementEnabled = false;
+  private virtualRunning = false;
 
   public constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -38,9 +39,19 @@ export class InputController {
     this.virtualMovementEnabled = true;
   }
 
+  public isRunning(): boolean {
+    if (this.virtualMovementEnabled) return this.virtualRunning;
+    return this.pressed.has('ShiftLeft') || this.pressed.has('ShiftRight');
+  }
+
+  public setVirtualRunning(running: boolean): void {
+    this.virtualRunning = running;
+  }
+
   public clearVirtualMovement(): void {
     this.virtualMovement.set(0, 0);
     this.virtualMovementEnabled = false;
+    this.virtualRunning = false;
   }
 
   public consumeOrbitDelta(target: THREE.Vector2): void {
@@ -73,7 +84,14 @@ export class InputController {
   }
 
   private readonly handleKeyDown = (event: KeyboardEvent): void => {
-    if (event.code === 'KeyW' || event.code === 'KeyA' || event.code === 'KeyS' || event.code === 'KeyD') {
+    if (
+      event.code === 'KeyW'
+      || event.code === 'KeyA'
+      || event.code === 'KeyS'
+      || event.code === 'KeyD'
+      || event.code === 'ShiftLeft'
+      || event.code === 'ShiftRight'
+    ) {
       event.preventDefault();
       this.pressed.add(event.code);
       this.markInteracted();
