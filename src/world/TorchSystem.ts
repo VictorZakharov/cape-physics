@@ -1,12 +1,11 @@
 import * as THREE from 'three';
+import { NearestPointLightPool, type LocalLightSource } from '../lighting/NearestPointLightPool';
 import { SeededRandom } from '../utils/random';
 import { caveCenterX, caveHalfWidth, floorHeightAt } from './caveProfile';
 
-interface Torch {
+interface Torch extends LocalLightSource {
   readonly root: THREE.Group;
   readonly flame: THREE.Mesh<THREE.SphereGeometry, THREE.ShaderMaterial>;
-  readonly light: THREE.PointLight;
-  readonly position: THREE.Vector3;
   readonly inward: THREE.Vector3;
   readonly phase: number;
 }
@@ -38,6 +37,7 @@ const flameFragmentShader = /* glsl */ `
 export class TorchSystem {
   public readonly group = new THREE.Group();
   private readonly torches: Torch[] = [];
+  private readonly lightPool = new NearestPointLightPool(3, 'Torch');
   private readonly shadowLight: THREE.SpotLight;
   private activeShadowTorch = -1;
 
@@ -46,6 +46,7 @@ export class TorchSystem {
     const random = new SeededRandom(0x70ac4);
     const zPositions = [11, -2, -15, -29, -43, -57, -68];
     zPositions.forEach((z, index) => this.createTorch(z, index % 2 === 0 ? -1 : 1, random));
+    this.group.add(...this.lightPool.lights);
 
     this.shadowLight = new THREE.SpotLight(0xffb05a, 72, 12, 0.86, 0.82, 1.7);
     this.shadowLight.name = 'Nearest torch shadow proxy';
@@ -69,11 +70,11 @@ export class TorchSystem {
         closestIndex = index;
       }
       const flicker = 1 + Math.sin(time * 11.3 + torch.phase) * 0.055 + Math.sin(time * 17.7 + torch.phase * 2.2) * 0.028;
-      torch.light.intensity = 22 * flicker;
-      torch.light.visible = distance < 15;
+      torch.intensity = 22 * flicker;
       torch.flame.scale.y = flicker;
       torch.flame.material.uniforms.uTime!.value = time;
     });
+    this.lightPool.update(viewer, this.torches);
 
     const nearest = this.torches[closestIndex];
     if (!nearest) return;
@@ -86,6 +87,10 @@ export class TorchSystem {
       this.shadowLight.shadow.needsUpdate = true;
     }
     this.shadowLight.intensity = closestDistance < 13 ? 64 + Math.sin(time * 12.1) * 4 : 0;
+  }
+
+  public getLightDiagnostics() {
+    return this.lightPool.getDiagnostics();
   }
 
   private createTorch(z: number, side: -1 | 1, random: SeededRandom): void {
@@ -123,9 +128,16 @@ export class TorchSystem {
     root.add(flame);
 
     const worldFlamePosition = new THREE.Vector3(x, y + 0.58, z);
-    const light = new THREE.PointLight(0xffa24e, 22, 9.5, 2);
-    light.position.copy(worldFlamePosition);
-    this.group.add(root, light);
-    this.torches.push({ root, flame, light, position: worldFlamePosition, inward, phase: random.range(0, Math.PI * 2) });
+    this.group.add(root);
+    this.torches.push({
+      root,
+      flame,
+      position: worldFlamePosition,
+      inward,
+      phase: random.range(0, Math.PI * 2),
+      color: new THREE.Color(0xffa24e),
+      intensity: 22,
+      range: 9.5,
+    });
   }
 }

@@ -1,6 +1,5 @@
 import * as THREE from 'three';
 import type { InputController } from '../input/InputController';
-import { damp } from '../utils/math';
 import { floorHeightAt } from '../world/caveProfile';
 
 export class ThirdPersonCamera {
@@ -10,6 +9,8 @@ export class ThirdPersonCamera {
   private readonly target = new THREE.Vector3();
   private readonly desiredPosition = new THREE.Vector3();
   private readonly direction = new THREE.Vector3();
+  private readonly orbitDelta = new THREE.Vector2();
+  private readonly raycastHits: THREE.Intersection[] = [];
   private readonly raycaster = new THREE.Raycaster();
 
   public constructor(
@@ -37,9 +38,9 @@ export class ThirdPersonCamera {
   }
 
   public update(delta: number, focus: THREE.Vector3): void {
-    const orbit = this.input.consumeOrbitDelta();
-    this.yaw -= orbit.x * 0.0042;
-    this.pitch = THREE.MathUtils.clamp(this.pitch - orbit.y * 0.0035, -0.08, 0.78);
+    this.input.consumeOrbitDelta(this.orbitDelta);
+    this.yaw -= this.orbitDelta.x * 0.0042;
+    this.pitch = THREE.MathUtils.clamp(this.pitch - this.orbitDelta.y * 0.0035, -0.08, 0.78);
     this.distance = THREE.MathUtils.clamp(this.distance + this.input.consumeZoomDelta() * 0.42, 2.8, 6.8);
     this.calculateDesired(focus);
 
@@ -49,7 +50,9 @@ export class ThirdPersonCamera {
     this.raycaster.set(this.target, this.direction);
     this.raycaster.near = 0.05;
     this.raycaster.far = desiredDistance;
-    const hit = this.raycaster.intersectObjects(this.colliders, false)[0];
+    this.raycastHits.length = 0;
+    this.raycaster.intersectObjects(this.colliders, false, this.raycastHits);
+    const hit = this.raycastHits[0];
     if (hit && hit.distance < desiredDistance) {
       this.desiredPosition.copy(this.target).addScaledVector(this.direction, Math.max(0.72, hit.distance - 0.24));
     }
@@ -57,13 +60,12 @@ export class ThirdPersonCamera {
 
     const positionSmoothing = hit ? 24 : 11;
     this.camera.position.lerp(this.desiredPosition, 1 - Math.exp(-positionSmoothing * delta));
-    const lookTarget = this.target.clone();
-    lookTarget.y = damp(lookTarget.y, this.target.y, 14, delta);
-    this.camera.lookAt(lookTarget);
+    this.camera.lookAt(this.target);
   }
 
   private calculateDesired(focus: THREE.Vector3): void {
-    this.target.copy(focus).add(new THREE.Vector3(0, 1.25, 0));
+    this.target.copy(focus);
+    this.target.y += 1.25;
     const horizontalDistance = Math.cos(this.pitch) * this.distance;
     this.desiredPosition.set(
       this.target.x + Math.sin(this.yaw) * horizontalDistance,

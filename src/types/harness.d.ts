@@ -10,6 +10,16 @@ interface CapeDemoDiagnostics {
     readonly calls: number;
     readonly triangles: number;
     readonly pixelRatio: number;
+    readonly programs: number;
+    readonly sizing: {
+      readonly width: number;
+      readonly height: number;
+      readonly pixelRatio: number;
+      readonly drawingBufferWidth: number;
+      readonly drawingBufferHeight: number;
+      readonly renderPixels: number;
+      readonly targetResizeCount: number;
+    };
   };
   readonly player: {
     readonly position: number[];
@@ -18,6 +28,7 @@ interface CapeDemoDiagnostics {
   };
   readonly cape: {
     readonly maximumStructuralError: number;
+    readonly maximumBodyPenetration: number;
     readonly hemCenter: number[];
   };
   readonly water: {
@@ -31,6 +42,18 @@ interface CapeDemoDiagnostics {
   };
   readonly minerals: {
     readonly clusters: number[][];
+    readonly lights: {
+      readonly lights: number;
+      readonly visibleLights: number;
+      readonly activeLights: number;
+    };
+  };
+  readonly torches: {
+    readonly lights: {
+      readonly lights: number;
+      readonly visibleLights: number;
+      readonly activeLights: number;
+    };
   };
 }
 
@@ -43,6 +66,15 @@ declare global {
       setCameraPose: (pose: { position: number[]; target: number[] }) => CapeDemoDiagnostics;
       setMovement: (horizontal: number, forward: number) => void;
       advance: (options: { duration: number; frameStep?: number }) => CapeDemoDiagnostics;
+      profile: (options: { duration: number; frameStep?: number }) => {
+        readonly frames: number;
+        readonly averageFrameMilliseconds: number;
+        readonly p95FrameMilliseconds: number;
+        readonly maximumFrameMilliseconds: number;
+        readonly programsBefore: number;
+        readonly programsAfter: number;
+        readonly diagnostics: CapeDemoDiagnostics;
+      };
     };
   }
 }

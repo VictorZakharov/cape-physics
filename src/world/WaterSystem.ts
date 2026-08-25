@@ -155,6 +155,9 @@ export class WaterSystem {
   private readonly splashPositions: THREE.BufferAttribute;
   private readonly splashPoints: THREE.Points;
   private readonly random = new SeededRandom(0xd1a9);
+  private readonly dropMatrix = new THREE.Matrix4();
+  private readonly hiddenDropMatrix = new THREE.Matrix4().makeScale(0, 0, 0);
+  private readonly footPosition = new THREE.Vector3();
   private rippleCursor = 0;
   private strideSinceStep = 0;
   private footSide = 1;
@@ -233,7 +236,7 @@ export class WaterSystem {
       if (this.strideSinceStep > 0.48) {
         this.strideSinceStep = 0;
         this.footSide *= -1;
-        const foot = playerPosition.clone();
+        const foot = this.footPosition.copy(playerPosition);
         foot.x += Math.cos(playerYaw) * 0.16 * this.footSide;
         foot.z -= Math.sin(playerYaw) * 0.16 * this.footSide;
         foot.y = puddle.center.y + 0.025;
@@ -338,12 +341,10 @@ export class WaterSystem {
   }
 
   private updateDrops(delta: number, time: number): void {
-    const matrix = new THREE.Matrix4();
-    const hidden = new THREE.Matrix4().makeScale(0, 0, 0);
     this.drops.forEach((drop, index) => {
       if (drop.delay > 0) {
         drop.delay -= delta;
-        this.dropMesh.setMatrixAt(index, hidden);
+        this.dropMesh.setMatrixAt(index, this.hiddenDropMatrix);
         return;
       }
       drop.velocity += 7.8 * delta;
@@ -356,8 +357,8 @@ export class WaterSystem {
         drop.velocity = 0;
         drop.delay = this.random.range(1.4, 5.8);
       }
-      matrix.makeTranslation(drop.position.x, drop.position.y, drop.position.z);
-      this.dropMesh.setMatrixAt(index, matrix);
+      this.dropMatrix.makeTranslation(drop.position.x, drop.position.y, drop.position.z);
+      this.dropMesh.setMatrixAt(index, this.dropMatrix);
     });
     this.dropMesh.instanceMatrix.needsUpdate = true;
   }

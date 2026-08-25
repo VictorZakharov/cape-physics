@@ -24,9 +24,14 @@ export interface TechDemoHarnessReport {
   readonly millisecondsPerPhysicsStep: number;
   readonly simulatedSeconds: number;
   readonly capeMaximumStructuralError: number;
+  readonly capeMaximumBodyPenetration: number;
   readonly capeStateFinite: boolean;
   readonly water: ReturnType<WaterSystem['getDiagnostics']>;
   readonly scene: SceneBudget;
+  readonly lighting: {
+    readonly torches: ReturnType<TorchSystem['getLightDiagnostics']>;
+    readonly minerals: ReturnType<MineralVeins['getLightDiagnostics']>;
+  };
   readonly proceduralTextureBytes: number;
 }
 
@@ -136,8 +141,15 @@ export function runTechDemoHarness(simulatedSeconds = 12): TechDemoHarnessReport
     && Number.isFinite(capeBottom.y)
     && Number.isFinite(capeBottom.z);
   const capeMaximumStructuralError = cape.getMaximumStructuralError();
+  const finalAnchors = character.getCapeAnchors();
+  const capeMaximumBodyPenetration = cape.getMaximumBodyPenetration(
+    character.getBodySpheres(),
+    finalAnchors.back,
+  );
   const waterDiagnostics = water.getDiagnostics();
   const sceneBudget = analyzeScene(scene);
+  const torchLights = torches.getLightDiagnostics();
+  const mineralLights = veins.getLightDiagnostics();
   const proceduralTextureBytes = textureByteLength(rockTextures.color)
     + textureByteLength(rockTextures.height)
     + textureByteLength(rockTextures.normal)
@@ -149,12 +161,15 @@ export function runTechDemoHarness(simulatedSeconds = 12): TechDemoHarnessReport
 
   invariant(capeStateFinite, 'cape state became non-finite');
   invariant(capeMaximumStructuralError < 0.055, `cape constraint error ${capeMaximumStructuralError.toFixed(4)} exceeded budget`);
+  invariant(capeMaximumBodyPenetration < 0.002, `cape body penetration ${capeMaximumBodyPenetration.toFixed(4)} exceeded budget`);
   invariant(waterDiagnostics.puddles >= 5, 'walkable puddle count regressed');
   invariant(waterDiagnostics.drops >= 10, 'water-drop emitters are missing');
   invariant(waterDiagnostics.activeRipples >= expectedActiveRipples, 'footsteps and drips did not produce enough ripple events');
   invariant(waterDiagnostics.footstepRipples >= expectedFootstepRipples, 'walk traversal produced too few footstep ripples');
   invariant(waterDiagnostics.dripRipples >= expectedDripRipples, 'ceiling emitters produced too few drip ripples');
   invariant(sceneBudget.shadowCastingLights === 1, 'the single-shadow-light performance contract changed');
+  invariant(torchLights.visibleLights === torchLights.lights, 'torch pool changed the compiled light count');
+  invariant(mineralLights.visibleLights === mineralLights.lights, 'mineral pool changed the compiled light count');
   invariant(sceneBudget.shaderMaterials >= 3, 'procedural water, flame, or glow shaders are missing');
   invariant(sceneBudget.estimatedDrawCalls <= 85, `estimated draw calls ${sceneBudget.estimatedDrawCalls} exceeded budget`);
   invariant(sceneBudget.triangles <= 160_000, `triangle count ${sceneBudget.triangles} exceeded budget`);
@@ -166,9 +181,14 @@ export function runTechDemoHarness(simulatedSeconds = 12): TechDemoHarnessReport
     millisecondsPerPhysicsStep,
     simulatedSeconds,
     capeMaximumStructuralError,
+    capeMaximumBodyPenetration,
     capeStateFinite,
     water: waterDiagnostics,
     scene: sceneBudget,
+    lighting: {
+      torches: torchLights,
+      minerals: mineralLights,
+    },
     proceduralTextureBytes,
   };
 }

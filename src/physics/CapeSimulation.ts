@@ -12,6 +12,8 @@ interface DistanceConstraint {
   readonly structural: boolean;
 }
 
+const BODY_CLEARANCE = 0.018;
+
 export class CapeSimulation {
   public readonly mesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshPhysicalMaterial>;
   private readonly positions: THREE.Vector3[] = [];
@@ -148,6 +150,27 @@ export class CapeSimulation {
       maximum = Math.max(maximum, Math.abs(first.distanceTo(second) - constraint.restLength));
     }
     return maximum;
+  }
+
+  public getMaximumBodyPenetration(
+    bodySpheres: readonly BodySphere[],
+    back: THREE.Vector3,
+  ): number {
+    let maximum = 0;
+    for (let index = CAPE.columns; index < this.positions.length; index += 1) {
+      const position = this.positions[index];
+      if (!position) continue;
+      for (const sphere of bodySpheres) {
+        this.delta.copy(position).sub(sphere.center);
+        const depth = this.delta.dot(back);
+        const lateralSquared = Math.max(0, this.delta.lengthSq() - depth * depth);
+        const radius = sphere.radius + BODY_CLEARANCE;
+        if (lateralSquared >= radius * radius) continue;
+        const requiredDepth = Math.sqrt(radius * radius - lateralSquared);
+        maximum = Math.max(maximum, requiredDepth - depth);
+      }
+    }
+    return Math.max(0, maximum);
   }
 
   private initializeParticles(anchors: CapeAnchors): void {
@@ -288,14 +311,23 @@ export class CapeSimulation {
   private solveBodyCollisions(spheres: readonly BodySphere[], back: THREE.Vector3): void {
     for (let index = CAPE.columns; index < this.positions.length; index += 1) {
       const position = this.positions[index];
-      if (!position) continue;
+      const previous = this.previous[index];
+      if (!position || !previous) continue;
       for (const sphere of spheres) {
         this.delta.copy(position).sub(sphere.center);
-        const distanceSquared = this.delta.lengthSq();
-        if (distanceSquared >= sphere.radius * sphere.radius) continue;
-        if (distanceSquared < 0.000_001) this.delta.copy(back);
-        else this.delta.multiplyScalar(1 / Math.sqrt(distanceSquared));
-        position.copy(sphere.center).addScaledVector(this.delta, sphere.radius + 0.012);
+        const depth = this.delta.dot(back);
+        const lateralSquared = Math.max(0, this.delta.lengthSq() - depth * depth);
+        const radius = sphere.radius + BODY_CLEARANCE;
+        if (lateralSquared >= radius * radius) continue;
+        const requiredDepth = Math.sqrt(radius * radius - lateralSquared);
+        const penetration = requiredDepth - depth;
+        if (penetration <= 0) continue;
+
+        // This one-sided posterior projection cannot select the body's front
+        // hemisphere after a fast reversal. Its curved depth requirement makes
+        // neighboring particles naturally wrap and slide around the silhouette.
+        position.addScaledVector(back, penetration);
+        previous.addScaledVector(back, penetration);
       }
     }
   }

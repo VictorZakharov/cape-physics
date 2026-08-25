@@ -1,17 +1,18 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { NearestPointLightPool, type LocalLightSource } from '../lighting/NearestPointLightPool';
 import { SeededRandom } from '../utils/random';
 import { caveCenterX, caveHalfWidth } from './caveProfile';
 
-interface VeinCluster {
+interface VeinCluster extends LocalLightSource {
   readonly root: THREE.Vector3;
-  readonly light: THREE.PointLight;
   readonly phase: number;
 }
 
 export class MineralVeins {
   public readonly group = new THREE.Group();
   private readonly clusters: VeinCluster[] = [];
+  private readonly lightPool = new NearestPointLightPool(2, 'Mineral');
 
   public constructor() {
     this.group.name = 'Glowing mineral veins';
@@ -23,18 +24,22 @@ export class MineralVeins {
     ] as const;
 
     locations.forEach((location, index) => this.createCluster(location.z, location.side, location.color, index));
+    this.group.add(...this.lightPool.lights);
   }
 
   public update(time: number, viewer: THREE.Vector3): void {
     for (const cluster of this.clusters) {
-      const distance = cluster.root.distanceTo(viewer);
-      cluster.light.visible = distance < 15;
-      cluster.light.intensity = 8.5 + Math.sin(time * 1.3 + cluster.phase) * 0.65;
+      cluster.intensity = 8.5 + Math.sin(time * 1.3 + cluster.phase) * 0.65;
     }
+    this.lightPool.update(viewer, this.clusters);
   }
 
   public getClusterPositions(): number[][] {
     return this.clusters.map((cluster) => cluster.root.toArray());
+  }
+
+  public getLightDiagnostics() {
+    return this.lightPool.getDiagnostics();
   }
 
   private createCluster(z: number, side: -1 | 1, color: number, seed: number): void {
@@ -110,9 +115,14 @@ export class MineralVeins {
     crystals.instanceMatrix.needsUpdate = true;
     this.group.add(crystals);
 
-    const light = new THREE.PointLight(color, 9, 7.5, 2);
-    light.position.copy(root).add(new THREE.Vector3(-side * 0.65, 0, 0));
-    this.group.add(light);
-    this.clusters.push({ root, light, phase: random.range(0, Math.PI * 2) });
+    const lightPosition = root.clone().add(new THREE.Vector3(-side * 0.65, 0, 0));
+    this.clusters.push({
+      root,
+      position: lightPosition,
+      color: coreColor,
+      intensity: 9,
+      range: 7.5,
+      phase: random.range(0, Math.PI * 2),
+    });
   }
 }
