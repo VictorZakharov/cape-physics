@@ -75,6 +75,8 @@ The visual audit launches an installed Edge or Chrome directly through the DevTo
 
 The audit fails on browser errors, movement regressions, body/cave/self/cloth-face penetration, idle trembling, inverted resting cloth, missing dynamic contacts or ripples, shader-program growth, oversized render targets, severe long frames, or nondeterministic paused frames. Its saved images make silhouette, clipping, water clarity, and faceting regressions directly reviewable. Images and a diagnostics manifest are written to `artifacts/visual-audit/` and intentionally ignored by Git.
 
+The local command uses the strict 12-second, 1,728-frame D3D11 timing profile above. Hosted Windows Actions has no representative hardware GPU, so PR CI retains every dynamic scene and image invariant while using a 288-frame synchronized sample with software-renderer timing allowances. The renderer-free 12-second simulation and its physics budget remain mandatory in every CI run.
+
 ## Architecture
 
 The implementation is divided by responsibility under `src/`:

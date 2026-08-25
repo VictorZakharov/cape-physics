@@ -70,7 +70,7 @@ jobs:
     name: Dynamic multi-angle render audit
     if: github.event_name == 'pull_request'
     runs-on: windows-2022
-    timeout-minutes: 8
+    timeout-minutes: 4
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -87,6 +87,10 @@ jobs:
 
       - name: Run repository-owned dynamic render harness
         run: bun run audit:visual
+        env:
+          CAPE_AUDIT_PROFILE_SECONDS: 2
+          CAPE_AUDIT_P95_BUDGET_MS: 500
+          CAPE_AUDIT_MAX_FRAME_BUDGET_MS: 3000
 
       - name: Upload rendered evidence
         if: ${{ !cancelled() }}

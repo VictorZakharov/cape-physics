@@ -17,7 +17,7 @@ interface DistanceConstraint {
 const ACTIVE_DRAG_PER_SECOND = 2.05;
 const IDLE_DRAG_PER_SECOND = 2.8;
 const SLEEP_AFTER_SETTLED_SECONDS = 0.55;
-const SETTLED_MOTION_THRESHOLD = 0.002;
+const SETTLED_MOTION_THRESHOLD = 0.0025;
 const MINIMUM_SETTLED_LOWER_CAPE_DROP = 0.48;
 const WAKE_SPEED = 0.08;
 
@@ -156,7 +156,7 @@ export class CapeSimulation {
     const fullyDraped = characterSpeed <= WAKE_SPEED
       && this.getHemDrop() > 0.72
       && this.getMinimumLowerCapeDrop() > MINIMUM_SETTLED_LOWER_CAPE_DROP;
-    if (fullyDraped) this.dampResidualMotion(0.1);
+    if (fullyDraped) this.dampResidualMotion(0.14);
     if (fullyDraped && this.maximumParticleMotion < SETTLED_MOTION_THRESHOLD) {
       this.settledSeconds += deltaTime;
     } else if (fullyDraped) {

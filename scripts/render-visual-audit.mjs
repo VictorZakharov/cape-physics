@@ -41,6 +41,18 @@ function assert(condition, message) {
   if (!condition) throw new Error(`Visual audit invariant failed: ${message}`);
 }
 
+function numericSetting(name, fallback, minimum, maximum) {
+  const value = Number(process.env[name] ?? fallback);
+  if (!Number.isFinite(value) || value < minimum || value > maximum) {
+    throw new Error(`${name} must be a finite number from ${minimum} to ${maximum}.`);
+  }
+  return value;
+}
+
+const profileDurationSeconds = numericSetting('CAPE_AUDIT_PROFILE_SECONDS', 12, 2, 12);
+const p95FrameBudget = numericSetting('CAPE_AUDIT_P95_BUDGET_MS', 120, 1, 1_000);
+const maximumFrameBudget = numericSetting('CAPE_AUDIT_MAX_FRAME_BUDGET_MS', 750, 1, 5_000);
+
 const server = createStaticServer(distRoot);
 const temporaryRoot = mkdtempSync(join(tmpdir(), 'cape-physics-audit-'));
 const staticPort = await listen(server);
@@ -274,13 +286,14 @@ try {
   assert(runState.player.gait.runningBlend > 0.85, 'running gait animation did not engage');
   await setView(1.18, 0.12, 4.1);
   await capture('character-running');
-  const frameProfile = await profile(12, 1 / 144);
+  const frameProfile = await profile(profileDurationSeconds, 1 / 144);
   await setMovement(0, 0);
   await setRunning(false);
-  assert(frameProfile.frames === 1_728, '144 Hz traversal did not render every requested frame');
+  const expectedProfileFrames = Math.round(profileDurationSeconds * 144);
+  assert(frameProfile.frames === expectedProfileFrames, '144 Hz traversal did not render every requested frame');
   assert(frameProfile.programsAfter === frameProfile.programsBefore, 'light traversal compiled new shader programs');
-  assert(frameProfile.p95FrameMilliseconds < 120, 'sustained rendered traversal exceeded the p95 frame budget');
-  assert(frameProfile.maximumFrameMilliseconds < 750, 'rendered traversal contained a severe long frame');
+  assert(frameProfile.p95FrameMilliseconds < p95FrameBudget, 'sustained rendered traversal exceeded the p95 frame budget');
+  assert(frameProfile.maximumFrameMilliseconds < maximumFrameBudget, 'rendered traversal contained a severe long frame');
   assert(frameProfile.diagnostics.cape.maximumBodyPenetration < 0.002, 'cape penetrated the body during profiled traversal');
   assert(frameProfile.diagnostics.cape.maximumEnvironmentFacePenetration < 0.002, 'a formation pierced a cape face during profiled traversal');
 
@@ -373,6 +386,12 @@ try {
     afterDrips,
     runState,
     frameProfile,
+    profileSettings: {
+      durationSeconds: profileDurationSeconds,
+      expectedFrames: expectedProfileFrames,
+      p95FrameBudget,
+      maximumFrameBudget,
+    },
     wrapState,
     settledCape,
     sharpLookUp,
