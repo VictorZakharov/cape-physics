@@ -221,6 +221,9 @@ export class CapeDemo {
       setMovement: (horizontal, forward) => {
         this.input.setVirtualMovement(horizontal, forward);
       },
+      setRunning: (running) => {
+        this.input.setVirtualRunning(running);
+      },
       advance: ({ duration, frameStep = 1 / 60 }) => this.advanceHarness(duration, frameStep),
       profile: ({ duration, frameStep = 1 / 60 }) => this.profileHarness(duration, frameStep),
     };
@@ -309,6 +312,8 @@ export class CapeDemo {
           this.character.root.position.z,
         ),
         opacity: this.character.getOpacity(),
+        running: this.characterController.isRunning(),
+        gait: this.character.getAnimationDiagnostics(),
       },
       camera: {
         distance: this.thirdPersonCamera.getActualDistance(),
@@ -326,6 +331,9 @@ export class CapeDemo {
           capeAnchors.back,
         ),
         maximumEnvironmentPenetration: this.cape.getMaximumEnvironmentPenetration(this.worldColliders),
+        maximumEnvironmentFacePenetration: this.cape.getMaximumEnvironmentFacePenetration(this.worldColliders),
+        maximumParticleMotion: this.cape.getMaximumParticleMotion(),
+        sleeping: this.cape.isSleeping(),
         minimumSelfSeparation: this.cape.getMinimumSelfSeparation(),
         hemDrop: this.cape.getHemDrop(),
         hemCenter: this.cape.getParticlePosition(6, 17).toArray(),
@@ -345,7 +353,7 @@ export class CapeDemo {
 
   private updateCameraFade(): void {
     const distance = this.thirdPersonCamera.getActualDistance();
-    const opacity = 0.5 + THREE.MathUtils.smoothstep(distance, 0.72, 1.8) * 0.5;
+    const opacity = 0.18 + THREE.MathUtils.smoothstep(distance, 0.78, 2.15) * 0.82;
     this.character.setOpacity(opacity);
     this.cape.setOpacity(opacity);
   }

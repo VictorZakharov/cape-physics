@@ -5,6 +5,7 @@ import {
   SPELEOTHEM_RINGS,
   SPELEOTHEM_SIDES,
 } from '../src/world/SpeleothemGeometry';
+import { CaveColliderBuilder } from '../src/world/CaveColliderBuilder';
 
 describe('procedural speleothem geometry', () => {
   test('is deterministic, curved, and materially more detailed than a cone', () => {
@@ -32,5 +33,49 @@ describe('procedural speleothem geometry', () => {
       );
     }
     expect(maximumCenterlineOffset).toBeGreaterThan(0.025);
+  });
+
+  test('geometry-derived proxies enclose every transformed formation vertex', () => {
+    const geometry = createSpeleothemGeometry(0x51a2);
+    const matrix = new THREE.Matrix4().compose(
+      new THREE.Vector3(1.2, 2.4, -3.7),
+      new THREE.Quaternion().setFromEuler(new THREE.Euler(0.11, 1.2, -0.08)),
+      new THREE.Vector3(1.55, 2.1, 0.62),
+    );
+    const builder = new CaveColliderBuilder();
+    builder.addSpeleothem(geometry, matrix);
+    const positions = geometry.getAttribute('position');
+    const vertex = new THREE.Vector3();
+
+    expect(builder.colliders.length).toBeGreaterThan(SPELEOTHEM_RINGS);
+    for (let index = 0; index < positions.count; index += 1) {
+      vertex.fromBufferAttribute(positions, index).applyMatrix4(matrix);
+      const signedDistance = Math.min(
+        ...builder.colliders.map((collider) => vertex.distanceTo(collider.center) - collider.radius),
+      );
+      expect(signedDistance).toBeLessThanOrEqual(0.000_01);
+    }
+  });
+
+  test('geometry-derived rock proxies enclose elongated rotated rocks', () => {
+    const geometry = new THREE.DodecahedronGeometry(0.42, 1);
+    const matrix = new THREE.Matrix4().compose(
+      new THREE.Vector3(-1.4, 0.35, 2.8),
+      new THREE.Quaternion().setFromEuler(new THREE.Euler(0.7, -0.3, 1.1)),
+      new THREE.Vector3(0.28, 0.42, 1.35),
+    );
+    const builder = new CaveColliderBuilder();
+    builder.addRock(geometry, matrix);
+    const positions = geometry.getAttribute('position');
+    const vertex = new THREE.Vector3();
+
+    expect(builder.colliders.length).toBeGreaterThan(2);
+    for (let index = 0; index < positions.count; index += 1) {
+      vertex.fromBufferAttribute(positions, index).applyMatrix4(matrix);
+      const signedDistance = Math.min(
+        ...builder.colliders.map((collider) => vertex.distanceTo(collider.center) - collider.radius),
+      );
+      expect(signedDistance).toBeLessThanOrEqual(0.000_01);
+    }
   });
 });

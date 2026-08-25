@@ -1,18 +1,23 @@
 import * as THREE from 'three';
 import { PLAYER } from '../config';
-import type { InputController } from '../input/InputController';
 import { dampAngle } from '../utils/math';
 import type { WorldCollisionResolver } from '../world/WorldCollisionResolver';
 import type { Character } from './Character';
+
+export interface CharacterMovementInput {
+  getMovement(): THREE.Vector2;
+  isRunning(): boolean;
+}
 
 export class CharacterController {
   private readonly desiredVelocity = new THREE.Vector3();
   private readonly cameraForward = new THREE.Vector3();
   private readonly cameraRight = new THREE.Vector3();
+  private running = false;
 
   public constructor(
     private readonly character: Character,
-    private readonly input: InputController,
+    private readonly input: CharacterMovementInput,
     private readonly worldCollision: WorldCollisionResolver,
   ) {}
 
@@ -25,8 +30,10 @@ export class CharacterController {
       .addScaledVector(this.cameraRight, movement.x)
       .addScaledVector(this.cameraForward, movement.y);
 
+    this.running = this.desiredVelocity.lengthSq() > 0 && this.input.isRunning();
     if (this.desiredVelocity.lengthSq() > 0) {
-      this.desiredVelocity.normalize().multiplyScalar(PLAYER.walkSpeed);
+      const speed = this.running ? PLAYER.runSpeed : PLAYER.walkSpeed;
+      this.desiredVelocity.normalize().multiplyScalar(speed);
     }
     const response = this.desiredVelocity.lengthSq() > 0 ? PLAYER.acceleration : PLAYER.deceleration;
     this.character.velocity.lerp(this.desiredVelocity, 1 - Math.exp(-response * delta));
@@ -40,5 +47,9 @@ export class CharacterController {
       this.character.root.rotation.y = dampAngle(this.character.root.rotation.y, targetYaw, PLAYER.turnSpeed, delta);
     }
     this.character.updateAnimation(delta, planarSpeed);
+  }
+
+  public isRunning(): boolean {
+    return this.running;
   }
 }

@@ -7,9 +7,9 @@ import {
   caveInteriorHalfWidthAtHeight,
 } from '../world/caveProfile';
 import type { CapsuleCollider, WorldSphereCollider } from './colliders';
+import { CLOTH_WORLD_CLEARANCE, ClothWorldCollision } from './ClothWorldCollision';
 
 const BODY_CLEARANCE = 0.026;
-const WORLD_CLEARANCE = 0.034;
 const WORLD_QUERY_RADIUS = CAPE.length + 2.2;
 
 export interface WorldContactDiagnostics {
@@ -31,11 +31,21 @@ export class CapeContactSolver {
   private readonly remainingMotion = new THREE.Vector3();
   private worldContactsLastStep = 0;
   private worldContactEvents = 0;
+  private readonly faceCollision: ClothWorldCollision;
 
   public constructor(
     private readonly positions: readonly THREE.Vector3[],
     private readonly previous: readonly THREE.Vector3[],
-  ) {}
+    inverseMass: Float32Array,
+  ) {
+    this.faceCollision = new ClothWorldCollision(
+      positions,
+      previous,
+      inverseMass,
+      CAPE.columns,
+      CAPE.rows,
+    );
+  }
 
   public beginStep(anchorCenter: THREE.Vector3, colliders: readonly WorldSphereCollider[]): void {
     this.worldContactsLastStep = 0;
@@ -71,6 +81,9 @@ export class CapeContactSolver {
         this.solveWorldSphere(position, previous, collider);
       }
     }
+    const faceContacts = this.faceCollision.solve(this.nearbyWorldColliders);
+    this.worldContactsLastStep += faceContacts;
+    this.worldContactEvents += faceContacts;
   }
 
   public solveCave(): void {
@@ -82,14 +95,14 @@ export class CapeContactSolver {
       const clampedZ = THREE.MathUtils.clamp(position.z, CAVE.endZ + 0.08, CAVE.startZ - 0.08);
       if (clampedZ !== position.z) this.applyAxisCorrection(position, previous, 'z', clampedZ - position.z);
 
-      const floor = caveGroundHeightAt(position.x, position.z) + WORLD_CLEARANCE;
+      const floor = caveGroundHeightAt(position.x, position.z) + CLOTH_WORLD_CLEARANCE;
       if (position.y < floor) this.applyAxisCorrection(position, previous, 'y', floor - position.y);
 
-      const ceiling = caveCeiling(position.z) + 0.12 - WORLD_CLEARANCE;
+      const ceiling = caveCeiling(position.z) + 0.12 - CLOTH_WORLD_CLEARANCE;
       if (position.y > ceiling) this.applyAxisCorrection(position, previous, 'y', ceiling - position.y);
 
       const center = caveCenterX(position.z);
-      const halfWidth = caveInteriorHalfWidthAtHeight(position.y, position.z, WORLD_CLEARANCE);
+      const halfWidth = caveInteriorHalfWidthAtHeight(position.y, position.z, CLOTH_WORLD_CLEARANCE);
       const clampedX = THREE.MathUtils.clamp(position.x, center - halfWidth, center + halfWidth);
       if (clampedX !== position.x) this.applyAxisCorrection(position, previous, 'x', clampedX - position.x);
     }
@@ -116,13 +129,17 @@ export class CapeContactSolver {
       const position = this.positions[index];
       if (!position) continue;
       for (const collider of colliders) {
-        maximum = Math.max(maximum, collider.radius + WORLD_CLEARANCE - position.distanceTo(collider.center));
+        maximum = Math.max(maximum, collider.radius + CLOTH_WORLD_CLEARANCE - position.distanceTo(collider.center));
       }
-      maximum = Math.max(maximum, caveGroundHeightAt(position.x, position.z) + WORLD_CLEARANCE - position.y);
-      const halfWidth = caveInteriorHalfWidthAtHeight(position.y, position.z, WORLD_CLEARANCE);
+      maximum = Math.max(maximum, caveGroundHeightAt(position.x, position.z) + CLOTH_WORLD_CLEARANCE - position.y);
+      const halfWidth = caveInteriorHalfWidthAtHeight(position.y, position.z, CLOTH_WORLD_CLEARANCE);
       maximum = Math.max(maximum, Math.abs(position.x - caveCenterX(position.z)) - halfWidth);
     }
-    return Math.max(0, maximum);
+    return Math.max(maximum, this.faceCollision.getMaximumPenetration(colliders));
+  }
+
+  public getMaximumEnvironmentFacePenetration(colliders: readonly WorldSphereCollider[]): number {
+    return this.faceCollision.getMaximumPenetration(colliders);
   }
 
   public getDiagnostics(): WorldContactDiagnostics {
@@ -158,7 +175,7 @@ export class CapeContactSolver {
     previous: THREE.Vector3,
     collider: WorldSphereCollider,
   ): void {
-    const radius = collider.radius + WORLD_CLEARANCE;
+    const radius = collider.radius + CLOTH_WORLD_CLEARANCE;
     this.delta.copy(position).sub(collider.center);
     const distanceSquared = this.delta.lengthSq();
     if (distanceSquared < radius * radius) {

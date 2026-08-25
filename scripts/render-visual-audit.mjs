@@ -126,6 +126,10 @@ try {
     command,
     `window.__CAPE_DEMO__.setMovement(${horizontal}, ${forward})`,
   );
+  const setRunning = (running) => evaluate(
+    command,
+    `window.__CAPE_DEMO__.setRunning(${running})`,
+  );
   const advance = (duration, frameStep = 1 / 60) => evaluate(
     command,
     `window.__CAPE_DEMO__.advance(${JSON.stringify({ duration, frameStep })})`,
@@ -153,7 +157,8 @@ try {
   assert(initial.water.drops >= 10, 'ceiling drips are missing');
   assert(initial.torches.lights.visibleLights === initial.torches.lights.lights, 'torch light pool is not compile-stable');
   assert(initial.minerals.lights.visibleLights === initial.minerals.lights.lights, 'mineral light pool is not compile-stable');
-  assert(initial.cape.worldColliders > 350, 'procedural cave-object collision proxies are missing');
+  assert(initial.cape.worldColliders >= 1_800, 'geometry-derived cave-object collision proxies are missing');
+  assert(initial.water.surfaceAlphaRange[1] <= 0.6, 'water surface is too opaque');
 
   await command('Emulation.setDeviceMetricsOverride', {
     width: 3840,
@@ -192,7 +197,7 @@ try {
   const closeCamera = await setView(0.08, -0.82, 1.15);
   assert(closeCamera.camera.distance >= 0.45, 'close orbit collapsed into the player');
   assert(closeCamera.camera.groundClearance >= 0.17, 'close orbit fell through the ground');
-  assert(closeCamera.player.opacity >= 0.5 && closeCamera.player.opacity < 0.9, 'player did not fade near the camera');
+  assert(closeCamera.player.opacity >= 0.17 && closeCamera.player.opacity < 0.55, 'player did not become sufficiently transparent near the camera');
   await capture('camera-close-fade');
 
   await setView(0.08, 0.22, 4.5);
@@ -216,6 +221,7 @@ try {
   assert(afterWalk.cape.maximumStructuralError < 0.04, 'cape constraints drifted during visual traversal');
   assert(afterWalk.cape.maximumBodyPenetration < 0.002, 'cape penetrated the animated character');
   assert(afterWalk.cape.maximumEnvironmentPenetration < 0.002, 'cape penetrated the cave during visual traversal');
+  assert(afterWalk.cape.maximumEnvironmentFacePenetration < 0.002, 'a cave object pierced a cape triangle during visual traversal');
   assert(
     Math.abs(afterWalk.cape.hemCenter[2] - beforeWalk.cape.hemCenter[2]) > 1,
     'cape hem did not respond dynamically to traversal',
@@ -252,14 +258,23 @@ try {
   );
   await capture('mineral-veins');
 
+  await setRunning(true);
   await setMovement(0, 1);
+  const runState = await advance(0.85, 1 / 120);
+  assert(runState.player.running, 'Shift running state did not engage');
+  assert(runState.player.speed > 5.5, 'running did not exceed walking speed');
+  assert(runState.player.gait.runningBlend > 0.85, 'running gait animation did not engage');
+  await setView(1.18, 0.12, 4.1);
+  await capture('character-running');
   const frameProfile = await profile(12, 1 / 144);
   await setMovement(0, 0);
+  await setRunning(false);
   assert(frameProfile.frames === 1_728, '144 Hz traversal did not render every requested frame');
   assert(frameProfile.programsAfter === frameProfile.programsBefore, 'light traversal compiled new shader programs');
   assert(frameProfile.p95FrameMilliseconds < 120, 'sustained rendered traversal exceeded the p95 frame budget');
   assert(frameProfile.maximumFrameMilliseconds < 750, 'rendered traversal contained a severe long frame');
   assert(frameProfile.diagnostics.cape.maximumBodyPenetration < 0.002, 'cape penetrated the body during profiled traversal');
+  assert(frameProfile.diagnostics.cape.maximumEnvironmentFacePenetration < 0.002, 'a formation pierced a cape face during profiled traversal');
 
   await setView(1.33, 0.16, 4.35);
   await setMovement(0, -1);
@@ -276,9 +291,18 @@ try {
   assert(settledCape.cape.hemDrop > 0.72, 'cape retained a physically impossible inverted resting pose');
   await setView(0.08, 0.2, 4.25);
   await capture('cape-wrap-settled');
+  assert(
+    settledCape.cape.maximumParticleMotion < 0.001,
+    `idle cape motion ${settledCape.cape.maximumParticleMotion.toFixed(6)} exceeded the settling budget`,
+  );
+  assert(settledCape.cape.sleeping, 'idle cape did not enter its stable rest state');
 
-  await setView(Math.PI, 0.15, 4.2);
+  await setPlayerPose(settledCape.player.position, 0);
+  await advance(0.45, 1 / 120);
+  await setView(Math.PI, 0.12, 3.1);
   await capture('front-character');
+  await setView(0, 0.12, 3.1);
+  await capture('cape-neckline');
 
   await setPlayerPose([0.8, 0, -8], 0);
   await advance(0.35, 1 / 120);
@@ -304,7 +328,21 @@ try {
   const formationContact = await setView(-1.3, 0.14, 3.25);
   assert(formationContact.cape.worldContacts.total > contactsBefore, 'cape never contacted the nearby stalagmite proxy');
   assert(formationContact.cape.maximumEnvironmentPenetration < 0.002, 'cape passed through the contacted stalagmite');
+  assert(formationContact.cape.maximumEnvironmentFacePenetration < 0.002, 'stalagmite pierced the middle of a cape triangle');
   await capture('cape-formation-contact');
+  await setCameraPose(
+    [
+      formationContact.player.position[0] + 0.35,
+      formationContact.player.position[1] + 1.15,
+      formationContact.player.position[2] + 2.45,
+    ],
+    [
+      formationContact.player.position[0],
+      formationContact.player.position[1] + 0.75,
+      formationContact.player.position[2] + 0.18,
+    ],
+  );
+  await capture('cape-formation-contact-opposite');
 
   const runtimeFailures = events.filter((event) => (
     event.method === 'Runtime.exceptionThrown'
@@ -324,6 +362,7 @@ try {
     afterWalk,
     beforeDrips,
     afterDrips,
+    runState,
     frameProfile,
     wrapState,
     settledCape,

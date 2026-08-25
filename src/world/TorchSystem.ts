@@ -129,14 +129,26 @@ export class TorchSystem {
     flame.position.y = 0.57;
     root.add(flame);
 
-    for (const offsetY of [-0.3, 0.04, 0.36]) {
+    root.updateMatrixWorld(true);
+    const localColliderCenter = new THREE.Vector3();
+    const worldColliderCenter = new THREE.Vector3();
+    const addCollider = (xOffset: number, yOffset: number, radius: number): void => {
+      localColliderCenter.set(xOffset, yOffset, 0);
+      root.localToWorld(worldColliderCenter.copy(localColliderCenter));
       this.worldColliders.push({
-        center: new THREE.Vector3(x, y + offsetY, z),
-        radius: offsetY > 0.3 ? 0.14 : 0.105,
+        center: worldColliderCenter.clone(),
+        radius,
         walkable: false,
         kind: 'torch',
       });
+    };
+    for (const offsetY of [-0.41, -0.205, 0, 0.205, 0.41]) {
+      addCollider(0, offsetY, 0.112);
     }
+    for (const bracketOffset of [-0.27, -0.135, 0, 0.135, 0.27]) {
+      addCollider(side * 0.22 + bracketOffset, -0.18, 0.104);
+    }
+    addCollider(0, 0.37, 0.145);
 
     const worldFlamePosition = new THREE.Vector3(x, y + 0.58, z);
     this.group.add(root);

@@ -23,6 +23,9 @@ interface SplashParticle {
   life: number;
 }
 
+const WATER_MINIMUM_ALPHA = 0.12;
+const WATER_MAXIMUM_ALPHA = 0.55;
+
 const waterVertexShader = /* glsl */ `
   #define RIPPLE_COUNT ${RIPPLE_CAPACITY}
   uniform float uTime;
@@ -101,9 +104,9 @@ const waterFragmentShader = /* glsl */ `
     vec2 firstDirection = normalize(vec2(0.83, 0.56));
     vec2 secondDirection = normalize(vec2(-0.42, 0.91));
     vec2 thirdDirection = normalize(vec2(0.97, -0.24));
-    float first = cos(dot(point, firstDirection) * 4.1 + uTime * 1.18) * 0.028;
-    float second = cos(dot(point, secondDirection) * 7.7 - uTime * 1.62) * 0.017;
-    float third = cos(dot(point, thirdDirection) * 13.4 + uTime * 2.05) * 0.008;
+    float first = cos(dot(point, firstDirection) * 4.1 + uTime * 1.18) * 0.019;
+    float second = cos(dot(point, secondDirection) * 7.7 - uTime * 1.62) * 0.011;
+    float third = cos(dot(point, thirdDirection) * 13.4 + uTime * 2.05) * 0.005;
     float breakup = mix(0.72, 1.18, valueNoise(point * 1.8 + vec2(uTime * 0.08, -uTime * 0.05)));
     return (firstDirection * first + secondDirection * second + thirdDirection * third) * breakup;
   }
@@ -140,18 +143,21 @@ const waterFragmentShader = /* glsl */ `
     specular = specular / (1.0 + specular);
     float mineralGlint = pow(max(0.0, sin(vWorldPosition.x * 1.7 + vWorldPosition.z * 0.8)), 16.0);
     float depthTint = smoothstep(0.2, 0.92, edgeDistance);
-    vec3 waterBody = mix(uDeepColor, uShallowColor, depthTint * 0.42);
-    vec3 caveReflection = mix(vec3(0.035, 0.095, 0.10), vec3(0.22, 0.39, 0.36), normal.y * 0.5 + 0.5);
-    vec3 color = mix(waterBody, caveReflection, clamp(0.08 + fresnel * 0.82, 0.0, 0.92));
+    vec3 waterBody = mix(uDeepColor, uShallowColor, depthTint * 0.24);
+    vec3 caveReflection = mix(vec3(0.012, 0.048, 0.072), vec3(0.075, 0.22, 0.26), normal.y * 0.5 + 0.5);
+    vec3 color = mix(waterBody, caveReflection, clamp(0.025 + fresnel * 0.58, 0.0, 0.68));
     color += vec3(1.0, 0.38, 0.075) * specular * max(dot(normal, torchDirection), 0.0) * 1.45;
     color += vec3(0.15, 0.9, 0.76) * mineralGlint * fresnel * 0.16;
-    color += abs(vWave) * vec3(0.8, 1.2, 1.1) * 3.4;
+    color += abs(vWave) * vec3(0.58, 0.92, 0.9) * 0.9;
     float wetRim = smoothstep(0.73, 0.93, edgeDistance) * (1.0 - smoothstep(0.93, 1.0, edgeDistance));
-    color += vec3(0.12, 0.26, 0.23) * wetRim * 0.28;
+    color += vec3(0.08, 0.2, 0.2) * wetRim * 0.16;
     float distanceToCamera = length(cameraPosition - vWorldPosition);
     float fogFactor = 1.0 - exp(-0.0032 * distanceToCamera * distanceToCamera);
     color = mix(color, uFogColor, fogFactor);
-    gl_FragColor = vec4(color, alphaEdge * mix(0.7, 0.94, fresnel));
+    gl_FragColor = vec4(
+      color,
+      alphaEdge * mix(${WATER_MINIMUM_ALPHA.toFixed(2)}, ${WATER_MAXIMUM_ALPHA.toFixed(2)}, fresnel)
+    );
   }
 `;
 
@@ -183,8 +189,8 @@ export class WaterSystem {
       uniforms: {
         uTime: { value: 0 },
         uRipples: { value: this.ripples },
-        uDeepColor: { value: new THREE.Color(0x07181a) },
-        uShallowColor: { value: new THREE.Color(0x365d58) },
+        uDeepColor: { value: new THREE.Color(0x031820) },
+        uShallowColor: { value: new THREE.Color(0x185652) },
         uFogColor: { value: new THREE.Color(0x071012) },
       },
       vertexShader: waterVertexShader,
@@ -279,6 +285,7 @@ export class WaterSystem {
     rippleEmissions: number;
     footstepRipples: number;
     dripRipples: number;
+    surfaceAlphaRange: readonly [number, number];
   } {
     return {
       puddles: this.puddles.length,
@@ -288,6 +295,7 @@ export class WaterSystem {
       rippleEmissions: this.rippleEmissions,
       footstepRipples: this.footstepRipples,
       dripRipples: this.dripRipples,
+      surfaceAlphaRange: [WATER_MINIMUM_ALPHA, WATER_MAXIMUM_ALPHA],
     };
   }
 

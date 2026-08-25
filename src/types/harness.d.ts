@@ -27,6 +27,11 @@ interface CapeDemoDiagnostics {
     readonly inWater: boolean;
     readonly groundClearance: number;
     readonly opacity: number;
+    readonly running: boolean;
+    readonly gait: {
+      readonly bob: number;
+      readonly runningBlend: number;
+    };
   };
   readonly camera: {
     readonly distance: number;
@@ -38,6 +43,9 @@ interface CapeDemoDiagnostics {
     readonly maximumStructuralError: number;
     readonly maximumBodyPenetration: number;
     readonly maximumEnvironmentPenetration: number;
+    readonly maximumEnvironmentFacePenetration: number;
+    readonly maximumParticleMotion: number;
+    readonly sleeping: boolean;
     readonly minimumSelfSeparation: number;
     readonly hemDrop: number;
     readonly hemCenter: number[];
@@ -55,6 +63,7 @@ interface CapeDemoDiagnostics {
     readonly rippleEmissions: number;
     readonly footstepRipples: number;
     readonly dripRipples: number;
+    readonly surfaceAlphaRange: readonly [number, number];
   };
   readonly minerals: {
     readonly clusters: number[][];
@@ -82,6 +91,7 @@ declare global {
       setCameraPose: (pose: { position: number[]; target: number[] }) => CapeDemoDiagnostics;
       setPlayerPose: (pose: { position: number[]; yaw?: number }) => CapeDemoDiagnostics;
       setMovement: (horizontal: number, forward: number) => void;
+      setRunning: (running: boolean) => void;
       advance: (options: { duration: number; frameStep?: number }) => CapeDemoDiagnostics;
       profile: (options: { duration: number; frameStep?: number }) => {
         readonly frames: number;

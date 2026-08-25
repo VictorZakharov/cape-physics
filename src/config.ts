@@ -14,6 +14,7 @@ export const PLAYER = {
   height: 1.82,
   footOffset: 0.14,
   walkSpeed: 3.45,
+  runSpeed: 6.15,
   acceleration: 15,
   deceleration: 19,
   turnSpeed: 14,
@@ -22,7 +23,7 @@ export const PLAYER = {
 export const CAPE = {
   columns: 13,
   rows: 18,
-  width: 1.12,
+  width: 0.98,
   length: 1.4,
   solverIterations: 5,
 } as const;
