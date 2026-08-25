@@ -126,11 +126,14 @@ export class ClothBodyCollision {
       this.capsuleAxis.copy(collider.end).sub(collider.start);
       const length = this.capsuleAxis.length();
       const radius = collider.radius + CLOTH_BODY_CLEARANCE;
-      const segments = Math.max(1, Math.ceil(length / Math.max(0.04, radius * 0.82)));
-      const stepLength = length / segments;
+      const segments = length < 0.000_001
+        ? 0
+        : Math.max(1, Math.ceil(length / Math.max(0.04, radius * 0.82)));
+      const stepLength = segments > 0 ? length / segments : 0;
       const sampleRadius = Math.hypot(radius, stepLength * 0.5);
       for (let sample = 0; sample <= segments; sample += 1) {
-        this.sampleCenter.lerpVectors(collider.start, collider.end, sample / segments);
+        const progress = segments > 0 ? sample / segments : 0;
+        this.sampleCenter.lerpVectors(collider.start, collider.end, progress);
         visit(this.sampleCenter, sampleRadius);
       }
     }

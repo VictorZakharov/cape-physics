@@ -60,7 +60,7 @@ function createYokeGeometry(): THREE.BufferGeometry {
   for (let column = 0; column < CAPE.columns; column += 1) {
     const progress = column / (CAPE.columns - 1);
     const neckline = Math.sin(progress * Math.PI);
-    const innerX = THREE.MathUtils.lerp(-0.25, 0.25, progress);
+    const innerX = THREE.MathUtils.lerp(-0.22, 0.22, progress);
 
     positions.push(
       innerX,
@@ -92,9 +92,9 @@ function createYokeGeometry(): THREE.BufferGeometry {
 
 function createShoulderTieGeometry(side: -1 | 1): THREE.TubeGeometry {
   const curve = new THREE.CatmullRomCurve3([
-    new THREE.Vector3(side * 0.225, 1.5, -0.12),
-    new THREE.Vector3(side * 0.255, 1.535, -0.025),
-    new THREE.Vector3(side * 0.275, 1.515, 0.105),
+    new THREE.Vector3(side * 0.185, 1.47, -0.105),
+    new THREE.Vector3(side * 0.205, 1.515, -0.02),
+    new THREE.Vector3(side * 0.23, 1.505, 0.105),
     new THREE.Vector3(side * CAPE.attachment.halfWidth, CAPE.attachment.height, CAPE.attachment.depth),
   ], false, 'centripetal');
   return new THREE.TubeGeometry(curve, 14, 0.011, 6, false);

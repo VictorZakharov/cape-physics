@@ -1,8 +1,17 @@
 import * as THREE from 'three';
-import { CAMERA_NEAR_OPACITY, CAPE, PLAYER } from '../config';
+import { CAMERA_NEAR_OPACITY, CAPE } from '../config';
 import type { CapsuleCollider } from '../physics/colliders';
+import {
+  CharacterAnimator,
+  type CharacterAnimationDiagnostics,
+} from './CharacterAnimator';
 import { createCapeAttachment } from './CapeAttachment';
 import { createProceduralHead } from './ProceduralHead';
+
+export const TORSO_NAME = 'Tapered torso armor';
+export const NECK_NAME = 'Visible skin neck';
+export const LEFT_SHOULDER_NAME = 'Left fitted shoulder armor';
+export const RIGHT_SHOULDER_NAME = 'Right fitted shoulder armor';
 
 export interface CapeAnchors {
   readonly left: THREE.Vector3;
@@ -27,6 +36,8 @@ export class Character {
   private readonly rightArm = new THREE.Group();
   private readonly leftLeg = new THREE.Group();
   private readonly rightLeg = new THREE.Group();
+  private readonly leftFoot = new THREE.Group();
+  private readonly rightFoot = new THREE.Group();
   private readonly leftCapeAnchor = new THREE.Object3D();
   private readonly rightCapeAnchor = new THREE.Object3D();
   private readonly leftAnchorWorld = new THREE.Vector3();
@@ -38,20 +49,35 @@ export class Character {
     right: this.rightAnchorWorld,
     back: this.backWorld,
   };
-  private readonly capeColliders: CapsuleCollider[] = [
-    { start: new THREE.Vector3(), end: new THREE.Vector3(), radius: 0.145, name: 'shoulders' },
-    { start: new THREE.Vector3(), end: new THREE.Vector3(), radius: 0.27, name: 'upper torso' },
-    { start: new THREE.Vector3(), end: new THREE.Vector3(), radius: 0.235, name: 'hips and belt' },
-    { start: new THREE.Vector3(), end: new THREE.Vector3(), radius: 0.258, name: 'belt ring' },
-    { start: new THREE.Vector3(), end: new THREE.Vector3(), radius: 0.115, name: 'left arm' },
-    { start: new THREE.Vector3(), end: new THREE.Vector3(), radius: 0.115, name: 'right arm' },
-  ];
+  private readonly capeColliderRig = {
+    shoulders: this.createCapeCollider(0.115, 'shoulders'),
+    upperTorso: this.createCapeCollider(0.225, 'upper torso'),
+    hips: this.createCapeCollider(0.198, 'hips and belt'),
+    belt: this.createCapeCollider(0.225, 'belt ring'),
+    leftArm: this.createCapeCollider(0.095, 'left arm'),
+    rightArm: this.createCapeCollider(0.095, 'right arm'),
+    leftThigh: this.createCapeCollider(0.085, 'left thigh'),
+    leftKnee: this.createCapeCollider(0.08, 'left knee'),
+    leftLowerLeg: this.createCapeCollider(0.075, 'left lower leg'),
+    leftBoot: this.createCapeCollider(0.105, 'left boot'),
+    rightThigh: this.createCapeCollider(0.085, 'right thigh'),
+    rightKnee: this.createCapeCollider(0.08, 'right knee'),
+    rightLowerLeg: this.createCapeCollider(0.075, 'right lower leg'),
+    rightBoot: this.createCapeCollider(0.105, 'right boot'),
+  };
+  private readonly capeColliders: readonly CapsuleCollider[] = Object.values(this.capeColliderRig);
+  private readonly animator = new CharacterAnimator({
+    body: this.rig,
+    leftArm: this.leftArm,
+    rightArm: this.rightArm,
+    leftLeg: this.leftLeg,
+    rightLeg: this.rightLeg,
+    leftFoot: this.leftFoot,
+    rightFoot: this.rightFoot,
+  });
   private readonly materials: THREE.Material[] = [];
   private capeAttachment!: THREE.Group;
   private opacity = 1;
-  private walkPhase = 0;
-  private gaitBob = 0;
-  private runningBlend = 0;
 
   public constructor() {
     this.root.name = 'Procedural hero';
@@ -60,26 +86,13 @@ export class Character {
     enableShadows(this.root);
   }
 
-  public updateAnimation(delta: number, speed: number): void {
-    const gait = THREE.MathUtils.smoothstep(speed, 0.04, PLAYER.walkSpeed * 0.45);
-    this.runningBlend = THREE.MathUtils.smoothstep(
-      speed,
-      PLAYER.walkSpeed * 1.02,
-      PLAYER.runSpeed * 0.9,
-    );
-    this.walkPhase += delta * THREE.MathUtils.lerp(6.4, 10.8, this.runningBlend) * gait;
-    const swing = Math.sin(this.walkPhase) * gait;
-    const stride = THREE.MathUtils.lerp(0.55, 0.78, this.runningBlend);
-    this.leftLeg.rotation.x = swing * stride;
-    this.rightLeg.rotation.x = -swing * stride;
-    this.leftArm.rotation.x = -swing * THREE.MathUtils.lerp(0.38, 0.58, this.runningBlend) - 0.08;
-    this.rightArm.rotation.x = swing * THREE.MathUtils.lerp(0.38, 0.58, this.runningBlend) - 0.08;
-    this.gaitBob = Math.abs(Math.sin(this.walkPhase * 2))
-      * THREE.MathUtils.lerp(0.018, 0.046, this.runningBlend)
-      * gait;
-    this.rig.position.y = this.gaitBob;
-    this.rig.rotation.x = -this.runningBlend * gait * 0.035;
-    this.rig.rotation.z = -swing * THREE.MathUtils.lerp(0.014, 0.024, this.runningBlend);
+  public updateAnimation(
+    delta: number,
+    planarSpeed: number,
+    grounded = true,
+    verticalVelocity = 0,
+  ): void {
+    this.animator.update(delta, planarSpeed, grounded, verticalVelocity);
   }
 
   public getCapeAnchors(): CapeAnchors {
@@ -91,17 +104,37 @@ export class Character {
   }
 
   public getCapeColliders(): readonly CapsuleCollider[] {
-    const [shoulders, upperTorso, hips, belt, leftArm, rightArm] = this.capeColliders;
-    if (!shoulders || !upperTorso || !hips || !belt || !leftArm || !rightArm) {
-      throw new Error('Character cape collider configuration is incomplete.');
-    }
+    const {
+      shoulders,
+      upperTorso,
+      hips,
+      belt,
+      leftArm,
+      rightArm,
+      leftThigh,
+      leftKnee,
+      leftLowerLeg,
+      leftBoot,
+      rightThigh,
+      rightKnee,
+      rightLowerLeg,
+      rightBoot,
+    } = this.capeColliderRig;
 
-    this.setWorldCapsule(shoulders, this.rig, [-0.24, 1.47, -0.015], [0.24, 1.47, -0.015]);
-    this.setWorldCapsule(upperTorso, this.rig, [0, 1.43, -0.07], [0, 1.12, -0.07]);
-    this.setWorldCapsule(hips, this.rig, [0, 1.02, -0.04], [0, 0.8, -0.04]);
+    this.setWorldCapsule(shoulders, this.rig, [-0.195, 1.45, -0.015], [0.195, 1.45, -0.015]);
+    this.setWorldCapsule(upperTorso, this.rig, [0, 1.42, -0.06], [0, 1.11, -0.06]);
+    this.setWorldCapsule(hips, this.rig, [0, 1.01, -0.035], [0, 0.79, -0.035]);
     this.setWorldCapsule(belt, this.rig, [0, 1.01, -0.005], [0, 1.01, -0.005]);
     this.setWorldCapsule(leftArm, this.leftArm, [0, -0.02, 0], [0, -0.69, 0]);
     this.setWorldCapsule(rightArm, this.rightArm, [0, -0.02, 0], [0, -0.69, 0]);
+    this.setWorldCapsule(leftThigh, this.leftLeg, [0, -0.29, 0], [0, -0.29, 0]);
+    this.setWorldCapsule(leftKnee, this.leftLeg, [0, -0.5, 0], [0, -0.5, 0]);
+    this.setWorldCapsule(leftLowerLeg, this.leftLeg, [0, -0.69, 0], [0, -0.69, 0]);
+    this.setWorldCapsule(leftBoot, this.leftFoot, [0, -0.06, -0.06], [0, -0.06, -0.06]);
+    this.setWorldCapsule(rightThigh, this.rightLeg, [0, -0.29, 0], [0, -0.29, 0]);
+    this.setWorldCapsule(rightKnee, this.rightLeg, [0, -0.5, 0], [0, -0.5, 0]);
+    this.setWorldCapsule(rightLowerLeg, this.rightLeg, [0, -0.69, 0], [0, -0.69, 0]);
+    this.setWorldCapsule(rightBoot, this.rightFoot, [0, -0.06, -0.06], [0, -0.06, -0.06]);
     return this.capeColliders;
   }
 
@@ -115,8 +148,8 @@ export class Character {
     return this.opacity;
   }
 
-  public getAnimationDiagnostics(): { readonly bob: number; readonly runningBlend: number } {
-    return { bob: this.gaitBob, runningBlend: this.runningBlend };
+  public getAnimationDiagnostics(): CharacterAnimationDiagnostics {
+    return this.animator.getDiagnostics();
   }
 
   public getCapeAttachmentDiagnostics(): {
@@ -166,54 +199,63 @@ export class Character {
       material.depthWrite = true;
     }
 
-    const hips = new THREE.Mesh(new THREE.CapsuleGeometry(0.205, 0.18, 5, 10), armor);
-    hips.position.y = 0.88;
-    hips.scale.z = 0.76;
+    const hips = new THREE.Mesh(new THREE.CapsuleGeometry(0.18, 0.17, 5, 10), armor);
+    hips.position.y = 0.87;
+    hips.scale.z = 0.72;
     this.rig.add(hips);
 
-    const torso = new THREE.Mesh(new THREE.CylinderGeometry(0.265, 0.205, 0.58, 10), armor);
-    torso.position.y = 1.25;
-    torso.scale.z = 0.74;
+    const torso = new THREE.Mesh(new THREE.CylinderGeometry(0.218, 0.18, 0.55, 10), armor);
+    torso.name = TORSO_NAME;
+    torso.position.y = 1.225;
+    torso.scale.z = 0.72;
     this.rig.add(torso);
 
-    const breastplate = new THREE.Mesh(new THREE.CylinderGeometry(0.252, 0.205, 0.42, 10, 1, false), darkMetal);
-    breastplate.position.set(0, 1.29, -0.075);
-    breastplate.scale.z = 0.7;
+    const breastplate = new THREE.Mesh(new THREE.CylinderGeometry(0.21, 0.178, 0.39, 10, 1, false), darkMetal);
+    breastplate.position.set(0, 1.255, -0.064);
+    breastplate.scale.z = 0.69;
     this.rig.add(breastplate);
 
-    const belt = new THREE.Mesh(new THREE.TorusGeometry(0.215, 0.028, 6, 18), leather);
+    const belt = new THREE.Mesh(new THREE.TorusGeometry(0.19, 0.026, 6, 18), leather);
     belt.rotation.x = Math.PI / 2;
     belt.position.y = 1.01;
-    belt.scale.z = 0.78;
-    const buckle = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.072, 0.035), trim);
-    buckle.position.set(0, 1.01, -0.2);
+    belt.scale.z = 0.74;
+    const buckle = new THREE.Mesh(new THREE.BoxGeometry(0.078, 0.064, 0.032), trim);
+    buckle.position.set(0, 1.01, -0.172);
     this.rig.add(belt, buckle);
 
     const head = createProceduralHead(skin, darkMetal, trim);
-    const gorget = new THREE.Mesh(new THREE.TorusGeometry(0.165, 0.022, 6, 20), leather);
+    head.position.y = 0.018;
+    const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.067, 0.077, 0.16, 12), skin);
+    neck.name = NECK_NAME;
+    neck.position.y = 1.555;
+    const gorget = new THREE.Mesh(new THREE.TorusGeometry(0.132, 0.019, 6, 20), leather);
     gorget.rotation.x = Math.PI / 2;
-    gorget.position.y = 1.53;
-    gorget.scale.z = 0.78;
-    const claspGeometry = new THREE.SphereGeometry(0.042, 10, 8);
-    const leftClasp = new THREE.Mesh(claspGeometry, trim);
-    leftClasp.position.set(-0.225, 1.5, -0.12);
-    const rightClasp = leftClasp.clone();
-    rightClasp.position.x = 0.225;
-    this.rig.add(head, gorget, leftClasp, rightClasp);
+    gorget.position.y = 1.49;
+    gorget.scale.z = 0.76;
+    const claspGeometry = new THREE.SphereGeometry(0.038, 10, 8);
+    const clasps = new THREE.InstancedMesh(claspGeometry, trim, 2);
+    clasps.name = 'Paired cape clasps';
+    const claspMatrix = new THREE.Matrix4();
+    clasps.setMatrixAt(0, claspMatrix.makeTranslation(-0.185, 1.47, -0.105));
+    clasps.setMatrixAt(1, claspMatrix.makeTranslation(0.185, 1.47, -0.105));
+    clasps.instanceMatrix.needsUpdate = true;
+    this.rig.add(head, neck, gorget, clasps);
 
     this.createArm(this.leftArm, -1, armor, darkMetal, leather);
     this.createArm(this.rightArm, 1, armor, darkMetal, leather);
-    this.createLeg(this.leftLeg, -1, cloth, darkMetal);
-    this.createLeg(this.rightLeg, 1, cloth, darkMetal);
+    this.createLeg(this.leftLeg, this.leftFoot, -1, cloth, darkMetal);
+    this.createLeg(this.rightLeg, this.rightFoot, 1, cloth, darkMetal);
     this.rig.add(this.leftArm, this.rightArm, this.leftLeg, this.rightLeg);
 
-    const shoulderGeometry = new THREE.SphereGeometry(0.105, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.62);
+    const shoulderGeometry = new THREE.SphereGeometry(0.08, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.62);
     const leftShoulder = new THREE.Mesh(shoulderGeometry, armor);
-    leftShoulder.position.set(-0.245, 1.48, 0);
-    leftShoulder.scale.set(1.12, 0.78, 1);
+    leftShoulder.name = LEFT_SHOULDER_NAME;
+    leftShoulder.position.set(-0.195, 1.445, 0);
+    leftShoulder.scale.set(1.06, 0.76, 1);
     leftShoulder.rotation.z = 0.35;
     const rightShoulder = leftShoulder.clone();
-    rightShoulder.position.x = 0.245;
+    rightShoulder.name = RIGHT_SHOULDER_NAME;
+    rightShoulder.position.x = 0.195;
     rightShoulder.rotation.z = -0.35;
     this.rig.add(leftShoulder, rightShoulder);
 
@@ -240,26 +282,34 @@ export class Character {
     metal: THREE.Material,
     leather: THREE.Material,
   ): void {
-    arm.position.set(side * 0.26, 1.43, 0);
+    arm.position.set(side * 0.205, 1.405, 0);
     arm.rotation.z = side * -0.08;
-    const upper = new THREE.Mesh(new THREE.CylinderGeometry(0.082, 0.072, 0.43, 9), leather);
-    upper.position.y = -0.22;
-    const bracer = new THREE.Mesh(new THREE.CylinderGeometry(0.078, 0.058, 0.32, 9), armor);
-    bracer.position.y = -0.56;
-    const hand = new THREE.Mesh(new THREE.SphereGeometry(0.064, 9, 7), metal);
-    hand.position.y = -0.74;
+    const upper = new THREE.Mesh(new THREE.CylinderGeometry(0.068, 0.06, 0.42, 9), leather);
+    upper.position.y = -0.215;
+    const bracer = new THREE.Mesh(new THREE.CylinderGeometry(0.066, 0.05, 0.31, 9), armor);
+    bracer.position.y = -0.545;
+    const hand = new THREE.Mesh(new THREE.SphereGeometry(0.056, 9, 7), metal);
+    hand.position.y = -0.72;
     arm.add(upper, bracer, hand);
   }
 
-  private createLeg(leg: THREE.Group, side: -1 | 1, cloth: THREE.Material, metal: THREE.Material): void {
-    leg.position.set(side * 0.115, 0.79, 0);
-    const thigh = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.086, 0.42, 9), cloth);
+  private createLeg(
+    leg: THREE.Group,
+    foot: THREE.Group,
+    side: -1 | 1,
+    cloth: THREE.Material,
+    metal: THREE.Material,
+  ): void {
+    leg.position.set(side * 0.095, 0.79, 0);
+    const thigh = new THREE.Mesh(new THREE.CylinderGeometry(0.085, 0.074, 0.42, 9), cloth);
     thigh.position.y = -0.22;
-    const shin = new THREE.Mesh(new THREE.CylinderGeometry(0.087, 0.065, 0.4, 9), metal);
+    const shin = new THREE.Mesh(new THREE.CylinderGeometry(0.074, 0.056, 0.4, 9), metal);
     shin.position.y = -0.62;
-    const boot = new THREE.Mesh(new THREE.BoxGeometry(0.145, 0.13, 0.27), metal);
-    boot.position.set(0, -0.86, -0.065);
-    leg.add(thigh, shin, boot);
+    const boot = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.13, 0.25), metal);
+    foot.position.y = -0.8;
+    boot.position.set(0, -0.06, -0.06);
+    foot.add(boot);
+    leg.add(thigh, shin, foot);
   }
 
   private setWorldCapsule(
@@ -270,5 +320,14 @@ export class Character {
   ): void {
     space.localToWorld(collider.start.set(...start));
     space.localToWorld(collider.end.set(...end));
+  }
+
+  private createCapeCollider(radius: number, name: string): CapsuleCollider {
+    return {
+      start: new THREE.Vector3(),
+      end: new THREE.Vector3(),
+      radius,
+      name,
+    };
   }
 }

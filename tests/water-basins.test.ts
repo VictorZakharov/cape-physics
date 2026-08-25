@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import * as THREE from 'three';
 import {
   baseFloorHeightAt,
   floorHeightAt,
@@ -39,5 +40,25 @@ describe('procedural water basins', () => {
     const diagnostics = new WaterSystem().getDiagnostics();
     expect(diagnostics.minimumInteriorDepth).toBeGreaterThan(0.04);
     expect(diagnostics.minimumRimClearance).toBeGreaterThan(0.02);
+  });
+
+  test('emits one stronger splash ripple only when a jump lands inside water', () => {
+    const water = new WaterSystem();
+    const basin = WATER_BASINS[0]!;
+    const landing = new THREE.Vector3(
+      basin.centerX,
+      waterSurfaceHeight(basin),
+      basin.centerZ,
+    );
+    const before = water.getDiagnostics();
+
+    expect(water.addLandingRipple(landing, 1.2, 5.1)).toBe(true);
+    const after = water.getDiagnostics();
+    expect(after.landingRipples).toBe(before.landingRipples + 1);
+    expect(after.rippleEmissions).toBe(before.rippleEmissions + 1);
+    expect(after.activeSplashes).toBeGreaterThan(before.activeSplashes);
+
+    expect(water.addLandingRipple(new THREE.Vector3(80, 0, 80), 1.3, 5.1)).toBe(false);
+    expect(water.getDiagnostics().landingRipples).toBe(after.landingRipples);
   });
 });

@@ -21,7 +21,9 @@ const SLEEP_AFTER_SETTLED_SECONDS = 0.55;
 const SETTLED_MOTION_THRESHOLD = 0.0025;
 const MINIMUM_SETTLED_LOWER_CAPE_DROP = 0.48;
 const MAXIMUM_SETTLED_LATERAL_OFFSET = 0.18;
-const IDLE_DRAPE_RECOVERY_PER_ITERATION = 0.0016;
+const IDLE_DRAPE_RECOVERY_PER_STEP = 0.016;
+const IDLE_DRAPE_RECOVERY_TARGET = 0.12;
+const MAXIMUM_SLEEP_BODY_PENETRATION = 0.001;
 const WAKE_SPEED = 0.08;
 
 export class CapeSimulation {
@@ -161,8 +163,9 @@ export class CapeSimulation {
       for (const constraint of this.constraints) this.solveConstraint(constraint);
       this.selfCollision.solve(this.positions, this.previous, this.inverseMass);
       if (
-        characterSpeed <= WAKE_SPEED
-        && this.contactSolver.getDiagnostics().lastStep === 0
+        iteration === 0
+        && characterSpeed <= WAKE_SPEED
+        && this.getMaximumLowerCapeLateralOffset(anchors) > IDLE_DRAPE_RECOVERY_TARGET
       ) {
         this.solveIdleDrapeRecovery(anchors);
       }
@@ -174,12 +177,14 @@ export class CapeSimulation {
 
     this.measureStepMotion();
     const laterallySettled = this.getMaximumLowerCapeLateralOffset(anchors)
-      < MAXIMUM_SETTLED_LATERAL_OFFSET
-      || this.contactSolver.getDiagnostics().lastStep > 0;
-    const fullyDraped = characterSpeed <= WAKE_SPEED
+      < MAXIMUM_SETTLED_LATERAL_OFFSET;
+    const settledShape = characterSpeed <= WAKE_SPEED
       && this.getHemDrop() > 0.72
       && this.getMinimumLowerCapeDrop() > MINIMUM_SETTLED_LOWER_CAPE_DROP
       && laterallySettled;
+    const fullyDraped = settledShape
+      && this.contactSolver.getMaximumBodyPenetration(bodyColliders, anchors.back)
+        < MAXIMUM_SLEEP_BODY_PENETRATION;
     if (fullyDraped) this.dampResidualMotion(0.14);
     if (fullyDraped && this.maximumParticleMotion < SETTLED_MOTION_THRESHOLD) {
       this.settledSeconds += deltaTime;
@@ -462,7 +467,7 @@ export class CapeSimulation {
         .dot(this.rightAxis);
       const down = row / (CAPE.rows - 1);
       const correction = -lateralOffset
-        * IDLE_DRAPE_RECOVERY_PER_ITERATION
+        * IDLE_DRAPE_RECOVERY_PER_STEP
         * THREE.MathUtils.smoothstep(down, 0.05, 1);
       for (let column = 0; column < CAPE.columns; column += 1) {
         const index = this.index(column, row);

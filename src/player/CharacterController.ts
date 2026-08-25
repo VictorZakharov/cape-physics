@@ -17,6 +17,7 @@ export class CharacterController {
   private running = false;
   private grounded = true;
   private verticalVelocity = 0;
+  private landingImpactSpeed = 0;
   private turnRate = 0;
 
   public constructor(
@@ -67,6 +68,7 @@ export class CharacterController {
     else this.verticalVelocity = 0;
     this.character.velocity.y = this.verticalVelocity;
 
+    const wasGrounded = this.grounded;
     const previousY = this.character.root.position.y;
     this.character.root.position.addScaledVector(this.character.velocity, delta);
     const collision = this.worldCollision.resolvePlayer(this.character.root.position, {
@@ -75,6 +77,9 @@ export class CharacterController {
       grounded: this.grounded,
     });
     this.grounded = collision.grounded;
+    if (!wasGrounded && this.grounded && this.verticalVelocity < 0) {
+      this.landingImpactSpeed = -this.verticalVelocity;
+    }
     if (
       (collision.grounded && this.verticalVelocity < 0)
       || (collision.hitCeiling && this.verticalVelocity > 0)
@@ -117,7 +122,7 @@ export class CharacterController {
     } else {
       this.turnRate = damp(this.turnRate, 0, 10, delta);
     }
-    this.character.updateAnimation(delta, planarSpeed);
+    this.character.updateAnimation(delta, planarSpeed, this.grounded, this.verticalVelocity);
   }
 
   public isRunning(): boolean {
@@ -128,9 +133,16 @@ export class CharacterController {
     return this.grounded;
   }
 
+  public consumeLandingImpact(): number {
+    const impactSpeed = this.landingImpactSpeed;
+    this.landingImpactSpeed = 0;
+    return impactSpeed;
+  }
+
   public resetVerticalState(): void {
     this.grounded = true;
     this.verticalVelocity = 0;
+    this.landingImpactSpeed = 0;
     this.character.velocity.y = 0;
   }
 }

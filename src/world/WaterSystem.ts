@@ -188,6 +188,7 @@ export class WaterSystem {
   private rippleEmissions = 0;
   private footstepRipples = 0;
   private dripRipples = 0;
+  private landingRipples = 0;
 
   public constructor() {
     this.group.name = 'Reactive shallow water';
@@ -280,6 +281,24 @@ export class WaterSystem {
     this.rippleEmissions += 1;
   }
 
+  public addLandingRipple(
+    position: THREE.Vector3,
+    time: number,
+    impactSpeed: number,
+  ): boolean {
+    const puddle = this.findPuddle(position.x, position.z);
+    if (!puddle || impactSpeed <= 0) return false;
+
+    const impact = this.footPosition.copy(position);
+    impact.y = puddle.center.y + 0.025;
+    const impactBlend = THREE.MathUtils.smoothstep(impactSpeed, 1.5, 6);
+    this.landingRipples += 1;
+    this.strideSinceStep = 0;
+    this.addRipple(impact, time, THREE.MathUtils.lerp(0.05, 0.082, impactBlend));
+    this.spawnSplash(impact, 14, THREE.MathUtils.lerp(0.72, 1.02, impactBlend));
+    return true;
+  }
+
   public isInWater(position: THREE.Vector3): boolean {
     return this.findPuddle(position.x, position.z) !== undefined;
   }
@@ -292,6 +311,8 @@ export class WaterSystem {
     rippleEmissions: number;
     footstepRipples: number;
     dripRipples: number;
+    landingRipples: number;
+    basinCenters: readonly (readonly [number, number, number])[];
     surfaceAlphaRange: readonly [number, number];
     minimumInteriorDepth: number;
     minimumRimClearance: number;
@@ -305,6 +326,10 @@ export class WaterSystem {
       rippleEmissions: this.rippleEmissions,
       footstepRipples: this.footstepRipples,
       dripRipples: this.dripRipples,
+      landingRipples: this.landingRipples,
+      basinCenters: this.puddles.map((puddle) => (
+        [puddle.center.x, puddle.center.y, puddle.center.z] as const
+      )),
       surfaceAlphaRange: [WATER_MINIMUM_ALPHA, WATER_MAXIMUM_ALPHA],
       ...containment,
     };

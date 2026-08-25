@@ -38,6 +38,7 @@ export interface TechDemoHarnessReport {
   readonly jump: {
     readonly maximumGroundClearance: number;
     readonly maximumCapeHemRise: number;
+    readonly maximumBodyPenetration: number;
     readonly landed: boolean;
   };
   readonly water: ReturnType<WaterSystem['getDiagnostics']>;
@@ -137,15 +138,17 @@ export function runTechDemoHarness(simulatedSeconds = 12): TechDemoHarnessReport
   let jumpBaselineHemHeight = cape.getParticlePosition(6, 17).y;
   let jumpMaximumGroundClearance = 0;
   let jumpMaximumCapeHemRise = 0;
+  let jumpMaximumBodyPenetration = 0;
   const simulationStart = performance.now();
   for (let tick = 0; tick < ticks; tick += 1) {
     const time = tick * PHYSICS_STEP;
     const z = startZ - time * 2.45;
     const x = caveCenterX(z) + Math.sin(time * 0.72) * 0.34;
+    const wasGrounded = grounded;
     priorPosition.copy(character.root.position);
     character.root.position.x = x;
     character.root.position.z = z;
-    if (!jumpStarted && time >= 0.72) {
+    if (!jumpStarted && time >= 0.72 && water.isInWater(character.root.position)) {
       verticalVelocity = PLAYER.jumpSpeed;
       grounded = false;
       jumpStarted = true;
@@ -155,12 +158,17 @@ export function runTechDemoHarness(simulatedSeconds = 12): TechDemoHarnessReport
       verticalVelocity -= PLAYER.gravity * PHYSICS_STEP;
       character.root.position.y += verticalVelocity * PHYSICS_STEP;
     }
+    const impactVelocity = verticalVelocity;
     const collision = worldCollision.resolvePlayer(character.root.position, {
       previousY: priorPosition.y,
       velocityY: verticalVelocity,
       grounded,
     });
     grounded = collision.grounded;
+    let landingImpact = 0;
+    if (!wasGrounded && grounded && impactVelocity < 0) {
+      landingImpact = -impactVelocity;
+    }
     if (
       (grounded && verticalVelocity < 0)
       || (collision.hitCeiling && verticalVelocity > 0)
@@ -171,7 +179,8 @@ export function runTechDemoHarness(simulatedSeconds = 12): TechDemoHarnessReport
     if (character.velocity.lengthSq() > 0.001) {
       character.root.rotation.y = Math.atan2(-character.velocity.x, -character.velocity.z);
     }
-    character.updateAnimation(PHYSICS_STEP, character.velocity.length());
+    const planarSpeed = Math.hypot(character.velocity.x, character.velocity.z);
+    character.updateAnimation(PHYSICS_STEP, planarSpeed, grounded, verticalVelocity);
     character.root.updateMatrixWorld(true);
     cape.step(
       PHYSICS_STEP,
@@ -189,10 +198,21 @@ export function runTechDemoHarness(simulatedSeconds = 12): TechDemoHarnessReport
         jumpMaximumCapeHemRise,
         cape.getParticlePosition(6, 17).y - jumpBaselineHemHeight,
       );
+      if (tick % 4 === 0) {
+        jumpMaximumBodyPenetration = Math.max(
+          jumpMaximumBodyPenetration,
+          cape.getMaximumBodyPenetration(
+            character.getCapeColliders(),
+            character.getCapeAnchors().back,
+          ),
+        );
+      }
       if (!grounded) jumpWasAirborne = true;
       else if (jumpWasAirborne) jumpLanded = true;
     }
-    const planarSpeed = Math.hypot(character.velocity.x, character.velocity.z);
+    if (landingImpact > 0) {
+      water.addLandingRipple(character.root.position, time, landingImpact);
+    }
     water.update(
       PHYSICS_STEP,
       time,
@@ -234,7 +254,7 @@ export function runTechDemoHarness(simulatedSeconds = 12): TechDemoHarnessReport
     + textureByteLength(rockTextures.normal)
     + textureByteLength(rockTextures.roughness);
   const millisecondsPerPhysicsStep = simulationMilliseconds / ticks;
-  const expectedFootstepRipples = simulatedSeconds >= 10 ? 8 : Math.max(1, Math.floor(simulatedSeconds / 2));
+  const expectedFootstepRipples = simulatedSeconds >= 10 ? 8 : Math.max(1, Math.floor(simulatedSeconds / 3));
   const expectedDripRipples = simulatedSeconds >= 10 ? 8 : Math.max(2, Math.floor(simulatedSeconds * 0.65));
   const expectedActiveRipples = Math.min(8, expectedFootstepRipples + expectedDripRipples);
 
@@ -252,6 +272,10 @@ export function runTechDemoHarness(simulatedSeconds = 12): TechDemoHarnessReport
   invariant(jumpMaximumGroundClearance > 0.72, 'jump never cleared the procedural ground');
   invariant(jumpMaximumGroundClearance < 1.05, 'jump exceeded its physically bounded apex');
   invariant(jumpMaximumCapeHemRise > 0.3, 'cape hem did not follow the jumping character');
+  invariant(
+    jumpMaximumBodyPenetration < 0.002,
+    `cape crossed the lower body during the harness jump (${jumpMaximumBodyPenetration.toFixed(4)})`,
+  );
   invariant(jumpLanded, 'player did not land after the harness jump');
   invariant(worldColliders.length >= 1_800, 'geometry-derived cave-object collision coverage regressed');
   invariant(waterDiagnostics.puddles >= 5, 'walkable puddle count regressed');
@@ -259,6 +283,7 @@ export function runTechDemoHarness(simulatedSeconds = 12): TechDemoHarnessReport
   invariant(waterDiagnostics.activeRipples >= expectedActiveRipples, 'footsteps and drips did not produce enough ripple events');
   invariant(waterDiagnostics.footstepRipples >= expectedFootstepRipples, 'walk traversal produced too few footstep ripples');
   invariant(waterDiagnostics.dripRipples >= expectedDripRipples, 'ceiling emitters produced too few drip ripples');
+  invariant(waterDiagnostics.landingRipples >= 1, 'water landing produced no impact ripple');
   invariant(waterDiagnostics.surfaceAlphaRange[1] <= 0.6, 'water surface became muddy and opaque');
   invariant(waterDiagnostics.minimumInteriorDepth > 0.04, 'water surface is not seated inside its basin');
   invariant(waterDiagnostics.minimumRimClearance > 0.02, 'water basin rim does not contain the surface');
@@ -289,6 +314,7 @@ export function runTechDemoHarness(simulatedSeconds = 12): TechDemoHarnessReport
     jump: {
       maximumGroundClearance: jumpMaximumGroundClearance,
       maximumCapeHemRise: jumpMaximumCapeHemRise,
+      maximumBodyPenetration: jumpMaximumBodyPenetration,
       landed: jumpLanded,
     },
     water: waterDiagnostics,

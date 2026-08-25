@@ -145,6 +145,10 @@ export class CapeDemo {
   private readonly simulateStep = (step: number): void => {
     this.fixedTime += step;
     this.characterController.update(step, this.thirdPersonCamera.yaw);
+    const landingImpact = this.characterController.consumeLandingImpact();
+    if (landingImpact > 0) {
+      this.water.addLandingRipple(this.character.root.position, this.fixedTime, landingImpact);
+    }
     const anchors = this.character.getCapeAnchors();
     this.cape.step(
       step,
@@ -307,6 +311,13 @@ export class CapeDemo {
 
   private getDiagnostics() {
     const capeAnchors = this.character.getCapeAnchors();
+    const capeColliders = this.character.getCapeColliders();
+    const bodyPenetrationByCollider = Object.fromEntries(
+      capeColliders.map((collider) => [
+        collider.name,
+        this.cape.getMaximumBodyPenetration([collider], capeAnchors.back),
+      ]),
+    );
     return {
       ready: this.ready,
       simulationTime: this.fixedTime,
@@ -321,6 +332,7 @@ export class CapeDemo {
       },
       player: {
         position: this.character.root.position.toArray(),
+        yaw: this.character.root.rotation.y,
         speed: Math.hypot(this.character.velocity.x, this.character.velocity.z),
         verticalSpeed: this.character.velocity.y,
         grounded: this.characterController.isGrounded(),
@@ -346,9 +358,10 @@ export class CapeDemo {
       cape: {
         maximumStructuralError: this.cape.getMaximumStructuralError(),
         maximumBodyPenetration: this.cape.getMaximumBodyPenetration(
-          this.character.getCapeColliders(),
+          capeColliders,
           capeAnchors.back,
         ),
+        bodyPenetrationByCollider,
         maximumEnvironmentPenetration: this.cape.getMaximumEnvironmentPenetration(this.worldColliders),
         maximumEnvironmentFacePenetration: this.cape.getMaximumEnvironmentFacePenetration(this.worldColliders),
         maximumParticleMotion: this.cape.getMaximumParticleMotion(),

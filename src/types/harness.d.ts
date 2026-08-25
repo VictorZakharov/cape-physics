@@ -23,6 +23,7 @@ interface CapeDemoDiagnostics {
   };
   readonly player: {
     readonly position: number[];
+    readonly yaw: number;
     readonly speed: number;
     readonly verticalSpeed: number;
     readonly grounded: boolean;
@@ -48,6 +49,7 @@ interface CapeDemoDiagnostics {
   readonly cape: {
     readonly maximumStructuralError: number;
     readonly maximumBodyPenetration: number;
+    readonly bodyPenetrationByCollider: Readonly<Record<string, number>>;
     readonly maximumEnvironmentPenetration: number;
     readonly maximumEnvironmentFacePenetration: number;
     readonly maximumParticleMotion: number;
@@ -71,8 +73,10 @@ interface CapeDemoDiagnostics {
     readonly activeRipples: number;
     readonly activeSplashes: number;
     readonly rippleEmissions: number;
-    readonly footstepRipples: number;
-    readonly dripRipples: number;
+      readonly footstepRipples: number;
+      readonly dripRipples: number;
+      readonly landingRipples: number;
+      readonly basinCenters: readonly (readonly [number, number, number])[];
     readonly surfaceAlphaRange: readonly [number, number];
     readonly minimumInteriorDepth: number;
     readonly minimumRimClearance: number;

@@ -365,16 +365,24 @@ try {
   await capture('cape-wrap-reversal');
 
   const settledCape = await advance(3.2, 1 / 120);
-  assert(settledCape.cape.maximumBodyPenetration < 0.002, 'settled cape penetrated the character');
+  await setView(0.08, 0.2, 4.25);
+  await capture('cape-wrap-settled');
+  assert(
+    settledCape.cape.maximumBodyPenetration < 0.002,
+    `settled cape penetrated the character (${settledCape.cape.maximumBodyPenetration.toFixed(5)} m; `
+      + `${JSON.stringify(settledCape.cape.bodyPenetrationByCollider)})`,
+  );
   assert(settledCape.cape.maximumEnvironmentPenetration < 0.002, 'settled cape penetrated cave geometry');
   assert(settledCape.cape.minimumSelfSeparation > 0.05, 'settled cape collapsed through itself');
   assert(settledCape.cape.hemDrop > 0.72, 'cape retained a physically impossible inverted resting pose');
   assert(settledCape.cape.minimumLowerCapeDrop > 0.48, 'a lower cape panel remained suspended in mid-air');
-  assert(settledCape.cape.maximumLowerCapeLateralOffset < 0.18, 'settled cape remained swept sideways');
+  assert(
+    settledCape.cape.maximumLowerCapeLateralOffset < 0.18,
+    `settled cape remained swept sideways (${settledCape.cape.maximumLowerCapeLateralOffset.toFixed(4)} m; `
+      + `${settledCape.cape.worldContacts.lastStep} contacts; sleeping=${settledCape.cape.sleeping})`,
+  );
   assert(settledCape.cape.minimumHemGroundClearance >= 0.032, 'cape hem penetrated the cave floor');
   assert(settledCape.cape.minimumHemGroundClearance < 0.09, 'cape hem floated above the cave floor');
-  await setView(0.08, 0.2, 4.25);
-  await capture('cape-wrap-settled');
   assert(
     settledCape.cape.maximumParticleMotion < 0.001,
     `idle cape motion ${settledCape.cape.maximumParticleMotion.toFixed(6)} exceeded the settling budget`,
@@ -391,21 +399,57 @@ try {
   assert(obliqueAttachment.player.capeAttachment.maximumAnchorGap < 0.001, 'cape detached in the oblique attachment study');
   await capture('cape-attachment-oblique');
 
-  await setPlayerPose(beforeWalk.player.position, 0);
-  await advance(0.35, 1 / 120);
-  await setView(0.45, 0.08, 4.05);
+  const firstBasinCenter = afterWalk.water.basinCenters[0];
+  assert(firstBasinCenter?.length === 3, 'first water-basin test position is missing');
+  await setPlayerPose(
+    [firstBasinCenter[0], afterWalk.player.position[1], firstBasinCenter[2]],
+    0,
+  );
+  const waterJumpStart = await advance(0.35, 1 / 120);
+  assert(waterJumpStart.player.inWater, 'jump audit did not start inside the first pool');
+  await setView(0, 0.08, 4.05);
+  await setMovement(0, 1);
+  await advance(0.12, 1 / 120);
   const beforeJump = await diagnostics();
   await pressSpace();
-  const jumpAscent = await advance(0.22, 1 / 120);
+  await advance(0.1, 1 / 120);
+  await setView(0.88, 0.08, 4.05);
+  await setMovement(1, 0);
+  const jumpAscent = await advance(0.14, 1 / 120);
+  await setMovement(0, 0);
   assert(!jumpAscent.player.grounded, 'Space did not launch the player');
   assert(jumpAscent.player.verticalSpeed > 1.5, 'jump lost upward velocity too early');
   assert(jumpAscent.player.groundClearance > 0.45, 'jump did not clear the cave floor');
+  assert(jumpAscent.player.gait.airborneBlend > 0.9, 'procedural airborne pose did not engage');
+  assert(Math.max(...jumpAscent.player.gait.armAngles) > 0.65, 'jump did not animate the arms');
+  assert(Math.max(...jumpAscent.player.gait.legAngles) > 0.4, 'jump did not animate the legs');
+  assert(
+    Math.max(...jumpAscent.player.gait.footAngles.map((angle) => Math.abs(angle))) > 0.15,
+    'jump did not animate the feet',
+  );
+  const jumpYawDelta = Math.abs(Math.atan2(
+    Math.sin(jumpAscent.player.yaw - beforeJump.player.yaw),
+    Math.cos(jumpAscent.player.yaw - beforeJump.player.yaw),
+  ));
+  assert(jumpYawDelta > 0.08, 'moving jump did not exercise an airborne turn');
+  assert(
+    Math.hypot(
+      jumpAscent.player.position[0] - beforeJump.player.position[0],
+      jumpAscent.player.position[2] - beforeJump.player.position[2],
+    ) > 0.25,
+    'jump audit remained static instead of traversing the lower-body contact path',
+  );
   assert(jumpAscent.cape.hemCenter[1] > beforeJump.cape.hemCenter[1] + 0.08, 'cape hem did not follow the jump');
   assert(jumpAscent.cape.maximumBodyPenetration < 0.002, 'jumping cape penetrated the player');
   assert(jumpAscent.cape.maximumEnvironmentPenetration < 0.002, 'jumping cape penetrated cave geometry');
   await capture('character-jump-ascent');
-  const jumpLanded = await advance(1.05, 1 / 120);
+  const jumpLanded = await advance(0.9, 1 / 120);
   assert(jumpLanded.player.grounded, 'player did not land after jumping');
+  assert(jumpLanded.player.inWater, 'moving jump did not land inside the tested pool');
+  assert(
+    jumpLanded.water.landingRipples === beforeJump.water.landingRipples + 1,
+    'water landing did not emit exactly one impact ripple',
+  );
   assert(Math.abs(jumpLanded.player.groundClearance) < 0.002, 'landed player clipped through or floated above terrain');
   assert(jumpLanded.cape.maximumBodyPenetration < 0.002, 'cape penetrated the player on landing');
   assert(jumpLanded.cape.maximumEnvironmentPenetration < 0.002, 'cape penetrated cave geometry on landing');
