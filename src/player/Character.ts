@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { CAMERA_NEAR_OPACITY, CAPE, PLAYER } from '../config';
 import type { CapsuleCollider } from '../physics/colliders';
 import { createCapeAttachment } from './CapeAttachment';
+import { createProceduralHead } from './ProceduralHead';
 
 export interface CapeAnchors {
   readonly left: THREE.Vector3;
@@ -41,6 +42,7 @@ export class Character {
     { start: new THREE.Vector3(), end: new THREE.Vector3(), radius: 0.145, name: 'shoulders' },
     { start: new THREE.Vector3(), end: new THREE.Vector3(), radius: 0.27, name: 'upper torso' },
     { start: new THREE.Vector3(), end: new THREE.Vector3(), radius: 0.235, name: 'hips and belt' },
+    { start: new THREE.Vector3(), end: new THREE.Vector3(), radius: 0.258, name: 'belt ring' },
     { start: new THREE.Vector3(), end: new THREE.Vector3(), radius: 0.115, name: 'left arm' },
     { start: new THREE.Vector3(), end: new THREE.Vector3(), radius: 0.115, name: 'right arm' },
   ];
@@ -89,14 +91,15 @@ export class Character {
   }
 
   public getCapeColliders(): readonly CapsuleCollider[] {
-    const [shoulders, upperTorso, hips, leftArm, rightArm] = this.capeColliders;
-    if (!shoulders || !upperTorso || !hips || !leftArm || !rightArm) {
+    const [shoulders, upperTorso, hips, belt, leftArm, rightArm] = this.capeColliders;
+    if (!shoulders || !upperTorso || !hips || !belt || !leftArm || !rightArm) {
       throw new Error('Character cape collider configuration is incomplete.');
     }
 
     this.setWorldCapsule(shoulders, this.rig, [-0.24, 1.47, -0.015], [0.24, 1.47, -0.015]);
     this.setWorldCapsule(upperTorso, this.rig, [0, 1.43, -0.07], [0, 1.12, -0.07]);
     this.setWorldCapsule(hips, this.rig, [0, 1.02, -0.04], [0, 0.8, -0.04]);
+    this.setWorldCapsule(belt, this.rig, [0, 1.01, -0.005], [0, 1.01, -0.005]);
     this.setWorldCapsule(leftArm, this.leftArm, [0, -0.02, 0], [0, -0.69, 0]);
     this.setWorldCapsule(rightArm, this.rightArm, [0, -0.02, 0], [0, -0.69, 0]);
     return this.capeColliders;
@@ -147,6 +150,7 @@ export class Character {
     const leather = new THREE.MeshStandardMaterial({ color: 0x342019, roughness: 0.86, metalness: 0.02 });
     const trim = new THREE.MeshStandardMaterial({ color: 0xa9864f, roughness: 0.34, metalness: 0.72 });
     const cloth = new THREE.MeshStandardMaterial({ color: 0x20282a, roughness: 0.94, metalness: 0 });
+    const skin = new THREE.MeshStandardMaterial({ color: 0x8f5b42, roughness: 0.84, metalness: 0 });
     const capeFabric = new THREE.MeshPhysicalMaterial({
       color: 0x940a13,
       roughness: 0.78,
@@ -156,7 +160,7 @@ export class Character {
       sheenRoughness: 0.72,
       side: THREE.DoubleSide,
     });
-    this.materials.push(armor, darkMetal, leather, trim, cloth, capeFabric);
+    this.materials.push(armor, darkMetal, leather, trim, cloth, skin, capeFabric);
     for (const material of this.materials) {
       material.transparent = false;
       material.depthWrite = true;
@@ -185,14 +189,7 @@ export class Character {
     buckle.position.set(0, 1.01, -0.2);
     this.rig.add(belt, buckle);
 
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.175, 16, 12), darkMetal);
-    head.position.y = 1.7;
-    head.scale.set(0.88, 1.06, 0.94);
-    const helmCrest = new THREE.Mesh(new THREE.CapsuleGeometry(0.022, 0.22, 4, 8), trim);
-    helmCrest.position.set(0, 1.875, 0.012);
-    helmCrest.rotation.x = Math.PI / 2;
-    const visor = new THREE.Mesh(new THREE.BoxGeometry(0.235, 0.036, 0.022), trim);
-    visor.position.set(0, 1.71, -0.17);
+    const head = createProceduralHead(skin, darkMetal, trim);
     const gorget = new THREE.Mesh(new THREE.TorusGeometry(0.165, 0.022, 6, 20), leather);
     gorget.rotation.x = Math.PI / 2;
     gorget.position.y = 1.53;
@@ -202,7 +199,7 @@ export class Character {
     leftClasp.position.set(-0.225, 1.5, -0.12);
     const rightClasp = leftClasp.clone();
     rightClasp.position.x = 0.225;
-    this.rig.add(head, helmCrest, visor, gorget, leftClasp, rightClasp);
+    this.rig.add(head, gorget, leftClasp, rightClasp);
 
     this.createArm(this.leftArm, -1, armor, darkMetal, leather);
     this.createArm(this.rightArm, 1, armor, darkMetal, leather);

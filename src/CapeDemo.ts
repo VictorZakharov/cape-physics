@@ -158,10 +158,16 @@ export class CapeDemo {
 
   private updateScene(delta: number): void {
     const playerPosition = this.character.root.position;
-    const playerSpeed = this.character.velocity.length();
+    const planarSpeed = Math.hypot(this.character.velocity.x, this.character.velocity.z);
     this.thirdPersonCamera.update(delta, playerPosition);
     this.updateCameraFade();
-    this.water.update(delta, this.fixedTime, playerPosition, this.character.root.rotation.y, playerSpeed);
+    this.water.update(
+      delta,
+      this.fixedTime,
+      playerPosition,
+      this.character.root.rotation.y,
+      this.characterController.isGrounded() ? planarSpeed : 0,
+    );
     this.torches.update(this.fixedTime, playerPosition);
     this.veins.update(this.fixedTime, playerPosition);
     this.atmosphere.update(this.fixedTime);
@@ -216,6 +222,7 @@ export class CapeDemo {
         this.worldCollision.resolvePlayer(this.character.root.position);
         this.character.root.rotation.y = yaw;
         this.character.velocity.set(0, 0, 0);
+        this.characterController.resetVerticalState();
         this.character.root.updateMatrixWorld(true);
         this.cape.reset(this.character.getCapeAnchors());
         this.cape.syncGeometry();
@@ -229,6 +236,9 @@ export class CapeDemo {
       },
       setRunning: (running) => {
         this.input.setVirtualRunning(running);
+      },
+      jump: () => {
+        this.input.queueVirtualJump();
       },
       advance: ({ duration, frameStep = 1 / 60 }) => this.advanceHarness(duration, frameStep),
       profile: ({ duration, frameStep = 1 / 60 }) => this.profileHarness(duration, frameStep),
@@ -311,7 +321,9 @@ export class CapeDemo {
       },
       player: {
         position: this.character.root.position.toArray(),
-        speed: this.character.velocity.length(),
+        speed: Math.hypot(this.character.velocity.x, this.character.velocity.z),
+        verticalSpeed: this.character.velocity.y,
+        grounded: this.characterController.isGrounded(),
         inWater: this.water.isInWater(this.character.root.position),
         groundClearance: this.character.root.position.y - PLAYER.footOffset - this.worldCollision.getGroundHeight(
           this.character.root.position.x,
@@ -344,6 +356,9 @@ export class CapeDemo {
         minimumSelfSeparation: this.cape.getMinimumSelfSeparation(),
         hemDrop: this.cape.getHemDrop(),
         minimumLowerCapeDrop: this.cape.getMinimumLowerCapeDrop(),
+        maximumLowerCapeLateralOffset: this.cape.getMaximumLowerCapeLateralOffset(capeAnchors),
+        hemBackOffset: this.cape.getHemBackOffset(capeAnchors),
+        minimumHemGroundClearance: this.cape.getMinimumHemGroundClearance(),
         hemCenter: this.cape.getParticlePosition(6, 17).toArray(),
         worldColliders: this.worldColliders.length,
         worldContacts: this.cape.getWorldContactDiagnostics(),

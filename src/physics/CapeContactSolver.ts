@@ -7,9 +7,9 @@ import {
   caveInteriorHalfWidthAtHeight,
 } from '../world/caveProfile';
 import type { CapsuleCollider, WorldSphereCollider } from './colliders';
+import { CLOTH_BODY_CLEARANCE, ClothBodyCollision } from './ClothBodyCollision';
 import { CLOTH_WORLD_CLEARANCE, ClothWorldCollision } from './ClothWorldCollision';
 
-const BODY_CLEARANCE = 0.026;
 const WORLD_QUERY_RADIUS = CAPE.length + 2.2;
 
 export interface WorldContactDiagnostics {
@@ -31,6 +31,7 @@ export class CapeContactSolver {
   private readonly remainingMotion = new THREE.Vector3();
   private worldContactsLastStep = 0;
   private worldContactEvents = 0;
+  private readonly bodyFaceCollision: ClothBodyCollision;
   private readonly faceCollision: ClothWorldCollision;
 
   public constructor(
@@ -38,6 +39,13 @@ export class CapeContactSolver {
     private readonly previous: readonly THREE.Vector3[],
     inverseMass: Float32Array,
   ) {
+    this.bodyFaceCollision = new ClothBodyCollision(
+      positions,
+      previous,
+      inverseMass,
+      CAPE.columns,
+      CAPE.rows,
+    );
     this.faceCollision = new ClothWorldCollision(
       positions,
       previous,
@@ -70,6 +78,7 @@ export class CapeContactSolver {
         previous.addScaledVector(back, penetration);
       }
     }
+    this.bodyFaceCollision.solve(colliders, back);
   }
 
   public solveWorld(): void {
@@ -120,7 +129,7 @@ export class CapeContactSolver {
         maximum = Math.max(maximum, this.getCapsulePenetration(position, collider, back));
       }
     }
-    return maximum;
+    return Math.max(maximum, this.bodyFaceCollision.getMaximumPenetration(colliders, back));
   }
 
   public getMaximumEnvironmentPenetration(colliders: readonly WorldSphereCollider[]): number {
@@ -165,7 +174,7 @@ export class CapeContactSolver {
     this.delta.copy(position).sub(this.closestPoint);
     const depth = this.delta.dot(back);
     const lateralSquared = Math.max(0, this.delta.lengthSq() - depth * depth);
-    const radius = collider.radius + BODY_CLEARANCE;
+    const radius = collider.radius + CLOTH_BODY_CLEARANCE;
     if (lateralSquared >= radius * radius) return 0;
     return Math.max(0, Math.sqrt(radius * radius - lateralSquared) - depth);
   }

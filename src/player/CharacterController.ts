@@ -7,6 +7,7 @@ import type { Character } from './Character';
 export interface CharacterMovementInput {
   getMovement(): THREE.Vector2;
   isRunning(): boolean;
+  consumeJump(): boolean;
 }
 
 export class CharacterController {
@@ -14,6 +15,8 @@ export class CharacterController {
   private readonly cameraForward = new THREE.Vector3();
   private readonly cameraRight = new THREE.Vector3();
   private running = false;
+  private grounded = true;
+  private verticalVelocity = 0;
   private turnRate = 0;
 
   public constructor(
@@ -37,12 +40,50 @@ export class CharacterController {
       this.desiredVelocity.normalize().multiplyScalar(speed);
     }
     const response = this.desiredVelocity.lengthSq() > 0 ? PLAYER.acceleration : PLAYER.deceleration;
-    this.character.velocity.lerp(this.desiredVelocity, 1 - Math.exp(-response * delta));
-    if (this.character.velocity.lengthSq() < 0.0001) this.character.velocity.set(0, 0, 0);
-    this.character.root.position.addScaledVector(this.character.velocity, delta);
-    this.worldCollision.resolvePlayer(this.character.root.position);
+    const velocityBlend = 1 - Math.exp(-response * delta);
+    this.character.velocity.x = THREE.MathUtils.lerp(
+      this.character.velocity.x,
+      this.desiredVelocity.x,
+      velocityBlend,
+    );
+    this.character.velocity.z = THREE.MathUtils.lerp(
+      this.character.velocity.z,
+      this.desiredVelocity.z,
+      velocityBlend,
+    );
+    const planarSpeedSquared = this.character.velocity.x * this.character.velocity.x
+      + this.character.velocity.z * this.character.velocity.z;
+    if (planarSpeedSquared < 0.0001) {
+      this.character.velocity.x = 0;
+      this.character.velocity.z = 0;
+    }
 
-    const planarSpeed = this.character.velocity.length();
+    const jumpRequested = this.input.consumeJump();
+    if (jumpRequested && this.grounded) {
+      this.verticalVelocity = PLAYER.jumpSpeed;
+      this.grounded = false;
+    }
+    if (!this.grounded) this.verticalVelocity -= PLAYER.gravity * delta;
+    else this.verticalVelocity = 0;
+    this.character.velocity.y = this.verticalVelocity;
+
+    const previousY = this.character.root.position.y;
+    this.character.root.position.addScaledVector(this.character.velocity, delta);
+    const collision = this.worldCollision.resolvePlayer(this.character.root.position, {
+      previousY,
+      velocityY: this.verticalVelocity,
+      grounded: this.grounded,
+    });
+    this.grounded = collision.grounded;
+    if (
+      (collision.grounded && this.verticalVelocity < 0)
+      || (collision.hitCeiling && this.verticalVelocity > 0)
+    ) {
+      this.verticalVelocity = 0;
+      this.character.velocity.y = 0;
+    }
+
+    const planarSpeed = Math.hypot(this.character.velocity.x, this.character.velocity.z);
     if (planarSpeed > 0.08) {
       const targetYaw = Math.atan2(-this.character.velocity.x, -this.character.velocity.z);
       const yawDelta = Math.atan2(
@@ -81,5 +122,15 @@ export class CharacterController {
 
   public isRunning(): boolean {
     return this.running;
+  }
+
+  public isGrounded(): boolean {
+    return this.grounded;
+  }
+
+  public resetVerticalState(): void {
+    this.grounded = true;
+    this.verticalVelocity = 0;
+    this.character.velocity.y = 0;
   }
 }

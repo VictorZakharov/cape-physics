@@ -1,10 +1,13 @@
 import { describe, expect, test } from 'bun:test';
 import * as THREE from 'three';
-import { CAPE, PHYSICS_STEP } from '../src/config';
+import { CAPE, PHYSICS_STEP, PLAYER } from '../src/config';
 import { CapeSimulation } from '../src/physics/CapeSimulation';
 import { CLOTH_WORLD_CLEARANCE } from '../src/physics/ClothWorldCollision';
 import type { CapsuleCollider, WorldSphereCollider } from '../src/physics/colliders';
 import type { CapeAnchors } from '../src/player/Character';
+import { Character } from '../src/player/Character';
+import { caveCenterX } from '../src/world/caveProfile';
+import { WorldCollisionResolver } from '../src/world/WorldCollisionResolver';
 
 const anchors: CapeAnchors = {
   left: new THREE.Vector3(-0.48, 2.1, 0.27),
@@ -122,6 +125,7 @@ describe('CapeSimulation', () => {
     expect(cape.getMaximumBodyPenetration(bodyColliders, anchors.back)).toBeLessThan(0.002);
     expect(cape.getHemDrop()).toBeGreaterThan(0.7);
     expect(cape.getMinimumLowerCapeDrop()).toBeGreaterThan(0.48);
+    expect(cape.getMaximumLowerCapeLateralOffset(anchors)).toBeLessThan(0.18);
 
     cape.step(PHYSICS_STEP, anchors, bodyColliders, [], new THREE.Vector3(0, 0, -3), 901 * PHYSICS_STEP);
     expect(cape.isSleeping()).toBe(false);
@@ -166,5 +170,121 @@ describe('CapeSimulation', () => {
       }
     }
     expect(cape.getMinimumLowerCapeDrop()).toBeGreaterThan(0.48);
+  });
+
+  test('follows a jump at the neckline while the free hem rises and falls under inertia', () => {
+    const cape = new CapeSimulation(anchors);
+    const dynamicAnchors: CapeAnchors = {
+      left: anchors.left.clone(),
+      right: anchors.right.clone(),
+      back: anchors.back.clone(),
+    };
+    const bodyColliders: CapsuleCollider[] = [
+      { start: new THREE.Vector3(-0.3, 1.96, -0.04), end: new THREE.Vector3(0.3, 1.96, -0.04), radius: 0.22, name: 'shoulders' },
+      { start: new THREE.Vector3(0, 1.84, -0.08), end: new THREE.Vector3(0, 1.05, -0.08), radius: 0.3, name: 'torso and belt' },
+    ];
+    const baseColliderPositions = bodyColliders.map((collider) => ({
+      start: collider.start.clone(),
+      end: collider.end.clone(),
+    }));
+    const velocity = new THREE.Vector3(0, PLAYER.jumpSpeed, 0);
+    const initialHemHeight = cape.getParticlePosition(6, CAPE.rows - 1).y;
+    let rootOffset = 0;
+    let maximumHemRise = 0;
+    let landed = false;
+
+    for (let tick = 0; tick < 300; tick += 1) {
+      velocity.y -= PLAYER.gravity * PHYSICS_STEP;
+      rootOffset += velocity.y * PHYSICS_STEP;
+      if (rootOffset <= 0 && tick > 1) {
+        rootOffset = 0;
+        velocity.y = 0;
+        landed = true;
+      }
+      dynamicAnchors.left.copy(anchors.left).setY(anchors.left.y + rootOffset);
+      dynamicAnchors.right.copy(anchors.right).setY(anchors.right.y + rootOffset);
+      bodyColliders.forEach((collider, index) => {
+        const baseline = baseColliderPositions[index]!;
+        collider.start.copy(baseline.start).setY(baseline.start.y + rootOffset);
+        collider.end.copy(baseline.end).setY(baseline.end.y + rootOffset);
+      });
+      cape.step(
+        PHYSICS_STEP,
+        dynamicAnchors,
+        bodyColliders,
+        [],
+        velocity,
+        tick * PHYSICS_STEP,
+      );
+      maximumHemRise = Math.max(
+        maximumHemRise,
+        cape.getParticlePosition(6, CAPE.rows - 1).y - initialHemHeight,
+      );
+      expect(cape.getParticlePosition(0, 0).distanceTo(dynamicAnchors.left)).toBeLessThan(0.000_001);
+      expect(cape.getParticlePosition(CAPE.columns - 1, 0).distanceTo(dynamicAnchors.right)).toBeLessThan(0.000_001);
+    }
+
+    expect(maximumHemRise).toBeGreaterThan(0.35);
+    expect(landed).toBe(true);
+    expect(cape.getMaximumBodyPenetration(bodyColliders, dynamicAnchors.back)).toBeLessThan(0.002);
+    expect(cape.getHemDrop()).toBeGreaterThan(0.72);
+  });
+
+  test('keeps walk airflow draped while allowing a materially stronger running trail', () => {
+    const walkCape = new CapeSimulation(anchors);
+    const runCape = new CapeSimulation(anchors);
+    for (let tick = 0; tick < 360; tick += 1) {
+      const time = tick * PHYSICS_STEP;
+      walkCape.step(
+        PHYSICS_STEP,
+        anchors,
+        [],
+        [],
+        new THREE.Vector3(0, 0, -PLAYER.walkSpeed),
+        time,
+      );
+      runCape.step(
+        PHYSICS_STEP,
+        anchors,
+        [],
+        [],
+        new THREE.Vector3(0, 0, -PLAYER.runSpeed),
+        time,
+      );
+    }
+
+    const walkOffset = walkCape.getHemBackOffset(anchors);
+    const runOffset = runCape.getHemBackOffset(anchors);
+    expect(walkOffset).toBeLessThan(0.72);
+    expect(runOffset).toBeGreaterThan(walkOffset + 0.22);
+  });
+
+  test('settles a character-length hem onto the procedural ground instead of floating', () => {
+    const character = new Character();
+    const collision = new WorldCollisionResolver([]);
+    const z = 11.8;
+    const x = caveCenterX(z);
+    character.root.position.set(x, collision.getPlayerRootHeight(x, z), z);
+    character.root.updateMatrixWorld(true);
+    const characterAnchors = character.getCapeAnchors();
+    const cape = new CapeSimulation(characterAnchors);
+
+    for (let tick = 0; tick < 720; tick += 1) {
+      cape.step(
+        PHYSICS_STEP,
+        characterAnchors,
+        character.getCapeColliders(),
+        [],
+        new THREE.Vector3(),
+        tick * PHYSICS_STEP,
+      );
+    }
+
+    expect(cape.getMinimumHemGroundClearance()).toBeGreaterThanOrEqual(0.032);
+    expect(cape.getMinimumHemGroundClearance()).toBeLessThan(0.09);
+    expect(cape.getMaximumBodyPenetration(
+      character.getCapeColliders(),
+      characterAnchors.back,
+    )).toBeLessThan(0.002);
   });
 });

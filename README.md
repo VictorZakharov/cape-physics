@@ -3,7 +3,7 @@
 [![CI](https://github.com/VictorZakharov/cape-physics/actions/workflows/ci.yml/badge.svg)](https://github.com/VictorZakharov/cape-physics/actions/workflows/ci.yml)
 [![Deploy GitHub Pages](https://github.com/VictorZakharov/cape-physics/actions/workflows/deploy-pages.yml/badge.svg)](https://github.com/VictorZakharov/cape-physics/actions/workflows/deploy-pages.yml)
 
-A cinematic, all-procedural Three.js and TypeScript tech demo. Guide an armored traveller through a torchlit cave while a position-based cape wraps around the animated body, collides with solid cave geometry, and responds to walking, running, gravity, and airflow. Clear shallow pools react independently to footsteps and naturally falling ceiling drops.
+A cinematic, all-procedural Three.js and TypeScript tech demo. Guide an armored traveller through a torchlit cave while a position-based cape wraps around the animated body, collides with solid cave geometry, and responds to walking, running, jumping, gravity, and airflow. Clear shallow pools react independently to footsteps and naturally falling ceiling drops.
 
 [Launch the live demo](https://victorzakharov.github.io/cape-physics/)
 
@@ -22,6 +22,7 @@ Open the printed local URL. A current WebGL 2 browser with hardware acceleration
 
 - `W A S D` - camera-relative movement
 - Hold `Shift` while moving - run with a faster, slightly stronger gait
+- `Space` - jump; the player capsule remains constrained by the terrain, cave shell, and solid formations
 - Left- or right-mouse drag - orbit the third-person camera
 - Drag upward - look upward (reversed vertical orbit)
 - Mouse wheel - zoom
@@ -32,7 +33,8 @@ The renderer is uncapped for displays up to 144 Hz and beyond. Physics runs at a
 
 ## Highlights
 
-- Position-based cape with structural, shear, short-range bending, and long-range anti-fold constraints
+- Position-based cape with structural, shear, short-range bending, long-range anti-fold constraints, and inertial jump response
+- Fixed-step jump arc with terrain landing, height-aware cave-wall bounds, solid-formation separation, and ceiling contact
 - Body-clear curved neckline attachment concealed beneath a batched procedural shoulder yoke, gathered fabric seam, paired ties, gorget, and clasps
 - Allocation-free spatial-hash self-collision with explicit cloth thickness
 - Dynamic shoulder, torso, hip/belt, and arm capsules sized to the narrower rendered silhouette
@@ -42,7 +44,7 @@ The renderer is uncapped for displays up to 144 Hz and beyond. Physics runs at a
 - 2,260 deterministic solid-object proxies plus analytic floor, bank, wall, and ceiling contact
 - Cloth-motion-aware damping and deterministic sleep/wake behavior that cannot freeze a suspended panel and does not slow gravity-driven settling
 - Terrain-aware player grounding that climbs the cave shell and walkable rocks instead of clipping through slopes
-- Human-scale procedural armor proportions, tapered torso and limbs, fitted helmet ridge, restrained walk/run bob, and rate-limited eased turning
+- Human-scale procedural armor proportions, tapered torso and limbs, exposed face, fitted helmet shell with flush brow trim, restrained walk/run bob, and rate-limited eased turning
 - Wide third-person pitch range, collision-shortened camera boom, ground-safe close orbit, and a smooth 12% near-camera fade composited from a depth-resolved character/cape layer
 - Five walkable, optically clear procedural pools seated in shared height-field basins with submerged interiors, dry containing rims, continuous normals, and antialiased edges
 - Thirteen deterministic ceiling-drip emitters, splash particles, and independent footstep ripples
@@ -62,14 +64,15 @@ bun run audit:visual   # production build plus repository-owned Edge/Chrome CDP 
 bun run verify         # check, production build, and systems harness
 ```
 
-The renderer-free harness constructs the complete scene graph and dynamically advances cloth, character animation, water drops, footsteps, torches, and mineral systems. It checks finite state, structural error, vertex and cloth-face penetration, pinned-neckline/body clearance, self-separation, downward settling, basin depth and rim containment, ripple activity, geometry validity, triangle/draw-call budgets, stable light counts, and average physics-step cost. Focused tests also prove that the rendered yoke overlaps both simulation anchors, reproduce a narrow collider piercing the center of a cloth triangle while every vertex is clear, force a 148-degree cape rotation to prove that a suspended panel cannot sleep, verify transformed procedural geometry is enclosed by its proxies, exercise clipboard output and report formatting without a browser, prove eased turning plus Shift running and gait bob, and validate the opaque depth-writing inputs plus clamped opacity of the close-fade compositor.
+The renderer-free harness constructs the complete scene graph and dynamically advances cloth, character animation, a constrained jump and landing, water drops, footsteps, torches, and mineral systems. It checks finite state, structural error, vertex and cloth-face penetration, pinned-neckline/body clearance, jump apex and cape follow-through, self-separation, downward settling, basin depth and rim containment, ripple activity, geometry validity, triangle/draw-call budgets, stable light counts, and average physics-step cost. Focused tests also prove that the rendered yoke overlaps both simulation anchors, reproduce a narrow collider piercing the center of a cloth triangle while every vertex is clear, force a 148-degree cape rotation to prove that a suspended panel cannot sleep, distinguish walking drape from running trail, verify ground-touching hem clearance and bank traversal, exercise airborne terrain/ceiling/formation contact, validate transformed procedural geometry and fitted helmet proportions, exercise clipboard output and report formatting without a browser, prove eased turning plus Shift running and gait bob, and validate the opaque depth-writing inputs plus clamped opacity of the close-fade compositor.
 
-The visual audit launches an installed Edge or Chrome directly through the DevTools protocol; it does not depend on a browser-testing framework. It drives the deterministic in-app harness through 20 rendered studies, including:
+The visual audit launches an installed Edge or Chrome directly through the DevTools protocol; it does not depend on a browser-testing framework. It drives the deterministic in-app harness through 22 rendered studies, including:
 
 - rear, side, true front, neckline, high-oblique attachment, aggressive reversal, running, and fully settled cape views;
 - a real FPS-panel click with intercepted clipboard output and visible success-feedback assertions;
 - real LMB and RMB reversed-drag input;
 - sharp look-up and strongly faded close-camera views with camera/ground clearance assertions;
+- real Space-key ascent and grounded landing views with terrain and cape-contact assertions;
 - dynamic uphill traversal with player/terrain contact checks;
 - both sides of observed cape contact against a generated stalagmite;
 - footstep and ceiling-drop ripple evolution, a low clear-water close-up, and a side-on view proving the water is below its dry rim; and
@@ -85,7 +88,7 @@ The implementation is divided by responsibility under `src/`:
 
 - `physics` owns cloth integration, constraints, body/world contact, triangle contact, rest state, and self-collision;
 - `world` owns procedural geometry, geometry-derived collision proxies, terrain resolution, water, lights, and atmosphere;
-- `player` and `camera` own movement, running, animation, interaction, orbit safety, and close fade;
+- `player` and `camera` own movement, running, jumping, animation, interaction, orbit safety, and close fade;
 - `core` owns fixed timing, rendering, performance telemetry, and adaptive quality; and
 - `testing` owns the renderer-independent integration harness.
 
@@ -103,7 +106,7 @@ Useful implementation references:
 
 ## Deployment
 
-Every push and pull request runs strict TypeScript, renderer-free unit tests, the deterministic full-scene harness, production and Pages builds, and asset-path validation. Pull requests additionally run the 20-angle dynamic Windows render audit and upload its PNG/JSON evidence. PR history is checked for merge commits so branches stay reviewable and linear.
+Every push and pull request runs strict TypeScript, renderer-free unit tests, the deterministic full-scene harness, production and Pages builds, and asset-path validation. Pull requests additionally run the 22-angle dynamic Windows render audit and upload its PNG/JSON evidence. PR history is checked for merge commits so branches stay reviewable and linear.
 
 Same-repository pull requests receive a sticky preview link at:
 

@@ -1,7 +1,8 @@
 import * as THREE from 'three';
-import { CAMERA_NEAR_OPACITY, CAPE } from '../config';
+import { CAMERA_NEAR_OPACITY, CAPE, PLAYER } from '../config';
 import { createCapeFabricTextures } from '../graphics/proceduralTextures';
 import type { CapeAnchors } from '../player/Character';
+import { caveGroundHeightAt } from '../world/caveProfile';
 import { CapeContactSolver, type WorldContactDiagnostics } from './CapeContactSolver';
 import { ClothSelfCollision } from './ClothSelfCollision';
 import type { CapsuleCollider, WorldSphereCollider } from './colliders';
@@ -19,6 +20,8 @@ const IDLE_DRAG_PER_SECOND = 2.8;
 const SLEEP_AFTER_SETTLED_SECONDS = 0.55;
 const SETTLED_MOTION_THRESHOLD = 0.0025;
 const MINIMUM_SETTLED_LOWER_CAPE_DROP = 0.48;
+const MAXIMUM_SETTLED_LATERAL_OFFSET = 0.18;
+const IDLE_DRAPE_RECOVERY_PER_ITERATION = 0.0016;
 const WAKE_SPEED = 0.08;
 
 export class CapeSimulation {
@@ -39,6 +42,9 @@ export class CapeSimulation {
   private readonly delta = new THREE.Vector3();
   private readonly anchorTarget = new THREE.Vector3();
   private readonly anchorCenter = new THREE.Vector3();
+  private readonly rightAxis = new THREE.Vector3();
+  private readonly rowCenter = new THREE.Vector3();
+  private readonly drapeDelta = new THREE.Vector3();
   private readonly stepStart: THREE.Vector3[] = [];
   private opacity = 1;
   private settledSeconds = 0;
@@ -104,6 +110,7 @@ export class CapeSimulation {
   ): void {
     this.captureStepStart();
     const characterSpeed = characterVelocity.length();
+    const planarSpeed = Math.hypot(characterVelocity.x, characterVelocity.z);
     if (characterSpeed > WAKE_SPEED) {
       this.settledSeconds = 0;
       this.sleeping = false;
@@ -115,12 +122,19 @@ export class CapeSimulation {
       return;
     }
     const movementBlend = THREE.MathUtils.smoothstep(characterSpeed, WAKE_SPEED, 2.4);
+    const runningBlend = THREE.MathUtils.smoothstep(
+      planarSpeed,
+      PLAYER.walkSpeed * 1.02,
+      PLAYER.runSpeed * 0.92,
+    );
+    const locomotionAirflow = THREE.MathUtils.lerp(0.28, 1, runningBlend);
+    const velocityAirflow = THREE.MathUtils.lerp(0.32, 1.28, runningBlend);
     this.airflow.set(
       Math.sin(time * 0.47) * 0.38 + Math.sin(time * 1.91) * 0.16,
       0.08 + Math.sin(time * 0.71) * 0.05,
       0.62 + Math.cos(time * 0.31) * 0.24,
-    ).multiplyScalar(THREE.MathUtils.lerp(0.025, 1, movementBlend))
-      .addScaledVector(characterVelocity, -1.38);
+    ).multiplyScalar(THREE.MathUtils.lerp(0.025, locomotionAirflow, movementBlend))
+      .addScaledVector(characterVelocity, -velocityAirflow);
 
     const deltaSquared = deltaTime * deltaTime;
     for (let row = 1; row < CAPE.rows; row += 1) {
@@ -146,6 +160,12 @@ export class CapeSimulation {
     for (let iteration = 0; iteration < CAPE.solverIterations; iteration += 1) {
       for (const constraint of this.constraints) this.solveConstraint(constraint);
       this.selfCollision.solve(this.positions, this.previous, this.inverseMass);
+      if (
+        characterSpeed <= WAKE_SPEED
+        && this.contactSolver.getDiagnostics().lastStep === 0
+      ) {
+        this.solveIdleDrapeRecovery(anchors);
+      }
       this.contactSolver.solveBody(bodyColliders, anchors.back);
       this.contactSolver.solveWorld();
       this.contactSolver.solveCave();
@@ -153,9 +173,13 @@ export class CapeSimulation {
     }
 
     this.measureStepMotion();
+    const laterallySettled = this.getMaximumLowerCapeLateralOffset(anchors)
+      < MAXIMUM_SETTLED_LATERAL_OFFSET
+      || this.contactSolver.getDiagnostics().lastStep > 0;
     const fullyDraped = characterSpeed <= WAKE_SPEED
       && this.getHemDrop() > 0.72
-      && this.getMinimumLowerCapeDrop() > MINIMUM_SETTLED_LOWER_CAPE_DROP;
+      && this.getMinimumLowerCapeDrop() > MINIMUM_SETTLED_LOWER_CAPE_DROP
+      && laterallySettled;
     if (fullyDraped) this.dampResidualMotion(0.14);
     if (fullyDraped && this.maximumParticleMotion < SETTLED_MOTION_THRESHOLD) {
       this.settledSeconds += deltaTime;
@@ -257,6 +281,39 @@ export class CapeSimulation {
       for (let column = 0; column < CAPE.columns; column += 1) {
         const position = this.positions[this.index(column, row)];
         if (position) minimum = Math.min(minimum, this.anchorCenter.y - position.y);
+      }
+    }
+    return minimum;
+  }
+
+  public getMaximumLowerCapeLateralOffset(anchors: CapeAnchors): number {
+    this.rightAxis.copy(anchors.right).sub(anchors.left).normalize();
+    const firstLowerRow = Math.floor(CAPE.rows * 0.58);
+    let maximum = 0;
+    for (let row = firstLowerRow; row < CAPE.rows; row += 1) {
+      this.getRowCenter(row, this.rowCenter);
+      maximum = Math.max(
+        maximum,
+        Math.abs(this.drapeDelta.copy(this.rowCenter).sub(this.anchorCenter).dot(this.rightAxis)),
+      );
+    }
+    return maximum;
+  }
+
+  public getHemBackOffset(anchors: CapeAnchors): number {
+    this.getRowCenter(CAPE.rows - 1, this.rowCenter);
+    return this.drapeDelta.copy(this.rowCenter).sub(this.anchorCenter).dot(anchors.back);
+  }
+
+  public getMinimumHemGroundClearance(): number {
+    let minimum = Number.POSITIVE_INFINITY;
+    for (let column = 0; column < CAPE.columns; column += 1) {
+      const position = this.positions[this.index(column, CAPE.rows - 1)];
+      if (position) {
+        minimum = Math.min(
+          minimum,
+          position.y - caveGroundHeightAt(position.x, position.z),
+        );
       }
     }
     return minimum;
@@ -393,6 +450,35 @@ export class CapeSimulation {
       const previous = this.previous[index];
       if (position && previous) previous.lerp(position, strength);
     }
+  }
+
+  private solveIdleDrapeRecovery(anchors: CapeAnchors): void {
+    this.rightAxis.copy(anchors.right).sub(anchors.left).normalize();
+    for (let row = 1; row < CAPE.rows; row += 1) {
+      this.getRowCenter(row, this.rowCenter);
+      const lateralOffset = this.drapeDelta
+        .copy(this.rowCenter)
+        .sub(this.anchorCenter)
+        .dot(this.rightAxis);
+      const down = row / (CAPE.rows - 1);
+      const correction = -lateralOffset
+        * IDLE_DRAPE_RECOVERY_PER_ITERATION
+        * THREE.MathUtils.smoothstep(down, 0.05, 1);
+      for (let column = 0; column < CAPE.columns; column += 1) {
+        const index = this.index(column, row);
+        this.positions[index]?.addScaledVector(this.rightAxis, correction);
+        this.previous[index]?.addScaledVector(this.rightAxis, correction);
+      }
+    }
+  }
+
+  private getRowCenter(row: number, target: THREE.Vector3): THREE.Vector3 {
+    target.set(0, 0, 0);
+    for (let column = 0; column < CAPE.columns; column += 1) {
+      const position = this.positions[this.index(column, row)];
+      if (position) target.add(position);
+    }
+    return target.multiplyScalar(1 / CAPE.columns);
   }
 
   private captureStepStart(): void {

@@ -24,6 +24,8 @@ interface CapeDemoDiagnostics {
   readonly player: {
     readonly position: number[];
     readonly speed: number;
+    readonly verticalSpeed: number;
+    readonly grounded: boolean;
     readonly inWater: boolean;
     readonly groundClearance: number;
     readonly opacity: number;
@@ -53,6 +55,9 @@ interface CapeDemoDiagnostics {
     readonly minimumSelfSeparation: number;
     readonly hemDrop: number;
     readonly minimumLowerCapeDrop: number;
+    readonly maximumLowerCapeLateralOffset: number;
+    readonly hemBackOffset: number;
+    readonly minimumHemGroundClearance: number;
     readonly hemCenter: number[];
     readonly worldColliders: number;
     readonly worldContacts: {
@@ -99,6 +104,7 @@ declare global {
       setPlayerPose: (pose: { position: number[]; yaw?: number }) => CapeDemoDiagnostics;
       setMovement: (horizontal: number, forward: number) => void;
       setRunning: (running: boolean) => void;
+      jump: () => void;
       advance: (options: { duration: number; frameStep?: number }) => CapeDemoDiagnostics;
       profile: (options: { duration: number; frameStep?: number }) => {
         readonly frames: number;

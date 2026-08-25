@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import * as THREE from 'three';
-import { CAVE } from '../src/config';
+import { CAVE, PLAYER } from '../src/config';
 import type { WorldSphereCollider } from '../src/physics/colliders';
 import { periodicFbm } from '../src/utils/random';
 import { caveCeiling, caveCenterX, caveGroundHeightAt, caveHalfWidth, floorHeightAt } from '../src/world/caveProfile';
@@ -35,6 +35,41 @@ describe('WorldCollisionResolver', () => {
     resolver.resolvePlayer(position);
 
     expect(Math.hypot(position.x - formation.center.x, position.z - formation.center.z)).toBeGreaterThan(0.74);
+  });
+
+  test('lands an airborne capsule on terrain without passing through it', () => {
+    const resolver = new WorldCollisionResolver([]);
+    const z = -8;
+    const x = caveCenterX(z);
+    const supportHeight = resolver.getPlayerRootHeight(x, z);
+    const position = new THREE.Vector3(x, supportHeight - 0.12, z);
+
+    const result = resolver.resolvePlayer(position, {
+      previousY: supportHeight + 0.08,
+      velocityY: -4.2,
+      grounded: false,
+    });
+
+    expect(result.grounded).toBe(true);
+    expect(position.y).toBeCloseTo(supportHeight, 6);
+  });
+
+  test('stops an airborne capsule at the procedural cave ceiling', () => {
+    const resolver = new WorldCollisionResolver([]);
+    const z = -18;
+    const x = caveCenterX(z);
+    const maximumRootHeight = caveCeiling(z) - PLAYER.height - 0.08;
+    const position = new THREE.Vector3(x, maximumRootHeight + 0.4, z);
+
+    const result = resolver.resolvePlayer(position, {
+      previousY: maximumRootHeight - 0.02,
+      velocityY: 5,
+      grounded: false,
+    });
+
+    expect(result.hitCeiling).toBe(true);
+    expect(result.grounded).toBe(false);
+    expect(position.y).toBeCloseTo(maximumRootHeight, 6);
   });
 
   test('treats the lower cave shell as a walkable bank', () => {

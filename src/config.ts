@@ -12,10 +12,12 @@ export const CAVE = {
 
 export const PLAYER = {
   radius: 0.34,
-  height: 1.82,
+  height: 1.9,
   footOffset: 0.14,
   walkSpeed: 3.45,
   runSpeed: 6.15,
+  jumpSpeed: 5.2,
+  gravity: 14.5,
   acceleration: 15,
   deceleration: 19,
   turnResponse: 9,
@@ -27,7 +29,7 @@ export const CAPE = {
   columns: 13,
   rows: 18,
   width: 0.98,
-  length: 1.4,
+  length: 1.68,
   solverIterations: 5,
   attachment: {
     halfWidth: 0.29,

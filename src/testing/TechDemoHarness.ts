@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { PHYSICS_STEP } from '../config';
+import { PHYSICS_STEP, PLAYER } from '../config';
 import { createRockTextures } from '../graphics/proceduralTextures';
 import { CapeSimulation } from '../physics/CapeSimulation';
 import { Character } from '../player/Character';
@@ -31,7 +31,15 @@ export interface TechDemoHarnessReport {
   readonly capeMinimumSelfSeparation: number;
   readonly capeHemDrop: number;
   readonly capeMinimumLowerCapeDrop: number;
+  readonly capeMaximumLowerCapeLateralOffset: number;
+  readonly capeHemBackOffset: number;
+  readonly capeMinimumHemGroundClearance: number;
   readonly capeStateFinite: boolean;
+  readonly jump: {
+    readonly maximumGroundClearance: number;
+    readonly maximumCapeHemRise: number;
+    readonly landed: boolean;
+  };
   readonly water: ReturnType<WaterSystem['getDiagnostics']>;
   readonly scene: SceneBudget;
   readonly lighting: {
@@ -121,13 +129,44 @@ export function runTechDemoHarness(simulatedSeconds = 12): TechDemoHarnessReport
 
   const ticks = Math.round(simulatedSeconds / PHYSICS_STEP);
   const priorPosition = character.root.position.clone();
+  let verticalVelocity = 0;
+  let grounded = true;
+  let jumpStarted = false;
+  let jumpWasAirborne = false;
+  let jumpLanded = false;
+  let jumpBaselineHemHeight = cape.getParticlePosition(6, 17).y;
+  let jumpMaximumGroundClearance = 0;
+  let jumpMaximumCapeHemRise = 0;
   const simulationStart = performance.now();
   for (let tick = 0; tick < ticks; tick += 1) {
     const time = tick * PHYSICS_STEP;
     const z = startZ - time * 2.45;
     const x = caveCenterX(z) + Math.sin(time * 0.72) * 0.34;
     priorPosition.copy(character.root.position);
-    character.root.position.set(x, worldCollision.getPlayerRootHeight(x, z), z);
+    character.root.position.x = x;
+    character.root.position.z = z;
+    if (!jumpStarted && time >= 0.72) {
+      verticalVelocity = PLAYER.jumpSpeed;
+      grounded = false;
+      jumpStarted = true;
+      jumpBaselineHemHeight = cape.getParticlePosition(6, 17).y;
+    }
+    if (!grounded) {
+      verticalVelocity -= PLAYER.gravity * PHYSICS_STEP;
+      character.root.position.y += verticalVelocity * PHYSICS_STEP;
+    }
+    const collision = worldCollision.resolvePlayer(character.root.position, {
+      previousY: priorPosition.y,
+      velocityY: verticalVelocity,
+      grounded,
+    });
+    grounded = collision.grounded;
+    if (
+      (grounded && verticalVelocity < 0)
+      || (collision.hitCeiling && verticalVelocity > 0)
+    ) {
+      verticalVelocity = 0;
+    }
     character.velocity.copy(character.root.position).sub(priorPosition).divideScalar(PHYSICS_STEP);
     if (character.velocity.lengthSq() > 0.001) {
       character.root.rotation.y = Math.atan2(-character.velocity.x, -character.velocity.z);
@@ -142,7 +181,25 @@ export function runTechDemoHarness(simulatedSeconds = 12): TechDemoHarnessReport
       character.velocity,
       time,
     );
-    water.update(PHYSICS_STEP, time, character.root.position, character.root.rotation.y, character.velocity.length());
+    if (jumpStarted) {
+      const groundClearance = character.root.position.y
+        - worldCollision.getPlayerRootHeight(character.root.position.x, character.root.position.z);
+      jumpMaximumGroundClearance = Math.max(jumpMaximumGroundClearance, groundClearance);
+      jumpMaximumCapeHemRise = Math.max(
+        jumpMaximumCapeHemRise,
+        cape.getParticlePosition(6, 17).y - jumpBaselineHemHeight,
+      );
+      if (!grounded) jumpWasAirborne = true;
+      else if (jumpWasAirborne) jumpLanded = true;
+    }
+    const planarSpeed = Math.hypot(character.velocity.x, character.velocity.z);
+    water.update(
+      PHYSICS_STEP,
+      time,
+      character.root.position,
+      character.root.rotation.y,
+      grounded ? planarSpeed : 0,
+    );
     torches.update(time, character.root.position);
     veins.update(time, character.root.position);
     if (tick % 2 === 0) cape.syncGeometry();
@@ -165,6 +222,9 @@ export function runTechDemoHarness(simulatedSeconds = 12): TechDemoHarnessReport
   const capeMinimumSelfSeparation = cape.getMinimumSelfSeparation();
   const capeHemDrop = cape.getHemDrop();
   const capeMinimumLowerCapeDrop = cape.getMinimumLowerCapeDrop();
+  const capeMaximumLowerCapeLateralOffset = cape.getMaximumLowerCapeLateralOffset(finalAnchors);
+  const capeHemBackOffset = cape.getHemBackOffset(finalAnchors);
+  const capeMinimumHemGroundClearance = cape.getMinimumHemGroundClearance();
   const waterDiagnostics = water.getDiagnostics();
   const sceneBudget = analyzeScene(scene);
   const torchLights = torches.getLightDiagnostics();
@@ -189,6 +249,10 @@ export function runTechDemoHarness(simulatedSeconds = 12): TechDemoHarnessReport
     capeMinimumLowerCapeDrop > 0.48,
     `lower cape retained a floating fold (minimum drop ${capeMinimumLowerCapeDrop.toFixed(3)})`,
   );
+  invariant(jumpMaximumGroundClearance > 0.72, 'jump never cleared the procedural ground');
+  invariant(jumpMaximumGroundClearance < 1.05, 'jump exceeded its physically bounded apex');
+  invariant(jumpMaximumCapeHemRise > 0.3, 'cape hem did not follow the jumping character');
+  invariant(jumpLanded, 'player did not land after the harness jump');
   invariant(worldColliders.length >= 1_800, 'geometry-derived cave-object collision coverage regressed');
   invariant(waterDiagnostics.puddles >= 5, 'walkable puddle count regressed');
   invariant(waterDiagnostics.drops >= 10, 'water-drop emitters are missing');
@@ -218,7 +282,15 @@ export function runTechDemoHarness(simulatedSeconds = 12): TechDemoHarnessReport
     capeMinimumSelfSeparation,
     capeHemDrop,
     capeMinimumLowerCapeDrop,
+    capeMaximumLowerCapeLateralOffset,
+    capeHemBackOffset,
+    capeMinimumHemGroundClearance,
     capeStateFinite,
+    jump: {
+      maximumGroundClearance: jumpMaximumGroundClearance,
+      maximumCapeHemRise: jumpMaximumCapeHemRise,
+      landed: jumpLanded,
+    },
     water: waterDiagnostics,
     scene: sceneBudget,
     lighting: {

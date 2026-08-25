@@ -172,6 +172,16 @@ try {
     command,
     `window.__CAPE_DEMO__.setRunning(${running})`,
   );
+  const pressSpace = async () => {
+    const keyEvent = {
+      key: ' ',
+      code: 'Space',
+      windowsVirtualKeyCode: 32,
+      nativeVirtualKeyCode: 32,
+    };
+    await command('Input.dispatchKeyEvent', { type: 'keyDown', ...keyEvent });
+    await command('Input.dispatchKeyEvent', { type: 'keyUp', ...keyEvent });
+  };
   const advance = (duration, frameStep = 1 / 60) => evaluate(
     command,
     `window.__CAPE_DEMO__.advance(${JSON.stringify({ duration, frameStep })})`,
@@ -269,6 +279,7 @@ try {
   assert(afterWalk.cape.maximumBodyPenetration < 0.002, 'cape penetrated the animated character');
   assert(afterWalk.cape.maximumEnvironmentPenetration < 0.002, 'cape penetrated the cave during visual traversal');
   assert(afterWalk.cape.maximumEnvironmentFacePenetration < 0.002, 'a cave object pierced a cape triangle during visual traversal');
+  assert(afterWalk.cape.hemBackOffset < 0.75, 'walking pulled the cape into a running-length trail');
   assert(
     Math.abs(afterWalk.cape.hemCenter[2] - beforeWalk.cape.hemCenter[2]) > 1,
     'cape hem did not respond dynamically to traversal',
@@ -316,6 +327,10 @@ try {
   assert(runState.player.running, 'Shift running state did not engage');
   assert(runState.player.speed > 5.5, 'running did not exceed walking speed');
   assert(runState.player.gait.runningBlend > 0.85, 'running gait animation did not engage');
+  assert(
+    runState.cape.hemBackOffset > afterWalk.cape.hemBackOffset + 0.5,
+    'running did not produce a materially stronger cape trail than walking',
+  );
   await setView(1.18, 0.12, 4.1);
   await capture('character-running');
   const frameProfile = await profile(profileDurationSeconds, 1 / 144);
@@ -355,6 +370,9 @@ try {
   assert(settledCape.cape.minimumSelfSeparation > 0.05, 'settled cape collapsed through itself');
   assert(settledCape.cape.hemDrop > 0.72, 'cape retained a physically impossible inverted resting pose');
   assert(settledCape.cape.minimumLowerCapeDrop > 0.48, 'a lower cape panel remained suspended in mid-air');
+  assert(settledCape.cape.maximumLowerCapeLateralOffset < 0.18, 'settled cape remained swept sideways');
+  assert(settledCape.cape.minimumHemGroundClearance >= 0.032, 'cape hem penetrated the cave floor');
+  assert(settledCape.cape.minimumHemGroundClearance < 0.09, 'cape hem floated above the cave floor');
   await setView(0.08, 0.2, 4.25);
   await capture('cape-wrap-settled');
   assert(
@@ -372,6 +390,26 @@ try {
   const obliqueAttachment = await setView(-0.72, 0.52, 3.25);
   assert(obliqueAttachment.player.capeAttachment.maximumAnchorGap < 0.001, 'cape detached in the oblique attachment study');
   await capture('cape-attachment-oblique');
+
+  await setPlayerPose(beforeWalk.player.position, 0);
+  await advance(0.35, 1 / 120);
+  await setView(0.45, 0.08, 4.05);
+  const beforeJump = await diagnostics();
+  await pressSpace();
+  const jumpAscent = await advance(0.22, 1 / 120);
+  assert(!jumpAscent.player.grounded, 'Space did not launch the player');
+  assert(jumpAscent.player.verticalSpeed > 1.5, 'jump lost upward velocity too early');
+  assert(jumpAscent.player.groundClearance > 0.45, 'jump did not clear the cave floor');
+  assert(jumpAscent.cape.hemCenter[1] > beforeJump.cape.hemCenter[1] + 0.08, 'cape hem did not follow the jump');
+  assert(jumpAscent.cape.maximumBodyPenetration < 0.002, 'jumping cape penetrated the player');
+  assert(jumpAscent.cape.maximumEnvironmentPenetration < 0.002, 'jumping cape penetrated cave geometry');
+  await capture('character-jump-ascent');
+  const jumpLanded = await advance(1.05, 1 / 120);
+  assert(jumpLanded.player.grounded, 'player did not land after jumping');
+  assert(Math.abs(jumpLanded.player.groundClearance) < 0.002, 'landed player clipped through or floated above terrain');
+  assert(jumpLanded.cape.maximumBodyPenetration < 0.002, 'cape penetrated the player on landing');
+  assert(jumpLanded.cape.maximumEnvironmentPenetration < 0.002, 'cape penetrated cave geometry on landing');
+  await capture('character-jump-landed');
 
   await setPlayerPose([0.8, 0, -8], 0);
   await advance(0.35, 1 / 120);
@@ -443,6 +481,9 @@ try {
     settledCape,
     sharpLookUp,
     closeCamera,
+    beforeJump,
+    jumpAscent,
+    jumpLanded,
     bankBefore,
     bankAfter,
     formationContact,
