@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { PHYSICS_STEP } from './config';
+import { PHYSICS_STEP, PLAYER } from './config';
 import { ThirdPersonCamera } from './camera/ThirdPersonCamera';
 import { AdaptiveQuality, type QualityState } from './core/AdaptiveQuality';
 import { FixedStepClock } from './core/FixedStepClock';
@@ -9,16 +9,18 @@ import { configureTextureFiltering, createRockTextures } from './graphics/proced
 import { InputController } from './input/InputController';
 import { CinematicLighting } from './lighting/CinematicLighting';
 import { CapeSimulation } from './physics/CapeSimulation';
+import type { WorldSphereCollider } from './physics/colliders';
 import { Character } from './player/Character';
 import { CharacterController } from './player/CharacterController';
 import { LoadingScreen } from './ui/LoadingScreen';
 import { invariant } from './utils/assert';
 import { CaveAtmosphere } from './world/CaveAtmosphere';
 import { CaveWorld } from './world/CaveWorld';
-import { caveCenterX, floorHeightAt } from './world/caveProfile';
+import { caveCenterX, caveGroundHeightAt } from './world/caveProfile';
 import { MineralVeins } from './world/MineralVeins';
 import { TorchSystem } from './world/TorchSystem';
 import { WaterSystem } from './world/WaterSystem';
+import { WorldCollisionResolver } from './world/WorldCollisionResolver';
 
 export class CapeDemo {
   private readonly canvas: HTMLCanvasElement;
@@ -42,6 +44,8 @@ export class CapeDemo {
   private veins!: MineralVeins;
   private atmosphere!: CaveAtmosphere;
   private lighting!: CinematicLighting;
+  private worldCollision!: WorldCollisionResolver;
+  private worldColliders: readonly WorldSphereCollider[] = [];
   private fixedTime = 0;
   private harnessAccumulator = 0;
   private ready = false;
@@ -72,19 +76,25 @@ export class CapeDemo {
     this.water = new WaterSystem();
     this.atmosphere = new CaveAtmosphere();
     this.scene.add(this.veins.group, this.torches.group, this.water.group, this.atmosphere.points);
+    this.worldColliders = [
+      ...this.cave.worldColliders,
+      ...this.torches.worldColliders,
+      ...this.veins.worldColliders,
+    ];
+    this.worldCollision = new WorldCollisionResolver(this.worldColliders);
 
     await this.loading.update(0.54, 'Forging the traveller');
     this.character = new Character();
     const startZ = 11.8;
     const startX = caveCenterX(startZ);
-    this.character.root.position.set(startX, floorHeightAt(startX, startZ), startZ);
+    this.character.root.position.set(startX, this.worldCollision.getPlayerRootHeight(startX, startZ), startZ);
     this.character.root.updateMatrixWorld(true);
     this.scene.add(this.character.root);
     this.cape = new CapeSimulation(this.character.getCapeAnchors());
     this.scene.add(this.cape.mesh);
 
     this.input = new InputController(this.canvas, this.dismissOnboarding);
-    this.characterController = new CharacterController(this.character, this.input);
+    this.characterController = new CharacterController(this.character, this.input, this.worldCollision);
     this.thirdPersonCamera = new ThirdPersonCamera(this.camera, this.input, this.cave.cameraColliders);
     this.thirdPersonCamera.snapTo(this.character.root.position);
     this.lighting = new CinematicLighting(this.scene, this.pipeline.renderer);
@@ -133,7 +143,8 @@ export class CapeDemo {
     this.cape.step(
       step,
       anchors,
-      this.character.getBodySpheres(),
+      this.character.getCapeColliders(),
+      this.worldColliders,
       this.character.velocity,
       this.fixedTime,
     );
@@ -143,6 +154,7 @@ export class CapeDemo {
     const playerPosition = this.character.root.position;
     const playerSpeed = this.character.velocity.length();
     this.thirdPersonCamera.update(delta, playerPosition);
+    this.updateCameraFade();
     this.water.update(delta, this.fixedTime, playerPosition, this.character.root.rotation.y, playerSpeed);
     this.torches.update(this.fixedTime, playerPosition);
     this.veins.update(this.fixedTime, playerPosition);
@@ -189,6 +201,20 @@ export class CapeDemo {
           new THREE.Vector3().fromArray(position),
           new THREE.Vector3().fromArray(target),
         );
+        this.updateCameraFade();
+        this.pipeline.render(0);
+        return this.getDiagnostics();
+      },
+      setPlayerPose: ({ position, yaw = this.character.root.rotation.y }) => {
+        this.character.root.position.fromArray(position);
+        this.worldCollision.resolvePlayer(this.character.root.position);
+        this.character.root.rotation.y = yaw;
+        this.character.velocity.set(0, 0, 0);
+        this.character.root.updateMatrixWorld(true);
+        this.cape.reset(this.character.getCapeAnchors());
+        this.cape.syncGeometry();
+        this.thirdPersonCamera.snapTo(this.character.root.position);
+        this.updateCameraFade();
         this.pipeline.render(0);
         return this.getDiagnostics();
       },
@@ -278,14 +304,33 @@ export class CapeDemo {
         position: this.character.root.position.toArray(),
         speed: this.character.velocity.length(),
         inWater: this.water.isInWater(this.character.root.position),
+        groundClearance: this.character.root.position.y - PLAYER.footOffset - this.worldCollision.getGroundHeight(
+          this.character.root.position.x,
+          this.character.root.position.z,
+        ),
+        opacity: this.character.getOpacity(),
+      },
+      camera: {
+        distance: this.thirdPersonCamera.getActualDistance(),
+        pitch: this.thirdPersonCamera.getPitch(),
+        position: this.camera.position.toArray(),
+        groundClearance: this.camera.position.y - caveGroundHeightAt(
+          this.camera.position.x,
+          this.camera.position.z,
+        ),
       },
       cape: {
         maximumStructuralError: this.cape.getMaximumStructuralError(),
         maximumBodyPenetration: this.cape.getMaximumBodyPenetration(
-          this.character.getBodySpheres(),
+          this.character.getCapeColliders(),
           capeAnchors.back,
         ),
+        maximumEnvironmentPenetration: this.cape.getMaximumEnvironmentPenetration(this.worldColliders),
+        minimumSelfSeparation: this.cape.getMinimumSelfSeparation(),
+        hemDrop: this.cape.getHemDrop(),
         hemCenter: this.cape.getParticlePosition(6, 17).toArray(),
+        worldColliders: this.worldColliders.length,
+        worldContacts: this.cape.getWorldContactDiagnostics(),
       },
       water: this.water.getDiagnostics(),
       minerals: {
@@ -296,6 +341,13 @@ export class CapeDemo {
         lights: this.torches.getLightDiagnostics(),
       },
     };
+  }
+
+  private updateCameraFade(): void {
+    const distance = this.thirdPersonCamera.getActualDistance();
+    const opacity = 0.5 + THREE.MathUtils.smoothstep(distance, 0.72, 1.8) * 0.5;
+    this.character.setOpacity(opacity);
+    this.cape.setOpacity(opacity);
   }
 
   private readonly dispose = (): void => {

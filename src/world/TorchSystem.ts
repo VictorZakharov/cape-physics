@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { NearestPointLightPool, type LocalLightSource } from '../lighting/NearestPointLightPool';
+import type { WorldSphereCollider } from '../physics/colliders';
 import { SeededRandom } from '../utils/random';
 import { caveCenterX, caveHalfWidth, floorHeightAt } from './caveProfile';
 
@@ -36,6 +37,7 @@ const flameFragmentShader = /* glsl */ `
 
 export class TorchSystem {
   public readonly group = new THREE.Group();
+  public readonly worldColliders: WorldSphereCollider[] = [];
   private readonly torches: Torch[] = [];
   private readonly lightPool = new NearestPointLightPool(3, 'Torch');
   private readonly shadowLight: THREE.SpotLight;
@@ -126,6 +128,15 @@ export class TorchSystem {
     flame.scale.set(0.72, 1.8, 0.72);
     flame.position.y = 0.57;
     root.add(flame);
+
+    for (const offsetY of [-0.3, 0.04, 0.36]) {
+      this.worldColliders.push({
+        center: new THREE.Vector3(x, y + offsetY, z),
+        radius: offsetY > 0.3 ? 0.14 : 0.105,
+        walkable: false,
+        kind: 'torch',
+      });
+    }
 
     const worldFlamePosition = new THREE.Vector3(x, y + 0.58, z);
     this.group.add(root);

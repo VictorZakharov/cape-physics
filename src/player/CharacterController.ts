@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { PLAYER } from '../config';
 import type { InputController } from '../input/InputController';
 import { dampAngle } from '../utils/math';
-import { constrainToCave } from '../world/caveProfile';
+import type { WorldCollisionResolver } from '../world/WorldCollisionResolver';
 import type { Character } from './Character';
 
 export class CharacterController {
@@ -13,6 +13,7 @@ export class CharacterController {
   public constructor(
     private readonly character: Character,
     private readonly input: InputController,
+    private readonly worldCollision: WorldCollisionResolver,
   ) {}
 
   public update(delta: number, cameraYaw: number): void {
@@ -31,7 +32,7 @@ export class CharacterController {
     this.character.velocity.lerp(this.desiredVelocity, 1 - Math.exp(-response * delta));
     if (this.character.velocity.lengthSq() < 0.0001) this.character.velocity.set(0, 0, 0);
     this.character.root.position.addScaledVector(this.character.velocity, delta);
-    constrainToCave(this.character.root.position);
+    this.worldCollision.resolvePlayer(this.character.root.position);
 
     const planarSpeed = this.character.velocity.length();
     if (planarSpeed > 0.08) {

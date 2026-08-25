@@ -30,6 +30,7 @@ const waterVertexShader = /* glsl */ `
   varying vec3 vWorldPosition;
   varying vec2 vUv;
   varying float vWave;
+  varying vec2 vSlope;
 
   float rippleHeight(vec2 worldPosition) {
     float height = 0.0;
@@ -47,10 +48,20 @@ const waterVertexShader = /* glsl */ `
     return height;
   }
 
+  float surfaceHeight(vec2 worldPosition) {
+    float ambientWave = sin(worldPosition.x * 2.4 + uTime * 0.7)
+      * cos(worldPosition.y * 2.1 - uTime * 0.55) * 0.0025;
+    return rippleHeight(worldPosition) + ambientWave;
+  }
+
   void main() {
     vec4 flatWorld = modelMatrix * vec4(position, 1.0);
-    float ambientWave = sin(flatWorld.x * 2.4 + uTime * 0.7) * cos(flatWorld.z * 2.1 - uTime * 0.55) * 0.0025;
-    float wave = rippleHeight(flatWorld.xz) + ambientWave;
+    float wave = surfaceHeight(flatWorld.xz);
+    float slopeEpsilon = 0.035;
+    vSlope = vec2(
+      (surfaceHeight(flatWorld.xz + vec2(slopeEpsilon, 0.0)) - wave) / slopeEpsilon,
+      (surfaceHeight(flatWorld.xz + vec2(0.0, slopeEpsilon)) - wave) / slopeEpsilon
+    );
     vec3 transformed = position;
     transformed.z += wave;
     vec4 world = modelMatrix * vec4(transformed, 1.0);
@@ -69,6 +80,7 @@ const waterFragmentShader = /* glsl */ `
   varying vec3 vWorldPosition;
   varying vec2 vUv;
   varying float vWave;
+  varying vec2 vSlope;
 
   float hash(vec2 point) {
     return fract(sin(dot(point, vec2(127.1, 311.7))) * 43758.5453123);
@@ -107,16 +119,15 @@ const waterFragmentShader = /* glsl */ `
     float angle = atan(centered.y, centered.x);
     float irregularEdge = 0.91 + sin(angle * 5.0 + uTime * 0.08) * 0.035 + sin(angle * 9.0) * 0.025;
     float edgeDistance = length(centered);
-    float alphaEdge = 1.0 - smoothstep(irregularEdge - 0.09, irregularEdge, edgeDistance);
+    float edgeAntialias = max(fwidth(edgeDistance - irregularEdge) * 1.5, 0.002);
+    float alphaEdge = 1.0 - smoothstep(irregularEdge - 0.09 - edgeAntialias, irregularEdge + edgeAntialias, edgeDistance);
     if (alphaEdge < 0.015) discard;
 
-    vec3 macroNormal = normalize(cross(dFdx(vWorldPosition), dFdy(vWorldPosition)));
-    if (macroNormal.y < 0.0) macroNormal *= -1.0;
     vec2 detailGradient = microGradient(vWorldPosition.xz);
     vec3 normal = normalize(vec3(
-      macroNormal.x - detailGradient.x,
-      macroNormal.y,
-      macroNormal.z - detailGradient.y
+      -vSlope.x - detailGradient.x,
+      1.0,
+      -vSlope.y - detailGradient.y
     ));
     vec3 viewDirection = normalize(cameraPosition - vWorldPosition);
     float viewFacing = clamp(dot(normal, viewDirection), 0.0, 1.0);
@@ -184,7 +195,7 @@ export class WaterSystem {
     });
     this.material.name = 'Procedural ripple water';
 
-    const geometry = new THREE.PlaneGeometry(2, 2, 72, 52);
+    const geometry = new THREE.PlaneGeometry(2, 2, 96, 68);
     for (const puddle of this.puddles) {
       const mesh = new THREE.Mesh(geometry, this.material);
       mesh.position.copy(puddle.center);

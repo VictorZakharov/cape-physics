@@ -1,16 +1,20 @@
 import * as THREE from 'three';
 import { CAVE } from '../config';
 import type { SurfaceTextures } from '../graphics/proceduralTextures';
+import type { WorldSphereCollider } from '../physics/colliders';
 import { SeededRandom, periodicFbm } from '../utils/random';
+import { CaveColliderBuilder } from './CaveColliderBuilder';
 import { caveCeiling, caveCenterX, caveHalfWidth, floorHeightAt } from './caveProfile';
 import { createSpeleothemGeometry } from './SpeleothemGeometry';
 
 export class CaveWorld {
   public readonly group = new THREE.Group();
   public readonly cameraColliders: THREE.Object3D[];
+  public readonly worldColliders: readonly WorldSphereCollider[];
 
   private readonly walls: THREE.Mesh;
   private readonly floor: THREE.Mesh;
+  private readonly colliderBuilder = new CaveColliderBuilder();
 
   public constructor(textures: SurfaceTextures) {
     this.group.name = 'Procedural cave';
@@ -19,7 +23,8 @@ export class CaveWorld {
     this.group.add(this.walls, this.floor);
     this.createFormations(textures);
     this.createRockScatter(textures);
-    this.cameraColliders = [this.walls, this.floor];
+    this.cameraColliders = [this.walls];
+    this.worldColliders = this.colliderBuilder.colliders;
   }
 
   private createMaterial(textures: SurfaceTextures, wet = false): THREE.MeshStandardMaterial {
@@ -167,6 +172,7 @@ export class CaveWorld {
       quaternion.setFromEuler(new THREE.Euler(random.range(-0.12, 0.12), random.range(0, Math.PI), random.range(-0.12, 0.12)));
       scale.set(random.range(0.55, 1.6), random.range(0.55, 2.25), random.range(0.55, 1.6));
       matrix.compose(position, quaternion, scale);
+      this.colliderBuilder.addSpeleothem(position, quaternion, scale, false);
       const variant = index % ceilingFormations.length;
       ceilingFormations[variant]?.setMatrixAt(Math.floor(index / ceilingFormations.length), matrix);
       attachmentPosition.copy(position);
@@ -178,6 +184,7 @@ export class CaveWorld {
       );
       matrix.compose(attachmentPosition, quaternion, attachmentScale);
       attachments.setMatrixAt(index, matrix);
+      this.colliderBuilder.addCollar(attachmentPosition, attachmentScale);
     }
     ceilingFormations.forEach((mesh) => {
       mesh.instanceMatrix.needsUpdate = true;
@@ -203,6 +210,7 @@ export class CaveWorld {
       quaternion.setFromEuler(new THREE.Euler(random.range(-0.08, 0.08), random.range(0, Math.PI), random.range(-0.08, 0.08)));
       scale.set(random.range(0.55, 1.35), random.range(0.45, 1.75), random.range(0.55, 1.35));
       matrix.compose(position, quaternion, scale);
+      this.colliderBuilder.addSpeleothem(position, quaternion, scale, true);
       const variant = index % floorFormations.length;
       const cursor = floorCursors[variant] ?? 0;
       floorFormations[variant]?.setMatrixAt(cursor, matrix);
@@ -216,6 +224,7 @@ export class CaveWorld {
       );
       matrix.compose(attachmentPosition, quaternion, attachmentScale);
       attachments.setMatrixAt(54 + index, matrix);
+      this.colliderBuilder.addCollar(attachmentPosition, attachmentScale);
     }
     floorFormations.forEach((mesh) => {
       mesh.instanceMatrix.needsUpdate = true;
@@ -248,6 +257,7 @@ export class CaveWorld {
       scale.set(random.range(0.25, 1.25), random.range(0.18, 0.72), random.range(0.35, 1.4));
       matrix.compose(position, quaternion, scale);
       rocks.setMatrixAt(index, matrix);
+      this.colliderBuilder.addRock(position, scale);
     }
     rocks.instanceMatrix.needsUpdate = true;
     this.group.add(rocks);
