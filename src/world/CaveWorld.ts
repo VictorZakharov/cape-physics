@@ -3,6 +3,7 @@ import { CAVE } from '../config';
 import type { SurfaceTextures } from '../graphics/proceduralTextures';
 import { SeededRandom, periodicFbm } from '../utils/random';
 import { caveCeiling, caveCenterX, caveHalfWidth, floorHeightAt } from './caveProfile';
+import { createSpeleothemGeometry } from './SpeleothemGeometry';
 
 export class CaveWorld {
   public readonly group = new THREE.Group();
@@ -135,20 +136,30 @@ export class CaveWorld {
 
   private createFormations(textures: SurfaceTextures): void {
     const random = new SeededRandom(0x5ca1e);
-    const geometry = new THREE.ConeGeometry(0.32, 1.6, 7, 3);
-    geometry.translate(0, -0.8, 0);
-    const material = this.createMaterial(textures);
-    material.color.multiplyScalar(0.82);
-    const ceilingFormations = new THREE.InstancedMesh(geometry, material, 54);
-    ceilingFormations.name = 'Stalactites';
-    ceilingFormations.castShadow = true;
-    ceilingFormations.receiveShadow = true;
+    const material = this.createMaterial(textures, true);
+    material.color.multiplyScalar(0.9);
+    material.roughness = 0.64;
+    const variantGeometries = [0x51a1, 0x51a2, 0x51a3].map(createSpeleothemGeometry);
+    const ceilingFormations = variantGeometries.map((geometry, variant) => {
+      const mesh = new THREE.InstancedMesh(geometry, material, 18);
+      mesh.name = `Stalactites organic variant ${variant + 1}`;
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      return mesh;
+    });
+    const attachmentGeometry = new THREE.DodecahedronGeometry(0.38, 1);
+    const attachments = new THREE.InstancedMesh(attachmentGeometry, material, 82);
+    attachments.name = 'Flowstone formation collars';
+    attachments.castShadow = true;
+    attachments.receiveShadow = true;
 
     const matrix = new THREE.Matrix4();
     const quaternion = new THREE.Quaternion();
     const scale = new THREE.Vector3();
     const position = new THREE.Vector3();
-    for (let index = 0; index < ceilingFormations.count; index += 1) {
+    const attachmentPosition = new THREE.Vector3();
+    const attachmentScale = new THREE.Vector3();
+    for (let index = 0; index < 54; index += 1) {
       const z = random.range(CAVE.endZ + 2, CAVE.startZ - 2);
       const spread = random.range(-0.92, 0.92);
       const x = caveCenterX(z) + caveHalfWidth(z) * spread;
@@ -156,18 +167,35 @@ export class CaveWorld {
       quaternion.setFromEuler(new THREE.Euler(random.range(-0.12, 0.12), random.range(0, Math.PI), random.range(-0.12, 0.12)));
       scale.set(random.range(0.55, 1.6), random.range(0.55, 2.25), random.range(0.55, 1.6));
       matrix.compose(position, quaternion, scale);
-      ceilingFormations.setMatrixAt(index, matrix);
+      const variant = index % ceilingFormations.length;
+      ceilingFormations[variant]?.setMatrixAt(Math.floor(index / ceilingFormations.length), matrix);
+      attachmentPosition.copy(position);
+      attachmentPosition.y -= 0.08;
+      attachmentScale.set(
+        scale.x * random.range(0.9, 1.35),
+        random.range(0.2, 0.38),
+        scale.z * random.range(0.9, 1.35),
+      );
+      matrix.compose(attachmentPosition, quaternion, attachmentScale);
+      attachments.setMatrixAt(index, matrix);
     }
-    ceilingFormations.instanceMatrix.needsUpdate = true;
-    this.group.add(ceilingFormations);
+    ceilingFormations.forEach((mesh) => {
+      mesh.instanceMatrix.needsUpdate = true;
+      this.group.add(mesh);
+    });
 
-    const floorGeometry = geometry.clone();
-    floorGeometry.rotateZ(Math.PI);
-    const floorFormations = new THREE.InstancedMesh(floorGeometry, material, 28);
-    floorFormations.name = 'Stalagmites';
-    floorFormations.castShadow = true;
-    floorFormations.receiveShadow = true;
-    for (let index = 0; index < floorFormations.count; index += 1) {
+    const floorCounts = [10, 9, 9];
+    const floorFormations = variantGeometries.map((geometry, variant) => {
+      const floorGeometry = geometry.clone();
+      floorGeometry.rotateZ(Math.PI);
+      const mesh = new THREE.InstancedMesh(floorGeometry, material, floorCounts[variant] ?? 0);
+      mesh.name = `Stalagmites organic variant ${variant + 1}`;
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      return mesh;
+    });
+    const floorCursors = [0, 0, 0];
+    for (let index = 0; index < 28; index += 1) {
       const z = random.range(CAVE.endZ + 2, CAVE.startZ - 2);
       const side = random.next() > 0.5 ? 1 : -1;
       const x = caveCenterX(z) + side * caveHalfWidth(z) * random.range(0.7, 0.94);
@@ -175,10 +203,26 @@ export class CaveWorld {
       quaternion.setFromEuler(new THREE.Euler(random.range(-0.08, 0.08), random.range(0, Math.PI), random.range(-0.08, 0.08)));
       scale.set(random.range(0.55, 1.35), random.range(0.45, 1.75), random.range(0.55, 1.35));
       matrix.compose(position, quaternion, scale);
-      floorFormations.setMatrixAt(index, matrix);
+      const variant = index % floorFormations.length;
+      const cursor = floorCursors[variant] ?? 0;
+      floorFormations[variant]?.setMatrixAt(cursor, matrix);
+      floorCursors[variant] = cursor + 1;
+      attachmentPosition.copy(position);
+      attachmentPosition.y += 0.06;
+      attachmentScale.set(
+        scale.x * random.range(0.86, 1.25),
+        random.range(0.18, 0.34),
+        scale.z * random.range(0.86, 1.25),
+      );
+      matrix.compose(attachmentPosition, quaternion, attachmentScale);
+      attachments.setMatrixAt(54 + index, matrix);
     }
-    floorFormations.instanceMatrix.needsUpdate = true;
-    this.group.add(floorFormations);
+    floorFormations.forEach((mesh) => {
+      mesh.instanceMatrix.needsUpdate = true;
+      this.group.add(mesh);
+    });
+    attachments.instanceMatrix.needsUpdate = true;
+    this.group.add(attachments);
   }
 
   private createRockScatter(textures: SurfaceTextures): void {

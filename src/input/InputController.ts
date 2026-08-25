@@ -3,6 +3,7 @@ import * as THREE from 'three';
 export class InputController {
   private readonly pressed = new Set<string>();
   private readonly orbitDelta = new THREE.Vector2();
+  private readonly movement = new THREE.Vector2();
   private readonly virtualMovement = new THREE.Vector2();
   private zoomDelta = 0;
   private activePointer: number | null = null;
@@ -26,10 +27,10 @@ export class InputController {
   }
 
   public getMovement(): THREE.Vector2 {
-    if (this.virtualMovementEnabled) return this.virtualMovement.clone();
+    if (this.virtualMovementEnabled) return this.virtualMovement;
     const horizontal = Number(this.pressed.has('KeyD')) - Number(this.pressed.has('KeyA'));
     const forward = Number(this.pressed.has('KeyW')) - Number(this.pressed.has('KeyS'));
-    return new THREE.Vector2(horizontal, forward).clampLength(0, 1);
+    return this.movement.set(horizontal, forward).clampLength(0, 1);
   }
 
   public setVirtualMovement(horizontal: number, forward: number): void {
@@ -42,10 +43,9 @@ export class InputController {
     this.virtualMovementEnabled = false;
   }
 
-  public consumeOrbitDelta(): THREE.Vector2 {
-    const result = this.orbitDelta.clone();
+  public consumeOrbitDelta(target: THREE.Vector2): void {
+    target.copy(this.orbitDelta);
     this.orbitDelta.set(0, 0);
-    return result;
   }
 
   public consumeZoomDelta(): number {

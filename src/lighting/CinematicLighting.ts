@@ -7,6 +7,9 @@ export class CinematicLighting {
   private readonly capeFill: THREE.PointLight;
   private readonly target = new THREE.Object3D();
   private readonly environmentTarget: THREE.WebGLRenderTarget;
+  private readonly rimOffset = new THREE.Vector3(-2.8, 4.7, 3.2);
+  private readonly targetOffset = new THREE.Vector3(0, 1.05, 0);
+  private readonly fillOffset = new THREE.Vector3(0, 1.4, 0.85);
 
   public constructor(scene: THREE.Scene, renderer: THREE.WebGLRenderer) {
     this.group.name = 'Cinematic fill lighting';
@@ -27,9 +30,9 @@ export class CinematicLighting {
   }
 
   public update(playerPosition: THREE.Vector3, time: number): void {
-    this.rimLight.position.copy(playerPosition).add(new THREE.Vector3(-2.8, 4.7, 3.2));
-    this.target.position.copy(playerPosition).add(new THREE.Vector3(0, 1.05, 0));
-    this.capeFill.position.copy(playerPosition).add(new THREE.Vector3(0, 1.4, 0.85));
+    this.rimLight.position.copy(playerPosition).add(this.rimOffset);
+    this.target.position.copy(playerPosition).add(this.targetOffset);
+    this.capeFill.position.copy(playerPosition).add(this.fillOffset);
     this.capeFill.intensity = 2.6 + Math.sin(time * 1.7) * 0.18;
   }
 

@@ -3,12 +3,15 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { calculateRenderSizing, type RenderSizing } from './renderSizing';
 
 export class RenderPipeline {
   public readonly renderer: THREE.WebGLRenderer;
   private readonly composer: EffectComposer;
   private readonly bloom: UnrealBloomPass;
   private resolutionScale = 1;
+  private sizing: RenderSizing | null = null;
+  private targetResizeCount = 0;
 
   public constructor(
     canvas: HTMLCanvasElement,
@@ -17,7 +20,7 @@ export class RenderPipeline {
   ) {
     this.renderer = new THREE.WebGLRenderer({
       canvas,
-      antialias: true,
+      antialias: false,
       alpha: false,
       powerPreference: 'high-performance',
       stencil: false,
@@ -49,17 +52,45 @@ export class RenderPipeline {
   }
 
   public resize(): void {
-    const pixelRatio = Math.min(window.devicePixelRatio, 1.65) * this.resolutionScale;
-    this.renderer.setPixelRatio(pixelRatio);
-    this.renderer.setSize(window.innerWidth, window.innerHeight, false);
-    this.composer.setPixelRatio(pixelRatio);
-    this.composer.setSize(window.innerWidth, window.innerHeight);
+    const next = calculateRenderSizing(
+      window.innerWidth,
+      window.innerHeight,
+      window.devicePixelRatio,
+      this.resolutionScale,
+    );
+    const sizeChanged = !this.sizing
+      || next.width !== this.sizing.width
+      || next.height !== this.sizing.height;
+    const ratioChanged = !this.sizing
+      || Math.abs(next.pixelRatio - this.sizing.pixelRatio) > 0.000_1;
+    if (!sizeChanged && !ratioChanged) return;
+
+    if (ratioChanged) {
+      this.renderer.setPixelRatio(next.pixelRatio);
+      // EffectComposer.setPixelRatio already resizes every internal target.
+      this.composer.setPixelRatio(next.pixelRatio);
+      this.targetResizeCount += 1;
+    }
+    if (sizeChanged) {
+      this.renderer.setSize(next.width, next.height, false);
+      this.composer.setSize(next.width, next.height);
+      this.targetResizeCount += 1;
+    }
+    this.sizing = next;
   }
 
   public setResolutionScale(scale: number): void {
     if (Math.abs(scale - this.resolutionScale) < 0.001) return;
     this.resolutionScale = scale;
     this.resize();
+  }
+
+  public getSizingDiagnostics() {
+    const sizing = this.sizing ?? calculateRenderSizing(1, 1, 1, this.resolutionScale);
+    return {
+      ...sizing,
+      targetResizeCount: this.targetResizeCount,
+    };
   }
 
   public async compile(scene: THREE.Scene, camera: THREE.Camera): Promise<void> {

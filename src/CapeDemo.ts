@@ -158,7 +158,11 @@ export class CapeDemo {
   };
 
   private readonly handleVisibilityChange = (): void => {
-    if (!document.hidden) this.clock.reset(performance.now());
+    if (!document.hidden) {
+      const timestamp = performance.now();
+      this.clock.reset(timestamp);
+      this.performance.resume(timestamp);
+    }
   };
 
   private readonly dismissOnboarding = (): void => {
@@ -192,6 +196,7 @@ export class CapeDemo {
         this.input.setVirtualMovement(horizontal, forward);
       },
       advance: ({ duration, frameStep = 1 / 60 }) => this.advanceHarness(duration, frameStep),
+      profile: ({ duration, frameStep = 1 / 60 }) => this.profileHarness(duration, frameStep),
     };
   }
 
@@ -203,21 +208,60 @@ export class CapeDemo {
       const delta = Math.min(frameStep, remaining);
       lastDelta = delta;
       remaining -= delta;
-      this.harnessAccumulator += delta;
-      let simulated = false;
-      while (this.harnessAccumulator + 0.000_000_1 >= PHYSICS_STEP) {
-        this.simulateStep(PHYSICS_STEP);
-        this.harnessAccumulator -= PHYSICS_STEP;
-        simulated = true;
-      }
-      if (simulated) this.cape.syncGeometry();
-      this.updateScene(delta);
+      this.advanceHarnessFrame(delta);
     }
     this.pipeline.render(lastDelta);
     return this.getDiagnostics();
   }
 
+  private profileHarness(duration: number, requestedFrameStep: number) {
+    const frameStep = THREE.MathUtils.clamp(requestedFrameStep, 1 / 144, 1 / 30);
+    let remaining = THREE.MathUtils.clamp(duration, 0, 12);
+    const frameDurations: number[] = [];
+    const programsBefore = this.pipeline.renderer.info.programs?.length ?? 0;
+    const context = this.pipeline.renderer.getContext();
+
+    while (remaining > 0.000_001) {
+      const delta = Math.min(frameStep, remaining);
+      remaining -= delta;
+      const frameStart = performance.now();
+      this.advanceHarnessFrame(delta);
+      this.pipeline.render(delta);
+      context.finish();
+      frameDurations.push(performance.now() - frameStart);
+    }
+
+    frameDurations.sort((first, second) => first - second);
+    const total = frameDurations.reduce((sum, value) => sum + value, 0);
+    const p95Index = Math.min(
+      frameDurations.length - 1,
+      Math.floor(frameDurations.length * 0.95),
+    );
+    return {
+      frames: frameDurations.length,
+      averageFrameMilliseconds: frameDurations.length > 0 ? total / frameDurations.length : 0,
+      p95FrameMilliseconds: frameDurations[p95Index] ?? 0,
+      maximumFrameMilliseconds: frameDurations.at(-1) ?? 0,
+      programsBefore,
+      programsAfter: this.pipeline.renderer.info.programs?.length ?? 0,
+      diagnostics: this.getDiagnostics(),
+    };
+  }
+
+  private advanceHarnessFrame(delta: number): void {
+    this.harnessAccumulator += delta;
+    let simulated = false;
+    while (this.harnessAccumulator + 0.000_000_1 >= PHYSICS_STEP) {
+      this.simulateStep(PHYSICS_STEP);
+      this.harnessAccumulator -= PHYSICS_STEP;
+      simulated = true;
+    }
+    if (simulated) this.cape.syncGeometry();
+    this.updateScene(delta);
+  }
+
   private getDiagnostics() {
+    const capeAnchors = this.character.getCapeAnchors();
     return {
       ready: this.ready,
       simulationTime: this.fixedTime,
@@ -227,6 +271,8 @@ export class CapeDemo {
         calls: this.pipeline.renderer.info.render.calls,
         triangles: this.pipeline.renderer.info.render.triangles,
         pixelRatio: this.pipeline.renderer.getPixelRatio(),
+        programs: this.pipeline.renderer.info.programs?.length ?? 0,
+        sizing: this.pipeline.getSizingDiagnostics(),
       },
       player: {
         position: this.character.root.position.toArray(),
@@ -235,11 +281,19 @@ export class CapeDemo {
       },
       cape: {
         maximumStructuralError: this.cape.getMaximumStructuralError(),
+        maximumBodyPenetration: this.cape.getMaximumBodyPenetration(
+          this.character.getBodySpheres(),
+          capeAnchors.back,
+        ),
         hemCenter: this.cape.getParticlePosition(6, 17).toArray(),
       },
       water: this.water.getDiagnostics(),
       minerals: {
         clusters: this.veins.getClusterPositions(),
+        lights: this.veins.getLightDiagnostics(),
+      },
+      torches: {
+        lights: this.torches.getLightDiagnostics(),
       },
     };
   }

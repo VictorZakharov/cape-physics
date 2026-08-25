@@ -29,9 +29,12 @@ The renderer is uncapped and supports displays up to 144 Hz and beyond. A fixed 
 - Five walkable procedural puddles with localized shader ripples
 - Thirteen deterministic ceiling-drip emitters, splash particles, and separate footstep events
 - Procedural rock color, height, normal, and roughness maps
+- Three organic wet speleothem profiles with curved deposition bands and instanced flowstone collars
 - Instanced cave formations and crystals; merged mineral branches for a low draw-call budget
 - Flickering torch meshes, emissive flames, bloom, fog, dust, and glowing mineral veins
 - AgX tone mapping, physically based materials, soft shadows, and a single nearest-torch shadow proxy
+- Fixed-size nearest-light pools that prevent traversal-time PBR shader recompilation
+- Pixel-budgeted post-processing and rate-limited adaptive-resolution reallocations
 - Compact live FPS, frame-time, average, one-percent-low, and sparkline HUD
 - Keyboard accessibility, reduced-motion support, responsive UI, and loading feedback
 
@@ -46,12 +49,15 @@ bun run verify         # check, production build, and systems harness
 
 The systems harness constructs the complete scene graph without a browser or GPU and checks finite cloth state, constraint error, drip/step activity, geometry validity, triangle and draw-call budgets, shadow-light count, and average physics-step cost.
 
-The visual audit is repository-owned rather than test-framework-dependent. It launches installed Edge or Chrome headlessly through the DevTools protocol, drives the deterministic in-app harness, renders rear/side/front, puddle, dynamic-water, and mineral close-ups, and fails on:
+The visual audit is repository-owned rather than test-framework-dependent. It launches installed Edge or Chrome headlessly through the DevTools protocol, drives the deterministic in-app harness, renders rear/side/front, reversal-wrap, puddle, dynamic-water, and mineral close-ups, and fails on:
 
 - browser exceptions or console errors;
 - broken movement or camera traversal;
 - missing natural or footstep ripple emissions;
 - unstable cape constraints;
+- any cape penetration during an aggressive reversal;
+- shader-program growth during a 1,728-frame, 144 Hz traversal across light boundaries;
+- oversized high-density post-processing targets or severe synchronized long frames;
 - unchanged water across simulated time; or
 - a changing frame while simulation time is paused.
 

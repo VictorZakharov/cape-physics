@@ -126,11 +126,36 @@ try {
     command,
     `window.__CAPE_DEMO__.advance(${JSON.stringify({ duration, frameStep })})`,
   );
+  const profile = (duration, frameStep = 1 / 60) => evaluate(
+    command,
+    `window.__CAPE_DEMO__.profile(${JSON.stringify({ duration, frameStep })})`,
+  );
 
   const initial = await diagnostics();
   assert(initial.ready, 'demo harness did not report ready');
   assert(initial.water.puddles === 5, 'procedural puddles are missing');
   assert(initial.water.drops >= 10, 'ceiling drips are missing');
+  assert(initial.torches.lights.visibleLights === initial.torches.lights.lights, 'torch light pool is not compile-stable');
+  assert(initial.minerals.lights.visibleLights === initial.minerals.lights.lights, 'mineral light pool is not compile-stable');
+
+  await command('Emulation.setDeviceMetricsOverride', {
+    width: 3840,
+    height: 2160,
+    deviceScaleFactor: 2,
+    mobile: false,
+  });
+  await evaluate(command, 'window.dispatchEvent(new Event("resize")); true');
+  await delay(120);
+  const highDensity = await diagnostics();
+  assert(highDensity.renderer.sizing.renderPixels <= 3_600_000, 'high-density render targets exceeded their memory budget');
+  await command('Emulation.setDeviceMetricsOverride', {
+    width: 1600,
+    height: 900,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await evaluate(command, 'window.dispatchEvent(new Event("resize")); true');
+  await delay(120);
   await advance(1.2);
   await setView(0.08, 0.22, 4.5);
   await capture('rear-cape');
@@ -151,6 +176,7 @@ try {
   assert(afterWalk.player.inWater, 'visual traversal did not stop inside the first puddle');
   assert(afterWalk.water.footstepRipples >= 2, 'walking did not emit footstep ripples');
   assert(afterWalk.cape.maximumStructuralError < 0.04, 'cape constraints drifted during visual traversal');
+  assert(afterWalk.cape.maximumBodyPenetration < 0.002, 'cape penetrated the animated character');
   assert(
     Math.abs(afterWalk.cape.hemCenter[2] - beforeWalk.cape.hemCenter[2]) > 1,
     'cape hem did not respond dynamically to traversal',
@@ -181,6 +207,23 @@ try {
   );
   await capture('mineral-veins');
 
+  await setMovement(0, 1);
+  const frameProfile = await profile(12, 1 / 144);
+  await setMovement(0, 0);
+  assert(frameProfile.frames === 1_728, '144 Hz traversal did not render every requested frame');
+  assert(frameProfile.programsAfter === frameProfile.programsBefore, 'light traversal compiled new shader programs');
+  assert(frameProfile.p95FrameMilliseconds < 120, 'sustained rendered traversal exceeded the p95 frame budget');
+  assert(frameProfile.maximumFrameMilliseconds < 750, 'rendered traversal contained a severe long frame');
+  assert(frameProfile.diagnostics.cape.maximumBodyPenetration < 0.002, 'cape penetrated the body during profiled traversal');
+
+  await setView(1.33, 0.16, 4.35);
+  await setMovement(0, -1);
+  await advance(0.9, 1 / 120);
+  await setMovement(0, 0);
+  const wrapState = await advance(0.12, 1 / 120);
+  assert(wrapState.cape.maximumBodyPenetration < 0.002, 'cape penetrated the body during visual reversal');
+  await capture('cape-wrap-reversal');
+
   await setView(Math.PI, 0.15, 4.2);
   await capture('front-character');
 
@@ -197,10 +240,13 @@ try {
     browser: browserExecutable,
     captures,
     initial,
+    highDensity,
     beforeWalk,
     afterWalk,
     beforeDrips,
     afterDrips,
+    frameProfile,
+    wrapState,
     final,
   };
   writeFileSync(join(outputRoot, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);

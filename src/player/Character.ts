@@ -34,9 +34,20 @@ export class Character {
   private readonly leftAnchorWorld = new THREE.Vector3();
   private readonly rightAnchorWorld = new THREE.Vector3();
   private readonly backWorld = new THREE.Vector3();
-  private readonly bodyCenter = new THREE.Vector3();
-  private readonly shoulderCenter = new THREE.Vector3();
-  private readonly hipCenter = new THREE.Vector3();
+  private readonly capeAnchors: CapeAnchors = {
+    left: this.leftAnchorWorld,
+    right: this.rightAnchorWorld,
+    back: this.backWorld,
+  };
+  private readonly bodySpheres: BodySphere[] = [
+    { center: new THREE.Vector3(), radius: 0.23 },
+    { center: new THREE.Vector3(), radius: 0.23 },
+    { center: new THREE.Vector3(), radius: 0.35 },
+    { center: new THREE.Vector3(), radius: 0.31 },
+    { center: new THREE.Vector3(), radius: 0.28 },
+    { center: new THREE.Vector3(), radius: 0.16 },
+    { center: new THREE.Vector3(), radius: 0.16 },
+  ];
   private walkPhase = 0;
 
   public constructor() {
@@ -64,21 +75,34 @@ export class Character {
     this.leftCapeAnchor.getWorldPosition(this.leftAnchorWorld);
     this.rightCapeAnchor.getWorldPosition(this.rightAnchorWorld);
     this.backWorld.set(0, 0, 1).applyQuaternion(this.root.quaternion).normalize();
-    return { left: this.leftAnchorWorld, right: this.rightAnchorWorld, back: this.backWorld };
+    return this.capeAnchors;
   }
 
   public getBodySpheres(): readonly BodySphere[] {
-    // Shift the sphere centers toward the chest. Their rear surfaces then sit
-    // on the visible back instead of behind it, so the pinned collar and the
-    // first free cloth row do not receive contradictory constraints.
-    this.root.localToWorld(this.bodyCenter.set(0, 1.17, -0.11));
-    this.root.localToWorld(this.shoulderCenter.set(0, 1.48, -0.17));
-    this.root.localToWorld(this.hipCenter.set(0, 0.84, -0.08));
-    return [
-      { center: this.shoulderCenter, radius: 0.35 },
-      { center: this.bodyCenter, radius: 0.31 },
-      { center: this.hipCenter, radius: 0.27 },
-    ];
+    const [
+      leftShoulder,
+      rightShoulder,
+      upperTorso,
+      lowerTorso,
+      hips,
+      leftUpperArm,
+      rightUpperArm,
+    ] = this.bodySpheres;
+    if (!leftShoulder || !rightShoulder || !upperTorso || !lowerTorso || !hips || !leftUpperArm || !rightUpperArm) {
+      throw new Error('Character cape collider configuration is incomplete.');
+    }
+
+    // Centers sit slightly chestward, making each rear hemisphere coincide
+    // with the visible armor. Separate shoulder and arm lobes give the cloth
+    // a continuous silhouette to slide around during gait animation.
+    this.rig.localToWorld(leftShoulder.center.set(-0.31, 1.46, -0.05));
+    this.rig.localToWorld(rightShoulder.center.set(0.31, 1.46, -0.05));
+    this.rig.localToWorld(upperTorso.center.set(0, 1.31, -0.13));
+    this.rig.localToWorld(lowerTorso.center.set(0, 1.04, -0.1));
+    this.rig.localToWorld(hips.center.set(0, 0.82, -0.06));
+    this.leftArm.localToWorld(leftUpperArm.center.set(0, -0.24, 0));
+    this.rightArm.localToWorld(rightUpperArm.center.set(0, -0.24, 0));
+    return this.bodySpheres;
   }
 
   private buildBody(): void {
