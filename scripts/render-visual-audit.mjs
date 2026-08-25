@@ -102,6 +102,36 @@ try {
   ]);
   await waitForExpression(command, 'window.__CAPE_DEMO__?.ready === true', 60_000);
   await evaluate(command, `(() => {
+    window.__COPIED_CAPE_PERFORMANCE_REPORT__ = null;
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: async (text) => {
+          window.__COPIED_CAPE_PERFORMANCE_REPORT__ = text;
+        },
+      },
+    });
+    document.querySelector('[data-performance-panel]')?.click();
+    return true;
+  })()`);
+  await waitForExpression(
+    command,
+    'typeof window.__COPIED_CAPE_PERFORMANCE_REPORT__ === "string"',
+    5_000,
+  );
+  const copiedPerformanceReport = await evaluate(
+    command,
+    'window.__COPIED_CAPE_PERFORMANCE_REPORT__',
+  );
+  assert(copiedPerformanceReport.includes('Cape Physics performance report'), 'FPS panel copied no diagnostic report');
+  assert(copiedPerformanceReport.includes('Renderer:'), 'copied performance report omitted renderer data');
+  assert(copiedPerformanceReport.includes('Scene:'), 'copied performance report omitted scene data');
+  const copyFeedback = await evaluate(
+    command,
+    'document.querySelector("[data-performance-copy]")?.textContent?.trim()',
+  );
+  assert(copyFeedback === 'COPIED 15S REPORT', 'FPS panel did not show successful copy feedback');
+  await evaluate(command, `(() => {
     const style = document.createElement('style');
     style.textContent = '.performance-panel,.controls,.title-card,.quality-badge,.onboarding,.loading,.film-grain{display:none!important}';
     document.head.append(style);
@@ -171,6 +201,8 @@ try {
   assert(initial.minerals.lights.visibleLights === initial.minerals.lights.lights, 'mineral light pool is not compile-stable');
   assert(initial.cape.worldColliders >= 1_800, 'geometry-derived cave-object collision proxies are missing');
   assert(initial.cape.maximumBodyPenetration < 0.002, 'pinned cape neckline starts inside the character');
+  assert(initial.player.capeAttachment.meshes === 2, 'batched shoulder yoke or cape ties are missing');
+  assert(initial.player.capeAttachment.maximumAnchorGap < 0.001, 'rendered cape attachment does not overlap both simulation anchors');
   assert(initial.water.surfaceAlphaRange[1] <= 0.6, 'water surface is too opaque');
   assert(initial.water.minimumInteriorDepth > 0.04, 'water is not seated inside a terrain basin');
   assert(initial.water.minimumRimClearance > 0.02, 'water surface rises above its containing rim');
@@ -337,6 +369,9 @@ try {
   await capture('front-character');
   await setView(0, 0.12, 3.1);
   await capture('cape-neckline');
+  const obliqueAttachment = await setView(-0.72, 0.52, 3.25);
+  assert(obliqueAttachment.player.capeAttachment.maximumAnchorGap < 0.001, 'cape detached in the oblique attachment study');
+  await capture('cape-attachment-oblique');
 
   await setPlayerPose([0.8, 0, -8], 0);
   await advance(0.35, 1 / 120);

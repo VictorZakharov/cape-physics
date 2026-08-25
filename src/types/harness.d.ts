@@ -32,6 +32,10 @@ interface CapeDemoDiagnostics {
       readonly bob: number;
       readonly runningBlend: number;
     };
+    readonly capeAttachment: {
+      readonly meshes: number;
+      readonly maximumAnchorGap: number;
+    };
   };
   readonly camera: {
     readonly distance: number;

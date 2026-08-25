@@ -1,6 +1,7 @@
 import * as THREE from 'three';
-import { CAMERA_NEAR_OPACITY, PLAYER } from '../config';
+import { CAMERA_NEAR_OPACITY, CAPE, PLAYER } from '../config';
 import type { CapsuleCollider } from '../physics/colliders';
+import { createCapeAttachment } from './CapeAttachment';
 
 export interface CapeAnchors {
   readonly left: THREE.Vector3;
@@ -30,6 +31,7 @@ export class Character {
   private readonly leftAnchorWorld = new THREE.Vector3();
   private readonly rightAnchorWorld = new THREE.Vector3();
   private readonly backWorld = new THREE.Vector3();
+  private readonly capeAttachmentBounds = new THREE.Box3();
   private readonly capeAnchors: CapeAnchors = {
     left: this.leftAnchorWorld,
     right: this.rightAnchorWorld,
@@ -43,6 +45,7 @@ export class Character {
     { start: new THREE.Vector3(), end: new THREE.Vector3(), radius: 0.115, name: 'right arm' },
   ];
   private readonly materials: THREE.Material[] = [];
+  private capeAttachment!: THREE.Group;
   private opacity = 1;
   private walkPhase = 0;
   private gaitBob = 0;
@@ -113,6 +116,25 @@ export class Character {
     return { bob: this.gaitBob, runningBlend: this.runningBlend };
   }
 
+  public getCapeAttachmentDiagnostics(): {
+    readonly meshes: number;
+    readonly maximumAnchorGap: number;
+  } {
+    const anchors = this.getCapeAnchors();
+    this.capeAttachmentBounds.setFromObject(this.capeAttachment);
+    let meshes = 0;
+    this.capeAttachment.traverse((object) => {
+      if (object instanceof THREE.Mesh) meshes += 1;
+    });
+    return {
+      meshes,
+      maximumAnchorGap: Math.max(
+        this.capeAttachmentBounds.distanceToPoint(anchors.left),
+        this.capeAttachmentBounds.distanceToPoint(anchors.right),
+      ),
+    };
+  }
+
   private buildBody(): void {
     const armor = new THREE.MeshPhysicalMaterial({
       color: 0x2a383d,
@@ -125,7 +147,16 @@ export class Character {
     const leather = new THREE.MeshStandardMaterial({ color: 0x342019, roughness: 0.86, metalness: 0.02 });
     const trim = new THREE.MeshStandardMaterial({ color: 0xa9864f, roughness: 0.34, metalness: 0.72 });
     const cloth = new THREE.MeshStandardMaterial({ color: 0x20282a, roughness: 0.94, metalness: 0 });
-    this.materials.push(armor, darkMetal, leather, trim, cloth);
+    const capeFabric = new THREE.MeshPhysicalMaterial({
+      color: 0x940a13,
+      roughness: 0.78,
+      metalness: 0.01,
+      sheen: 0.92,
+      sheenColor: new THREE.Color(0x6f0713),
+      sheenRoughness: 0.72,
+      side: THREE.DoubleSide,
+    });
+    this.materials.push(armor, darkMetal, leather, trim, cloth, capeFabric);
     for (const material of this.materials) {
       material.transparent = false;
       material.depthWrite = true;
@@ -189,8 +220,19 @@ export class Character {
     rightShoulder.rotation.z = -0.35;
     this.rig.add(leftShoulder, rightShoulder);
 
-    this.leftCapeAnchor.position.set(-0.29, 1.49, 0.25);
-    this.rightCapeAnchor.position.set(0.29, 1.49, 0.25);
+    this.capeAttachment = createCapeAttachment(capeFabric, trim);
+    this.rig.add(this.capeAttachment);
+
+    this.leftCapeAnchor.position.set(
+      -CAPE.attachment.halfWidth,
+      CAPE.attachment.height,
+      CAPE.attachment.depth,
+    );
+    this.rightCapeAnchor.position.set(
+      CAPE.attachment.halfWidth,
+      CAPE.attachment.height,
+      CAPE.attachment.depth,
+    );
     this.rig.add(this.leftCapeAnchor, this.rightCapeAnchor);
   }
 

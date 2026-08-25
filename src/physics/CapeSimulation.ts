@@ -383,8 +383,8 @@ export class CapeSimulation {
   private setAnchorTarget(anchors: CapeAnchors, progress: number, target: THREE.Vector3): void {
     const neckline = Math.sin(progress * Math.PI);
     target.lerpVectors(anchors.left, anchors.right, progress);
-    target.y += neckline * 0.052;
-    target.addScaledVector(anchors.back, neckline * 0.055);
+    target.y += neckline * CAPE.attachment.necklineRise;
+    target.addScaledVector(anchors.back, neckline * CAPE.attachment.necklineDepth);
   }
 
   private dampResidualMotion(strength: number): void {

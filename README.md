@@ -25,6 +25,7 @@ Open the printed local URL. A current WebGL 2 browser with hardware acceleration
 - Left- or right-mouse drag - orbit the third-person camera
 - Drag upward - look upward (reversed vertical orbit)
 - Mouse wheel - zoom
+- Click the FPS graph - copy a rolling 15-second performance report
 - `Esc` - release pointer interaction
 
 The renderer is uncapped for displays up to 144 Hz and beyond. Physics runs at a fixed 120 Hz so cloth behavior is independent of render rate, while adaptive resolution protects GPU frame pacing.
@@ -32,7 +33,7 @@ The renderer is uncapped for displays up to 144 Hz and beyond. Physics runs at a
 ## Highlights
 
 - Position-based cape with structural, shear, short-range bending, and long-range anti-fold constraints
-- Body-clear curved neckline attachment across both shoulders, backed by a procedural gorget and paired cape clasps
+- Body-clear curved neckline attachment concealed beneath a batched procedural shoulder yoke, gathered fabric seam, paired ties, gorget, and clasps
 - Allocation-free spatial-hash self-collision with explicit cloth thickness
 - Dynamic shoulder, torso, hip/belt, and arm capsules sized to the narrower rendered silhouette
 - One-sided body projection that lets cloth wrap around armor without selecting the character's front surface
@@ -50,7 +51,7 @@ The renderer is uncapped for displays up to 144 Hz and beyond. Physics runs at a
 - Flickering torches, emissive mineral veins, bloom, fog, dust, AgX tone mapping, PBR materials, and soft shadows
 - Fixed-size nearest-light pools and fixed-allocation physics paths that avoid traversal-time shader compilation and garbage-collection stalls
 - Pixel-budgeted post-processing and rate-limited adaptive-resolution reallocations
-- Compact live FPS, frame-time, average, one-percent-low, and sparkline HUD
+- Compact live FPS, frame-time, average, one-percent-low, and sparkline HUD; click it to copy renderer, quality, scene, canvas, runtime, and rolling 15-second frame diagnostics
 
 ## Quality gates
 
@@ -61,11 +62,12 @@ bun run audit:visual   # production build plus repository-owned Edge/Chrome CDP 
 bun run verify         # check, production build, and systems harness
 ```
 
-The renderer-free harness constructs the complete scene graph and dynamically advances cloth, character animation, water drops, footsteps, torches, and mineral systems. It checks finite state, structural error, vertex and cloth-face penetration, pinned-neckline/body clearance, self-separation, downward settling, basin depth and rim containment, ripple activity, geometry validity, triangle/draw-call budgets, stable light counts, and average physics-step cost. Focused tests also reproduce a narrow collider piercing the center of a cloth triangle while every vertex is clear, force a 148-degree cape rotation to prove that a suspended panel cannot sleep, verify transformed procedural geometry is enclosed by its proxies, prove eased turning plus Shift running and gait bob, and validate the opaque depth-writing inputs plus clamped opacity of the close-fade compositor.
+The renderer-free harness constructs the complete scene graph and dynamically advances cloth, character animation, water drops, footsteps, torches, and mineral systems. It checks finite state, structural error, vertex and cloth-face penetration, pinned-neckline/body clearance, self-separation, downward settling, basin depth and rim containment, ripple activity, geometry validity, triangle/draw-call budgets, stable light counts, and average physics-step cost. Focused tests also prove that the rendered yoke overlaps both simulation anchors, reproduce a narrow collider piercing the center of a cloth triangle while every vertex is clear, force a 148-degree cape rotation to prove that a suspended panel cannot sleep, verify transformed procedural geometry is enclosed by its proxies, exercise clipboard output and report formatting without a browser, prove eased turning plus Shift running and gait bob, and validate the opaque depth-writing inputs plus clamped opacity of the close-fade compositor.
 
-The visual audit launches an installed Edge or Chrome directly through the DevTools protocol; it does not depend on a browser-testing framework. It drives the deterministic in-app harness through 19 rendered studies, including:
+The visual audit launches an installed Edge or Chrome directly through the DevTools protocol; it does not depend on a browser-testing framework. It drives the deterministic in-app harness through 20 rendered studies, including:
 
-- rear, side, true front, neckline, aggressive reversal, running, and fully settled cape views;
+- rear, side, true front, neckline, high-oblique attachment, aggressive reversal, running, and fully settled cape views;
+- a real FPS-panel click with intercepted clipboard output and visible success-feedback assertions;
 - real LMB and RMB reversed-drag input;
 - sharp look-up and strongly faded close-camera views with camera/ground clearance assertions;
 - dynamic uphill traversal with player/terrain contact checks;
@@ -101,7 +103,7 @@ Useful implementation references:
 
 ## Deployment
 
-Every push and pull request runs strict TypeScript, renderer-free unit tests, the deterministic full-scene harness, production and Pages builds, and asset-path validation. Pull requests additionally run the 19-angle dynamic Windows render audit and upload its PNG/JSON evidence. PR history is checked for merge commits so branches stay reviewable and linear.
+Every push and pull request runs strict TypeScript, renderer-free unit tests, the deterministic full-scene harness, production and Pages builds, and asset-path validation. Pull requests additionally run the 20-angle dynamic Windows render audit and upload its PNG/JSON evidence. PR history is checked for merge commits so branches stay reviewable and linear.
 
 Same-repository pull requests receive a sticky preview link at:
 
@@ -110,6 +112,8 @@ https://victorzakharov.github.io/cape-physics/pr-preview/pr-<number>/
 ```
 
 The preview and production workflows share the same serialized Pages publisher and aggregate `gh-pages` artifact, preserving open previews during production releases and removing a preview when its pull request closes. Pushing `main` publishes the production subpath and smoke-tests the deployed HTML and assets.
+
+`main` is protected: changes require a pull request, current required checks, resolved review conversations, and administrator enforcement. Repository merge settings allow merge commits only. The linear-history CI gate applies to commits introduced by each PR, preventing merge bubbles inside feature branches without conflicting with the required merge commit on `main`.
 
 ## License
 

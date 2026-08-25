@@ -29,6 +29,13 @@ export const CAPE = {
   width: 0.98,
   length: 1.4,
   solverIterations: 5,
+  attachment: {
+    halfWidth: 0.29,
+    height: 1.49,
+    depth: 0.22,
+    necklineRise: 0.052,
+    necklineDepth: 0.05,
+  },
 } as const;
 
 export const RIPPLE_CAPACITY = 16;

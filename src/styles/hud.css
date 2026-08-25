@@ -31,7 +31,17 @@
   box-shadow: 0 14px 40px rgb(0 0 0 / 26%), inset 0 1px rgb(255 255 255 / 3%);
   backdrop-filter: blur(14px) saturate(120%);
   transform: translateY(-8px);
-  cursor: pointer;
+  cursor: copy;
+  touch-action: manipulation;
+}
+
+.performance-panel:hover {
+  border-color: rgb(139 231 209 / 34%);
+}
+
+.performance-panel:focus-visible {
+  outline: 2px solid rgb(142 230 208 / 76%);
+  outline-offset: 3px;
 }
 
 .performance-panel::before {
@@ -104,6 +114,21 @@
 .performance-panel.has-frame-drop {
   color: #f6b66e;
   border-color: rgb(246 182 110 / 28%);
+}
+
+.performance-panel .performance-panel__copy {
+  margin-top: 8px;
+  color: rgb(220 244 237 / 36%);
+  font-size: 0.46rem;
+  letter-spacing: 0.12em;
+}
+
+.performance-panel[data-copy-state="copied"] .performance-panel__copy {
+  color: rgb(142 230 208 / 90%);
+}
+
+.performance-panel[data-copy-state="failed"] .performance-panel__copy {
+  color: #f6b66e;
 }
 
 .title-card {
@@ -277,6 +302,7 @@ kbd.key-wide {
   .title-card p,
   .performance-panel__history,
   .performance-panel small,
+  .performance-panel__copy,
   .quality-badge {
     display: none;
   }

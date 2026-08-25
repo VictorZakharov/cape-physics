@@ -4,6 +4,7 @@ import { ThirdPersonCamera } from './camera/ThirdPersonCamera';
 import { AdaptiveQuality, type QualityState } from './core/AdaptiveQuality';
 import { FixedStepClock } from './core/FixedStepClock';
 import { PerformanceMonitor } from './core/PerformanceMonitor';
+import type { PerformanceReportDetails } from './core/PerformanceReport';
 import { RenderPipeline } from './core/RenderPipeline';
 import { CHARACTER_RENDER_LAYER } from './core/renderLayers';
 import { configureTextureFiltering, createRockTextures } from './graphics/proceduralTextures';
@@ -29,7 +30,7 @@ export class CapeDemo {
   private readonly camera = new THREE.PerspectiveCamera(52, 1, 0.08, 120);
   private readonly loading = new LoadingScreen();
   private readonly pipeline: RenderPipeline;
-  private readonly performance = new PerformanceMonitor();
+  private readonly performance: PerformanceMonitor;
   private readonly clock = new FixedStepClock();
   private readonly quality: AdaptiveQuality;
   private readonly qualityLabel: HTMLElement;
@@ -58,6 +59,7 @@ export class CapeDemo {
     this.pipeline = new RenderPipeline(this.canvas, this.scene, this.camera);
     this.qualityLabel = invariant(document.querySelector<HTMLElement>('[data-quality-label]'), 'Quality label is missing.');
     this.quality = new AdaptiveQuality((state) => this.applyQuality(state));
+    this.performance = new PerformanceMonitor(this.getPerformanceReportDetails);
     document.body.classList.toggle('is-harness', this.harnessMode);
   }
 
@@ -318,6 +320,7 @@ export class CapeDemo {
         opacity: this.character.getOpacity(),
         running: this.characterController.isRunning(),
         gait: this.character.getAnimationDiagnostics(),
+        capeAttachment: this.character.getCapeAttachmentDiagnostics(),
       },
       camera: {
         distance: this.thirdPersonCamera.getActualDistance(),
@@ -365,6 +368,57 @@ export class CapeDemo {
     this.pipeline.setCharacterOpacity(opacity);
   }
 
+  private readonly getPerformanceReportDetails = (): PerformanceReportDetails => {
+    const renderer = this.pipeline.renderer;
+    const context = renderer.getContext();
+    const debugInfo = context.getExtension('WEBGL_debug_renderer_info');
+    const vendor = String(context.getParameter(debugInfo?.UNMASKED_VENDOR_WEBGL ?? context.VENDOR));
+    const device = String(context.getParameter(debugInfo?.UNMASKED_RENDERER_WEBGL ?? context.RENDERER));
+    const sizing = this.pipeline.getSizingDiagnostics();
+    const screenWithTopology = window.screen as Screen & { readonly isExtended?: boolean };
+    const multipleScreens = typeof screenWithTopology.isExtended === 'boolean'
+      ? screenWithTopology.isExtended
+      : null;
+
+    return {
+      renderer: {
+        backend: String(context.getParameter(context.VERSION)),
+        vendor,
+        device,
+        drawCalls: renderer.info.render.calls,
+        triangles: renderer.info.render.triangles,
+        programs: renderer.info.programs?.length ?? 0,
+      },
+      canvas: {
+        drawingBufferWidth: sizing.drawingBufferWidth,
+        drawingBufferHeight: sizing.drawingBufferHeight,
+        cssWidth: window.innerWidth,
+        cssHeight: window.innerHeight,
+      },
+      quality: {
+        label: this.quality.getState().label,
+        scale: this.quality.getState().scale,
+      },
+      scene: {
+        simulationSeconds: this.fixedTime,
+        capeSleeping: this.ready ? this.cape.isSleeping() : false,
+        worldColliders: this.worldColliders.length,
+        activeRipples: this.ready ? this.water.getDiagnostics().activeRipples : 0,
+      },
+      page: {
+        visibility: document.visibilityState,
+        focused: document.hasFocus(),
+        devicePixelRatio: window.devicePixelRatio,
+        multipleScreens,
+        url: window.location.href,
+      },
+      runtime: {
+        platform: navigator.platform || 'Unknown platform',
+        userAgent: navigator.userAgent || 'Unavailable',
+      },
+    };
+  };
+
   private enableCharacterLighting(): void {
     this.scene.traverse((object) => {
       if (!(object instanceof THREE.Light)) return;
@@ -383,6 +437,7 @@ export class CapeDemo {
     this.pipeline.renderer.setAnimationLoop(null);
     this.input?.dispose();
     this.lighting?.dispose();
+    this.performance.dispose();
     this.pipeline.dispose();
     window.removeEventListener('resize', this.handleResize);
     document.removeEventListener('visibilitychange', this.handleVisibilityChange);

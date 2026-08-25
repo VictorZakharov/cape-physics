@@ -6,9 +6,14 @@ const overloaded: PerformanceSnapshot = {
   averageFps: 24,
   onePercentLow: 18,
   averageFrameTime: 41.7,
+  medianFrameTime: 40,
+  p95FrameTime: 48,
+  p99FrameTime: 55.6,
   refreshEstimate: 60,
   longFrameCount: 1,
   longestFrameTime: 180,
+  sampleCount: 120,
+  windowElapsedMilliseconds: 5_000,
 };
 
 describe('AdaptiveQuality', () => {
