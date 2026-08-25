@@ -205,6 +205,14 @@ try {
 
   const initial = await diagnostics();
   assert(initial.ready, 'demo harness did not report ready');
+  assert(
+    Math.abs(initial.camera.initialProjectionAspect - initial.camera.initialViewportAspect) < 0.000_001,
+    'camera projection did not match the viewport on the first frame',
+  );
+  assert(
+    Math.abs(initial.camera.aspect - initial.camera.viewportAspect) < 0.000_001,
+    'camera projection did not track the current viewport',
+  );
   assert(initial.water.puddles === 5, 'procedural puddles are missing');
   assert(initial.water.drops >= 10, 'ceiling drips are missing');
   assert(initial.torches.lights.visibleLights === initial.torches.lights.lights, 'torch light pool is not compile-stable');
@@ -226,6 +234,10 @@ try {
   await evaluate(command, 'window.dispatchEvent(new Event("resize")); true');
   await delay(120);
   const highDensity = await diagnostics();
+  assert(
+    Math.abs(highDensity.camera.aspect - highDensity.camera.viewportAspect) < 0.000_001,
+    'camera projection did not track the high-density viewport resize',
+  );
   assert(highDensity.renderer.sizing.renderPixels <= 3_600_000, 'high-density render targets exceeded their memory budget');
   await command('Emulation.setDeviceMetricsOverride', {
     width: 1600,

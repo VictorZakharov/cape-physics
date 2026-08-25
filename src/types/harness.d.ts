@@ -41,6 +41,10 @@ interface CapeDemoDiagnostics {
     };
   };
   readonly camera: {
+    readonly aspect: number;
+    readonly viewportAspect: number;
+    readonly initialProjectionAspect: number;
+    readonly initialViewportAspect: number;
     readonly distance: number;
     readonly pitch: number;
     readonly position: number[];

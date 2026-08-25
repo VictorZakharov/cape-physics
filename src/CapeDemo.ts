@@ -1,6 +1,10 @@
 import * as THREE from 'three';
 import { CAMERA_NEAR_OPACITY, PHYSICS_STEP, PLAYER } from './config';
 import { ThirdPersonCamera } from './camera/ThirdPersonCamera';
+import {
+  calculateViewportAspect,
+  synchronizePerspectiveCameraAspect,
+} from './camera/viewportProjection';
 import { AdaptiveQuality, type QualityState } from './core/AdaptiveQuality';
 import { FixedStepClock } from './core/FixedStepClock';
 import { PerformanceMonitor } from './core/PerformanceMonitor';
@@ -27,7 +31,17 @@ import { WorldCollisionResolver } from './world/WorldCollisionResolver';
 export class CapeDemo {
   private readonly canvas: HTMLCanvasElement;
   private readonly scene = new THREE.Scene();
-  private readonly camera = new THREE.PerspectiveCamera(52, 1, 0.08, 120);
+  private readonly initialViewportAspect = calculateViewportAspect(
+    window.innerWidth,
+    window.innerHeight,
+  );
+  private readonly camera = new THREE.PerspectiveCamera(
+    52,
+    this.initialViewportAspect,
+    0.08,
+    120,
+  );
+  private readonly initialProjectionAspect = this.camera.aspect;
   private readonly loading = new LoadingScreen();
   private readonly pipeline: RenderPipeline;
   private readonly performance: PerformanceMonitor;
@@ -179,8 +193,7 @@ export class CapeDemo {
   }
 
   private readonly handleResize = (): void => {
-    this.camera.aspect = window.innerWidth / window.innerHeight;
-    this.camera.updateProjectionMatrix();
+    synchronizePerspectiveCameraAspect(this.camera, window.innerWidth, window.innerHeight);
     this.pipeline.resize();
     this.atmosphere.resize();
   };
@@ -347,6 +360,10 @@ export class CapeDemo {
         capeAttachment: this.character.getCapeAttachmentDiagnostics(),
       },
       camera: {
+        aspect: this.camera.aspect,
+        viewportAspect: calculateViewportAspect(window.innerWidth, window.innerHeight),
+        initialProjectionAspect: this.initialProjectionAspect,
+        initialViewportAspect: this.initialViewportAspect,
         distance: this.thirdPersonCamera.getActualDistance(),
         pitch: this.thirdPersonCamera.getPitch(),
         position: this.camera.position.toArray(),
