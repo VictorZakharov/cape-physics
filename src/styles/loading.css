@@ -1,0 +1,105 @@
+.loading {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  color: #dce9e4;
+  background:
+    radial-gradient(circle at 50% 43%, rgb(11 30 30) 0%, rgb(5 12 14) 38%, #020405 78%),
+    #020405;
+  transition: opacity 900ms ease, visibility 900ms;
+}
+
+.loading::after {
+  position: absolute;
+  inset: 0;
+  content: "";
+  background: radial-gradient(circle, transparent 5%, rgb(0 0 0 / 66%) 105%);
+  pointer-events: none;
+}
+
+.loading__mark {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: end;
+  gap: 5px;
+  height: 34px;
+  margin-bottom: 24px;
+}
+
+.loading__mark span {
+  display: block;
+  width: 3px;
+  height: 24px;
+  background: linear-gradient(#92decc, rgb(57 114 105 / 22%));
+  box-shadow: 0 0 16px rgb(125 219 198 / 34%);
+  transform: skewX(-14deg);
+  animation: descend 1.6s ease-in-out infinite alternate;
+}
+
+.loading__mark span:nth-child(2) {
+  height: 34px;
+  animation-delay: -0.5s;
+}
+
+.loading__mark span:nth-child(3) {
+  height: 18px;
+  animation-delay: -1s;
+}
+
+.loading p,
+.loading small,
+.loading__track {
+  position: relative;
+  z-index: 1;
+}
+
+.loading p {
+  margin: 0 0 14px;
+  font-family: Cinzel, Georgia, serif;
+  font-size: clamp(0.68rem, 1.4vw, 0.82rem);
+  letter-spacing: 0.24em;
+}
+
+.loading__track {
+  width: min(240px, 62vw);
+  height: 1px;
+  overflow: visible;
+  background: rgb(183 225 215 / 10%);
+}
+
+.loading__track i {
+  display: block;
+  width: 4%;
+  height: 1px;
+  background: #8cdbc8;
+  box-shadow: 0 0 11px rgb(117 222 197 / 70%);
+  transition: width 450ms ease;
+}
+
+.loading small {
+  margin-top: 12px;
+  color: rgb(210 231 225 / 38%);
+  font-size: 0.5rem;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.is-ready .loading {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.loading.has-error p {
+  color: #f3b497;
+}
+
+@keyframes descend {
+  from { opacity: 0.35; transform: translateY(-3px) skewX(-14deg); }
+  to { opacity: 1; transform: translateY(4px) skewX(-14deg); }
+}

@@ -1,0 +1,33 @@
+{
+  "name": "cape-physics",
+  "private": true,
+  "version": "1.0.0",
+  "description": "A cinematic procedural cape-physics tech demo set in a living cave.",
+  "license": "MIT",
+  "author": "Victor Zakharov",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "tsc --noEmit && vite build",
+    "build:pages": "tsc --noEmit && vite build --base=/cape-physics/",
+    "check:pages": "node scripts/check-pages-build.mjs",
+    "test": "bun test",
+    "check": "tsc --noEmit && bun test",
+    "harness": "bun scripts/verify-tech-demo.ts",
+    "audit:visual": "bun run build && bun scripts/render-visual-audit.mjs",
+    "verify": "bun run check && bun run build && bun run harness",
+    "preview": "vite preview --host 0.0.0.0"
+  },
+  "dependencies": {
+    "three": "0.185.1"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.0",
+    "@types/three": "0.185.4",
+    "typescript": "6.0.2",
+    "vite": "8.2.2"
+  },
+  "engines": {
+    "bun": ">=1.3.11"
+  }
+}
