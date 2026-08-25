@@ -1,9 +1,16 @@
 import * as THREE from 'three';
 import { RIPPLE_CAPACITY } from '../config';
 import { SeededRandom } from '../utils/random';
-import { caveCeiling, caveCenterX, floorHeightAt } from './caveProfile';
+import {
+  caveCeiling,
+  floorHeightAt,
+  WATER_BASINS,
+  waterSurfaceHeight,
+  type WaterBasinProfile,
+} from './caveProfile';
 
 interface PuddleDefinition {
+  readonly basin: WaterBasinProfile;
   readonly center: THREE.Vector3;
   readonly radiusX: number;
   readonly radiusZ: number;
@@ -120,7 +127,7 @@ const waterFragmentShader = /* glsl */ `
   void main() {
     vec2 centered = vUv * 2.0 - 1.0;
     float angle = atan(centered.y, centered.x);
-    float irregularEdge = 0.91 + sin(angle * 5.0 + uTime * 0.08) * 0.035 + sin(angle * 9.0) * 0.025;
+    float irregularEdge = 0.91 + sin(angle * 5.0) * 0.035 + sin(angle * 9.0) * 0.025;
     float edgeDistance = length(centered);
     float edgeAntialias = max(fwidth(edgeDistance - irregularEdge) * 1.5, 0.002);
     float alphaEdge = 1.0 - smoothstep(irregularEdge - 0.09 - edgeAntialias, irregularEdge + edgeAntialias, edgeDistance);
@@ -286,7 +293,10 @@ export class WaterSystem {
     footstepRipples: number;
     dripRipples: number;
     surfaceAlphaRange: readonly [number, number];
+    minimumInteriorDepth: number;
+    minimumRimClearance: number;
   } {
+    const containment = this.getContainmentDiagnostics();
     return {
       puddles: this.puddles.length,
       drops: this.drops.length,
@@ -296,25 +306,50 @@ export class WaterSystem {
       footstepRipples: this.footstepRipples,
       dripRipples: this.dripRipples,
       surfaceAlphaRange: [WATER_MINIMUM_ALPHA, WATER_MAXIMUM_ALPHA],
+      ...containment,
     };
   }
 
   private createDefinitions(): PuddleDefinition[] {
-    const raw = [
-      { z: 6.2, offset: -0.55, rx: 2.35, rz: 1.55 },
-      { z: -10.5, offset: 0.92, rx: 1.75, rz: 2.3 },
-      { z: -26.5, offset: -0.45, rx: 2.65, rz: 1.72 },
-      { z: -48.5, offset: 0.6, rx: 2.15, rz: 2.55 },
-      { z: -64.2, offset: -0.65, rx: 1.85, rz: 1.55 },
-    ];
-    return raw.map(({ z, offset, rx, rz }) => {
-      const x = caveCenterX(z) + offset;
-      return {
-        center: new THREE.Vector3(x, floorHeightAt(x, z) + 0.058, z),
-        radiusX: rx,
-        radiusZ: rz,
-      };
-    });
+    return WATER_BASINS.map((basin) => ({
+      basin,
+      center: new THREE.Vector3(
+        basin.centerX,
+        waterSurfaceHeight(basin),
+        basin.centerZ,
+      ),
+      radiusX: basin.radiusX,
+      radiusZ: basin.radiusZ,
+    }));
+  }
+
+  private getContainmentDiagnostics(): {
+    readonly minimumInteriorDepth: number;
+    readonly minimumRimClearance: number;
+  } {
+    let minimumInteriorDepth = Number.POSITIVE_INFINITY;
+    let minimumRimClearance = Number.POSITIVE_INFINITY;
+    for (const puddle of this.puddles) {
+      for (let sample = 0; sample < 48; sample += 1) {
+        const angle = sample / 48 * Math.PI * 2;
+        const cosine = Math.cos(angle);
+        const sine = Math.sin(angle);
+        const interiorX = puddle.center.x + cosine * puddle.radiusX * 0.84;
+        const interiorZ = puddle.center.z + sine * puddle.radiusZ * 0.84;
+        minimumInteriorDepth = Math.min(
+          minimumInteriorDepth,
+          puddle.center.y - floorHeightAt(interiorX, interiorZ),
+        );
+
+        const rimX = puddle.center.x + cosine * puddle.radiusX * 1.1;
+        const rimZ = puddle.center.z + sine * puddle.radiusZ * 1.1;
+        minimumRimClearance = Math.min(
+          minimumRimClearance,
+          floorHeightAt(rimX, rimZ) - puddle.center.y,
+        );
+      }
+    }
+    return { minimumInteriorDepth, minimumRimClearance };
   }
 
   private findPuddle(x: number, z: number): PuddleDefinition | undefined {

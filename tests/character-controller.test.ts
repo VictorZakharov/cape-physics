@@ -71,4 +71,43 @@ describe('CharacterController', () => {
     expect(run.maximumBob).toBeLessThan(0.05);
     expect(run.runningBlend).toBeGreaterThan(0.9);
   });
+
+  test('caps and eases low-speed turns instead of snapping the character', () => {
+    const character = new Character();
+    const collision = new WorldCollisionResolver([]);
+    const input = new TestMovementInput(false);
+    input.movement.set(1, 0);
+    const controller = new CharacterController(character, input, collision);
+    const yawSteps: number[] = [];
+
+    for (let tick = 0; tick < 24; tick += 1) {
+      const before = character.root.rotation.y;
+      controller.update(PHYSICS_STEP, 0);
+      yawSteps.push(Math.abs(character.root.rotation.y - before));
+    }
+
+    expect(yawSteps[0]).toBeLessThan(0.004);
+    expect(Math.max(...yawSteps)).toBeLessThanOrEqual(PLAYER.walkTurnRate * PHYSICS_STEP + 0.004);
+    expect(yawSteps[1]!).toBeGreaterThan(yawSteps[0]!);
+  });
+
+  test('keeps character pieces opaque and depth-writing for layer compositing', () => {
+    const character = new Character();
+    character.setOpacity(0.12);
+    const materials = new Set<THREE.Material>();
+    character.root.traverse((object) => {
+      if (object instanceof THREE.Mesh) {
+        const meshMaterials = Array.isArray(object.material) ? object.material : [object.material];
+        meshMaterials.forEach((material) => materials.add(material));
+      }
+    });
+
+    expect(materials.size).toBeGreaterThan(0);
+    for (const material of materials) {
+      expect(material.alphaHash).toBe(false);
+      expect(material.transparent).toBe(false);
+      expect(material.depthWrite).toBe(true);
+      expect(material.opacity).toBe(1);
+    }
+  });
 });

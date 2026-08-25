@@ -48,6 +48,7 @@ interface CapeDemoDiagnostics {
     readonly sleeping: boolean;
     readonly minimumSelfSeparation: number;
     readonly hemDrop: number;
+    readonly minimumLowerCapeDrop: number;
     readonly hemCenter: number[];
     readonly worldColliders: number;
     readonly worldContacts: {
@@ -64,6 +65,8 @@ interface CapeDemoDiagnostics {
     readonly footstepRipples: number;
     readonly dripRipples: number;
     readonly surfaceAlphaRange: readonly [number, number];
+    readonly minimumInteriorDepth: number;
+    readonly minimumRimClearance: number;
   };
   readonly minerals: {
     readonly clusters: number[][];

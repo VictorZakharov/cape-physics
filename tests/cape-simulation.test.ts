@@ -66,9 +66,9 @@ describe('CapeSimulation', () => {
 
   test('rejects a narrow obstacle that pierces a triangle while every vertex stays clear', () => {
     const cape = new CapeSimulation(anchors);
-    const first = cape.getParticlePosition(5, 8);
-    const second = cape.getParticlePosition(5, 9);
-    const third = cape.getParticlePosition(6, 8);
+    const first = cape.getParticlePosition(5, 15);
+    const second = cape.getParticlePosition(5, 16);
+    const third = cape.getParticlePosition(6, 15);
     const triangle = new THREE.Triangle(first, second, third);
     const center = triangle.getMidpoint(new THREE.Vector3());
     const normal = triangle.getNormal(new THREE.Vector3());
@@ -121,8 +121,50 @@ describe('CapeSimulation', () => {
     expect(cape.isSleeping()).toBe(true);
     expect(cape.getMaximumBodyPenetration(bodyColliders, anchors.back)).toBeLessThan(0.002);
     expect(cape.getHemDrop()).toBeGreaterThan(0.7);
+    expect(cape.getMinimumLowerCapeDrop()).toBeGreaterThan(0.48);
 
     cape.step(PHYSICS_STEP, anchors, bodyColliders, [], new THREE.Vector3(0, 0, -3), 901 * PHYSICS_STEP);
     expect(cape.isSleeping()).toBe(false);
+  });
+
+  test('curves the pinned neckline behind the shoulders without body penetration', () => {
+    const cape = new CapeSimulation(anchors);
+    const bodyColliders: CapsuleCollider[] = [
+      { start: new THREE.Vector3(-0.4, 1.96, -0.04), end: new THREE.Vector3(0.4, 1.96, -0.04), radius: 0.27, name: 'shoulders' },
+      { start: new THREE.Vector3(0, 1.86, -0.08), end: new THREE.Vector3(0, 1.25, -0.08), radius: 0.36, name: 'torso' },
+    ];
+    cape.step(PHYSICS_STEP, anchors, bodyColliders, [], new THREE.Vector3(), 0);
+
+    const left = cape.getParticlePosition(0, 0);
+    const center = cape.getParticlePosition(Math.floor(CAPE.columns / 2), 0);
+    expect(center.clone().sub(left).dot(anchors.back)).toBeGreaterThan(0.045);
+    expect(cape.getMaximumBodyPenetration(bodyColliders, anchors.back)).toBeLessThan(0.002);
+  });
+
+  test('does not sleep while a rotated cape remains suspended', () => {
+    const cape = new CapeSimulation(anchors);
+    const dynamicAnchors: CapeAnchors = {
+      left: anchors.left.clone(),
+      right: anchors.right.clone(),
+      back: anchors.back.clone(),
+    };
+    const rotation = new THREE.Quaternion();
+
+    for (let frame = 0; frame < 150; frame += 1) {
+      const yaw = frame / 149 * Math.PI * 0.82;
+      rotation.setFromAxisAngle(THREE.Object3D.DEFAULT_UP, yaw);
+      dynamicAnchors.left.copy(anchors.left).setY(0).applyQuaternion(rotation).setY(anchors.left.y);
+      dynamicAnchors.right.copy(anchors.right).setY(0).applyQuaternion(rotation).setY(anchors.right.y);
+      dynamicAnchors.back.copy(anchors.back).applyQuaternion(rotation);
+      cape.step(PHYSICS_STEP, dynamicAnchors, [], [], new THREE.Vector3(), frame * PHYSICS_STEP);
+    }
+
+    for (let frame = 150; frame < 390; frame += 1) {
+      cape.step(PHYSICS_STEP, dynamicAnchors, [], [], new THREE.Vector3(), frame * PHYSICS_STEP);
+      if (cape.isSleeping()) {
+        expect(cape.getMinimumLowerCapeDrop()).toBeGreaterThan(0.48);
+      }
+    }
+    expect(cape.getMinimumLowerCapeDrop()).toBeGreaterThan(0.48);
   });
 });

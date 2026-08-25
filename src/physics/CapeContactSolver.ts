@@ -113,7 +113,7 @@ export class CapeContactSolver {
     back: THREE.Vector3,
   ): number {
     let maximum = 0;
-    for (let index = CAPE.columns; index < this.positions.length; index += 1) {
+    for (let index = 0; index < this.positions.length; index += 1) {
       const position = this.positions[index];
       if (!position) continue;
       for (const collider of colliders) {

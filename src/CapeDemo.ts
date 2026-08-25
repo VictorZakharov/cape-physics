@@ -1,10 +1,11 @@
 import * as THREE from 'three';
-import { PHYSICS_STEP, PLAYER } from './config';
+import { CAMERA_NEAR_OPACITY, PHYSICS_STEP, PLAYER } from './config';
 import { ThirdPersonCamera } from './camera/ThirdPersonCamera';
 import { AdaptiveQuality, type QualityState } from './core/AdaptiveQuality';
 import { FixedStepClock } from './core/FixedStepClock';
 import { PerformanceMonitor } from './core/PerformanceMonitor';
 import { RenderPipeline } from './core/RenderPipeline';
+import { CHARACTER_RENDER_LAYER } from './core/renderLayers';
 import { configureTextureFiltering, createRockTextures } from './graphics/proceduralTextures';
 import { InputController } from './input/InputController';
 import { CinematicLighting } from './lighting/CinematicLighting';
@@ -92,6 +93,8 @@ export class CapeDemo {
     this.scene.add(this.character.root);
     this.cape = new CapeSimulation(this.character.getCapeAnchors());
     this.scene.add(this.cape.mesh);
+    this.character.root.traverse((object) => object.layers.set(CHARACTER_RENDER_LAYER));
+    this.cape.mesh.layers.set(CHARACTER_RENDER_LAYER);
 
     this.input = new InputController(this.canvas, this.dismissOnboarding);
     this.characterController = new CharacterController(this.character, this.input, this.worldCollision);
@@ -99,6 +102,7 @@ export class CapeDemo {
     this.thirdPersonCamera.snapTo(this.character.root.position);
     this.lighting = new CinematicLighting(this.scene, this.pipeline.renderer);
     this.scene.add(this.lighting.group);
+    this.enableCharacterLighting();
     this.lighting.update(this.character.root.position, 0);
     this.torches.update(0, this.character.root.position);
     this.veins.update(0, this.character.root.position);
@@ -336,6 +340,7 @@ export class CapeDemo {
         sleeping: this.cape.isSleeping(),
         minimumSelfSeparation: this.cape.getMinimumSelfSeparation(),
         hemDrop: this.cape.getHemDrop(),
+        minimumLowerCapeDrop: this.cape.getMinimumLowerCapeDrop(),
         hemCenter: this.cape.getParticlePosition(6, 17).toArray(),
         worldColliders: this.worldColliders.length,
         worldContacts: this.cape.getWorldContactDiagnostics(),
@@ -353,9 +358,25 @@ export class CapeDemo {
 
   private updateCameraFade(): void {
     const distance = this.thirdPersonCamera.getActualDistance();
-    const opacity = 0.18 + THREE.MathUtils.smoothstep(distance, 0.78, 2.15) * 0.82;
+    const opacity = CAMERA_NEAR_OPACITY
+      + THREE.MathUtils.smoothstep(distance, 0.78, 2.15) * (1 - CAMERA_NEAR_OPACITY);
     this.character.setOpacity(opacity);
     this.cape.setOpacity(opacity);
+    this.pipeline.setCharacterOpacity(opacity);
+  }
+
+  private enableCharacterLighting(): void {
+    this.scene.traverse((object) => {
+      if (!(object instanceof THREE.Light)) return;
+      object.layers.enable(CHARACTER_RENDER_LAYER);
+      if (
+        object instanceof THREE.DirectionalLight
+        || object instanceof THREE.PointLight
+        || object instanceof THREE.SpotLight
+      ) {
+        object.shadow.camera.layers.enable(CHARACTER_RENDER_LAYER);
+      }
+    });
   }
 
   private readonly dispose = (): void => {

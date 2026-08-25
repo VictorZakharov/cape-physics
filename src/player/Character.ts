@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { PLAYER } from '../config';
+import { CAMERA_NEAR_OPACITY, PLAYER } from '../config';
 import type { CapsuleCollider } from '../physics/colliders';
 
 export interface CapeAnchors {
@@ -100,14 +100,9 @@ export class Character {
   }
 
   public setOpacity(opacity: number): void {
-    const nextOpacity = THREE.MathUtils.clamp(opacity, 0.18, 1);
+    const nextOpacity = THREE.MathUtils.clamp(opacity, CAMERA_NEAR_OPACITY, 1);
     if (Math.abs(nextOpacity - this.opacity) < 0.002) return;
     this.opacity = nextOpacity;
-    const opaque = nextOpacity > 0.995;
-    for (const material of this.materials) {
-      material.opacity = nextOpacity;
-      material.depthWrite = opaque;
-    }
   }
 
   public getOpacity(): number {
@@ -131,7 +126,10 @@ export class Character {
     const trim = new THREE.MeshStandardMaterial({ color: 0xa9864f, roughness: 0.34, metalness: 0.72 });
     const cloth = new THREE.MeshStandardMaterial({ color: 0x20282a, roughness: 0.94, metalness: 0 });
     this.materials.push(armor, darkMetal, leather, trim, cloth);
-    for (const material of this.materials) material.transparent = true;
+    for (const material of this.materials) {
+      material.transparent = false;
+      material.depthWrite = true;
+    }
 
     const hips = new THREE.Mesh(new THREE.CapsuleGeometry(0.205, 0.18, 5, 10), armor);
     hips.position.y = 0.88;
@@ -191,8 +189,8 @@ export class Character {
     rightShoulder.rotation.z = -0.35;
     this.rig.add(leftShoulder, rightShoulder);
 
-    this.leftCapeAnchor.position.set(-0.32, 1.49, 0.2);
-    this.rightCapeAnchor.position.set(0.32, 1.49, 0.2);
+    this.leftCapeAnchor.position.set(-0.29, 1.49, 0.25);
+    this.rightCapeAnchor.position.set(0.29, 1.49, 0.25);
     this.rig.add(this.leftCapeAnchor, this.rightCapeAnchor);
   }
 

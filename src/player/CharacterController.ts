@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { PLAYER } from '../config';
-import { dampAngle } from '../utils/math';
+import { damp } from '../utils/math';
 import type { WorldCollisionResolver } from '../world/WorldCollisionResolver';
 import type { Character } from './Character';
 
@@ -14,6 +14,7 @@ export class CharacterController {
   private readonly cameraForward = new THREE.Vector3();
   private readonly cameraRight = new THREE.Vector3();
   private running = false;
+  private turnRate = 0;
 
   public constructor(
     private readonly character: Character,
@@ -44,7 +45,36 @@ export class CharacterController {
     const planarSpeed = this.character.velocity.length();
     if (planarSpeed > 0.08) {
       const targetYaw = Math.atan2(-this.character.velocity.x, -this.character.velocity.z);
-      this.character.root.rotation.y = dampAngle(this.character.root.rotation.y, targetYaw, PLAYER.turnSpeed, delta);
+      const yawDelta = Math.atan2(
+        Math.sin(targetYaw - this.character.root.rotation.y),
+        Math.cos(targetYaw - this.character.root.rotation.y),
+      );
+      const speedBlend = THREE.MathUtils.smoothstep(planarSpeed, 0.08, PLAYER.runSpeed);
+      const maximumTurnRate = THREE.MathUtils.lerp(
+        PLAYER.walkTurnRate,
+        PLAYER.runTurnRate,
+        speedBlend,
+      );
+      const desiredTurnRate = THREE.MathUtils.clamp(
+        yawDelta * PLAYER.turnResponse,
+        -maximumTurnRate,
+        maximumTurnRate,
+      );
+      this.turnRate = damp(
+        this.turnRate,
+        desiredTurnRate,
+        THREE.MathUtils.lerp(7, 12, speedBlend),
+        delta,
+      );
+      const yawStep = THREE.MathUtils.clamp(
+        this.turnRate * delta,
+        -Math.abs(yawDelta),
+        Math.abs(yawDelta),
+      );
+      const nextYaw = this.character.root.rotation.y + yawStep;
+      this.character.root.rotation.y = Math.atan2(Math.sin(nextYaw), Math.cos(nextYaw));
+    } else {
+      this.turnRate = damp(this.turnRate, 0, 10, delta);
     }
     this.character.updateAnimation(delta, planarSpeed);
   }

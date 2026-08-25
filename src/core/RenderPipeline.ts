@@ -4,11 +4,14 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { calculateRenderSizing, type RenderSizing } from './renderSizing';
+import { CHARACTER_RENDER_LAYER, WORLD_RENDER_LAYER } from './renderLayers';
+import { SceneLayerCompositePass } from './SceneLayerCompositePass';
 
 export class RenderPipeline {
   public readonly renderer: THREE.WebGLRenderer;
   private readonly composer: EffectComposer;
   private readonly bloom: UnrealBloomPass;
+  private readonly characterComposite: SceneLayerCompositePass;
   private resolutionScale = 1;
   private sizing: RenderSizing | null = null;
   private targetResizeCount = 0;
@@ -32,6 +35,7 @@ export class RenderPipeline {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.info.autoReset = true;
+    camera.layers.set(WORLD_RENDER_LAYER);
 
     const renderTarget = new THREE.WebGLRenderTarget(1, 1, {
       type: THREE.HalfFloatType,
@@ -41,6 +45,8 @@ export class RenderPipeline {
     renderTarget.samples = 2;
     this.composer = new EffectComposer(this.renderer, renderTarget);
     this.composer.addPass(new RenderPass(scene, camera));
+    this.characterComposite = new SceneLayerCompositePass(scene, camera, CHARACTER_RENDER_LAYER);
+    this.composer.addPass(this.characterComposite);
     this.bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.42, 0.48, 0.88);
     this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());
@@ -85,6 +91,10 @@ export class RenderPipeline {
     this.resize();
   }
 
+  public setCharacterOpacity(opacity: number): void {
+    this.characterComposite.setOpacity(opacity);
+  }
+
   public getSizingDiagnostics() {
     const sizing = this.sizing ?? calculateRenderSizing(1, 1, 1, this.resolutionScale);
     return {
@@ -94,11 +104,18 @@ export class RenderPipeline {
   }
 
   public async compile(scene: THREE.Scene, camera: THREE.Camera): Promise<void> {
-    await this.renderer.compileAsync(scene, camera);
+    const previousLayerMask = camera.layers.mask;
+    try {
+      camera.layers.enable(CHARACTER_RENDER_LAYER);
+      await this.renderer.compileAsync(scene, camera);
+    } finally {
+      camera.layers.mask = previousLayerMask;
+    }
   }
 
   public dispose(): void {
     this.composer.dispose();
+    this.characterComposite.dispose();
     this.renderer.dispose();
   }
 }

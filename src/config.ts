@@ -1,6 +1,7 @@
 export const PHYSICS_STEP = 1 / 120;
 export const MAX_FRAME_DELTA = 1 / 20;
 export const MAX_PHYSICS_STEPS = 6;
+export const CAMERA_NEAR_OPACITY = 0.12;
 
 export const CAVE = {
   startZ: 18,
@@ -17,7 +18,9 @@ export const PLAYER = {
   runSpeed: 6.15,
   acceleration: 15,
   deceleration: 19,
-  turnSpeed: 14,
+  turnResponse: 9,
+  walkTurnRate: 2.4,
+  runTurnRate: 4.8,
 } as const;
 
 export const CAPE = {

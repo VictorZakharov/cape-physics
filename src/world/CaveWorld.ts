@@ -98,8 +98,8 @@ export class CaveWorld {
   }
 
   private createFloor(textures: SurfaceTextures): THREE.Mesh {
-    const widthSegments = 18;
-    const lengthSegments = 112;
+    const widthSegments = 36;
+    const lengthSegments = 180;
     const positions: number[] = [];
     const uvs: number[] = [];
     const indices: number[] = [];

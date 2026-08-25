@@ -158,7 +158,10 @@ try {
   assert(initial.torches.lights.visibleLights === initial.torches.lights.lights, 'torch light pool is not compile-stable');
   assert(initial.minerals.lights.visibleLights === initial.minerals.lights.lights, 'mineral light pool is not compile-stable');
   assert(initial.cape.worldColliders >= 1_800, 'geometry-derived cave-object collision proxies are missing');
+  assert(initial.cape.maximumBodyPenetration < 0.002, 'pinned cape neckline starts inside the character');
   assert(initial.water.surfaceAlphaRange[1] <= 0.6, 'water surface is too opaque');
+  assert(initial.water.minimumInteriorDepth > 0.04, 'water is not seated inside a terrain basin');
+  assert(initial.water.minimumRimClearance > 0.02, 'water surface rises above its containing rim');
 
   await command('Emulation.setDeviceMetricsOverride', {
     width: 3840,
@@ -197,7 +200,7 @@ try {
   const closeCamera = await setView(0.08, -0.82, 1.15);
   assert(closeCamera.camera.distance >= 0.45, 'close orbit collapsed into the player');
   assert(closeCamera.camera.groundClearance >= 0.17, 'close orbit fell through the ground');
-  assert(closeCamera.player.opacity >= 0.17 && closeCamera.player.opacity < 0.55, 'player did not become sufficiently transparent near the camera');
+  assert(closeCamera.player.opacity >= 0.11 && closeCamera.player.opacity < 0.5, 'player did not become sufficiently transparent near the camera');
   await capture('camera-close-fade');
 
   await setView(0.08, 0.22, 4.5);
@@ -233,6 +236,11 @@ try {
     [afterWalk.player.position[0], afterWalk.player.position[1] + 0.04, afterWalk.player.position[2]],
   );
   await capture('water-smooth-close');
+  await setCameraPose(
+    [afterWalk.player.position[0] + 3.1, afterWalk.player.position[1] + 0.28, afterWalk.player.position[2] + 1.35],
+    [afterWalk.player.position[0], afterWalk.player.position[1] - 0.07, afterWalk.player.position[2]],
+  );
+  await capture('water-contained-basin');
 
   const beforeDrips = await diagnostics();
   const dynamicBefore = await capture('water-dynamic-before');
@@ -289,6 +297,7 @@ try {
   assert(settledCape.cape.maximumEnvironmentPenetration < 0.002, 'settled cape penetrated cave geometry');
   assert(settledCape.cape.minimumSelfSeparation > 0.05, 'settled cape collapsed through itself');
   assert(settledCape.cape.hemDrop > 0.72, 'cape retained a physically impossible inverted resting pose');
+  assert(settledCape.cape.minimumLowerCapeDrop > 0.48, 'a lower cape panel remained suspended in mid-air');
   await setView(0.08, 0.2, 4.25);
   await capture('cape-wrap-settled');
   assert(

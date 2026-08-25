@@ -30,6 +30,7 @@ export interface TechDemoHarnessReport {
   readonly capeMaximumEnvironmentFacePenetration: number;
   readonly capeMinimumSelfSeparation: number;
   readonly capeHemDrop: number;
+  readonly capeMinimumLowerCapeDrop: number;
   readonly capeStateFinite: boolean;
   readonly water: ReturnType<WaterSystem['getDiagnostics']>;
   readonly scene: SceneBudget;
@@ -163,6 +164,7 @@ export function runTechDemoHarness(simulatedSeconds = 12): TechDemoHarnessReport
   const capeMaximumEnvironmentFacePenetration = cape.getMaximumEnvironmentFacePenetration(worldColliders);
   const capeMinimumSelfSeparation = cape.getMinimumSelfSeparation();
   const capeHemDrop = cape.getHemDrop();
+  const capeMinimumLowerCapeDrop = cape.getMinimumLowerCapeDrop();
   const waterDiagnostics = water.getDiagnostics();
   const sceneBudget = analyzeScene(scene);
   const torchLights = torches.getLightDiagnostics();
@@ -183,6 +185,10 @@ export function runTechDemoHarness(simulatedSeconds = 12): TechDemoHarnessReport
   invariant(capeMaximumEnvironmentFacePenetration < 0.002, `cape face penetration ${capeMaximumEnvironmentFacePenetration.toFixed(4)} exceeded budget`);
   invariant(capeMinimumSelfSeparation > 0.05, `cape self-separation ${capeMinimumSelfSeparation.toFixed(4)} collapsed`);
   invariant(capeHemDrop > 0.72, `cape settled into an inverted pose (hem drop ${capeHemDrop.toFixed(3)})`);
+  invariant(
+    capeMinimumLowerCapeDrop > 0.48,
+    `lower cape retained a floating fold (minimum drop ${capeMinimumLowerCapeDrop.toFixed(3)})`,
+  );
   invariant(worldColliders.length >= 1_800, 'geometry-derived cave-object collision coverage regressed');
   invariant(waterDiagnostics.puddles >= 5, 'walkable puddle count regressed');
   invariant(waterDiagnostics.drops >= 10, 'water-drop emitters are missing');
@@ -190,6 +196,8 @@ export function runTechDemoHarness(simulatedSeconds = 12): TechDemoHarnessReport
   invariant(waterDiagnostics.footstepRipples >= expectedFootstepRipples, 'walk traversal produced too few footstep ripples');
   invariant(waterDiagnostics.dripRipples >= expectedDripRipples, 'ceiling emitters produced too few drip ripples');
   invariant(waterDiagnostics.surfaceAlphaRange[1] <= 0.6, 'water surface became muddy and opaque');
+  invariant(waterDiagnostics.minimumInteriorDepth > 0.04, 'water surface is not seated inside its basin');
+  invariant(waterDiagnostics.minimumRimClearance > 0.02, 'water basin rim does not contain the surface');
   invariant(sceneBudget.shadowCastingLights === 1, 'the single-shadow-light performance contract changed');
   invariant(torchLights.visibleLights === torchLights.lights, 'torch pool changed the compiled light count');
   invariant(mineralLights.visibleLights === mineralLights.lights, 'mineral pool changed the compiled light count');
@@ -209,6 +217,7 @@ export function runTechDemoHarness(simulatedSeconds = 12): TechDemoHarnessReport
     capeMaximumEnvironmentFacePenetration,
     capeMinimumSelfSeparation,
     capeHemDrop,
+    capeMinimumLowerCapeDrop,
     capeStateFinite,
     water: waterDiagnostics,
     scene: sceneBudget,
