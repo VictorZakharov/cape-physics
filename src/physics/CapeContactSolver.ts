@@ -11,6 +11,7 @@ import { CLOTH_BODY_CLEARANCE, ClothBodyCollision } from './ClothBodyCollision';
 import { CLOTH_WORLD_CLEARANCE, ClothWorldCollision } from './ClothWorldCollision';
 
 const WORLD_QUERY_RADIUS = CAPE.length + 2.2;
+const BODY_FACE_SOLVER_PASSES = 2;
 
 export interface WorldContactDiagnostics {
   readonly lastStep: number;
@@ -31,6 +32,7 @@ export class CapeContactSolver {
   private readonly remainingMotion = new THREE.Vector3();
   private worldContactsLastStep = 0;
   private worldContactEvents = 0;
+  private bodySolvePass = 0;
   private readonly bodyFaceCollision: ClothBodyCollision;
   private readonly faceCollision: ClothWorldCollision;
 
@@ -57,6 +59,7 @@ export class CapeContactSolver {
 
   public beginStep(anchorCenter: THREE.Vector3, colliders: readonly WorldSphereCollider[]): void {
     this.worldContactsLastStep = 0;
+    this.bodySolvePass = 0;
     this.nearbyWorldColliders.length = 0;
     for (const collider of colliders) {
       const range = WORLD_QUERY_RADIUS + collider.radius;
@@ -78,7 +81,10 @@ export class CapeContactSolver {
         previous.addScaledVector(back, penetration);
       }
     }
-    this.bodyFaceCollision.solve(colliders, back);
+    this.bodySolvePass += 1;
+    if (this.bodySolvePass > CAPE.solverIterations - BODY_FACE_SOLVER_PASSES) {
+      this.bodyFaceCollision.solve(colliders, back);
+    }
   }
 
   public solveWorld(): void {
