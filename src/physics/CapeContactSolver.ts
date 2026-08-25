@@ -11,7 +11,7 @@ import { CLOTH_BODY_CLEARANCE, ClothBodyCollision } from './ClothBodyCollision';
 import { CLOTH_WORLD_CLEARANCE, ClothWorldCollision } from './ClothWorldCollision';
 
 const WORLD_QUERY_RADIUS = CAPE.length + 2.2;
-const BODY_FACE_SOLVER_PASSES = 4;
+const BODY_FACE_SOLVER_PASSES = 3;
 
 export interface WorldContactDiagnostics {
   readonly lastStep: number;
