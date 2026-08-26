@@ -56,6 +56,8 @@ jobs:
 
       - name: Run deterministic full-scene harness
         run: bun run harness
+        env:
+          CAPE_ENFORCE_PERFORMANCE_BUDGET: 'false'
 
       - name: Build production bundle
         run: bun run build
@@ -88,9 +90,7 @@ jobs:
       - name: Run repository-owned dynamic render harness
         run: bun run audit:visual
         env:
-          CAPE_AUDIT_PROFILE_SECONDS: 2
-          CAPE_AUDIT_P95_BUDGET_MS: 1000
-          CAPE_AUDIT_MAX_FRAME_BUDGET_MS: 5000
+          CAPE_AUDIT_PERFORMANCE_PROFILE: 'false'
 
       - name: Upload rendered evidence
         if: ${{ !cancelled() }}

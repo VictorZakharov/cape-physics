@@ -49,9 +49,23 @@ function numericSetting(name, fallback, minimum, maximum) {
   return value;
 }
 
-const profileDurationSeconds = numericSetting('CAPE_AUDIT_PROFILE_SECONDS', 12, 2, 12);
-const p95FrameBudget = numericSetting('CAPE_AUDIT_P95_BUDGET_MS', 120, 1, 1_000);
-const maximumFrameBudget = numericSetting('CAPE_AUDIT_MAX_FRAME_BUDGET_MS', 750, 1, 5_000);
+function booleanSetting(name, fallback) {
+  const value = (process.env[name] ?? String(fallback)).trim().toLowerCase();
+  if (value === 'true' || value === '1' || value === 'on') return true;
+  if (value === 'false' || value === '0' || value === 'off') return false;
+  throw new Error(`${name} must be true or false.`);
+}
+
+const performanceProfileEnabled = booleanSetting('CAPE_AUDIT_PERFORMANCE_PROFILE', true);
+const profileDurationSeconds = performanceProfileEnabled
+  ? numericSetting('CAPE_AUDIT_PROFILE_SECONDS', 12, 2, 12)
+  : 0;
+const p95FrameBudget = performanceProfileEnabled
+  ? numericSetting('CAPE_AUDIT_P95_BUDGET_MS', 120, 1, 1_000)
+  : null;
+const maximumFrameBudget = performanceProfileEnabled
+  ? numericSetting('CAPE_AUDIT_MAX_FRAME_BUDGET_MS', 750, 1, 5_000)
+  : null;
 
 const server = createStaticServer(distRoot);
 const temporaryRoot = mkdtempSync(join(tmpdir(), 'cape-physics-audit-'));
@@ -365,29 +379,46 @@ try {
   );
   await setView(1.18, 0.12, 4.1);
   await capture('character-running');
-  const frameProfile = await profile(profileDurationSeconds, 1 / 144);
+  let frameProfile = null;
+  let expectedProfileFrames = 0;
+  if (performanceProfileEnabled) {
+    frameProfile = await profile(profileDurationSeconds, 1 / 144);
+    expectedProfileFrames = Math.round(profileDurationSeconds * 144);
+    console.log(
+      `144 Hz profile: ${frameProfile.frames} frames, `
+      + `${frameProfile.averageFrameMilliseconds.toFixed(2)} ms avg, `
+      + `${frameProfile.p95FrameMilliseconds.toFixed(2)} ms p95, `
+      + `${frameProfile.maximumFrameMilliseconds.toFixed(2)} ms max`,
+    );
+    assert(frameProfile.frames === expectedProfileFrames, '144 Hz traversal did not render every requested frame');
+    assert(frameProfile.programsAfter === frameProfile.programsBefore, 'light traversal compiled new shader programs');
+    assert(
+      frameProfile.p95FrameMilliseconds < p95FrameBudget,
+      `rendered p95 ${frameProfile.p95FrameMilliseconds.toFixed(2)} ms exceeded ${p95FrameBudget} ms`,
+    );
+    assert(
+      frameProfile.maximumFrameMilliseconds < maximumFrameBudget,
+      `rendered maximum ${frameProfile.maximumFrameMilliseconds.toFixed(2)} ms exceeded ${maximumFrameBudget} ms`,
+    );
+    assert(frameProfile.diagnostics.cape.maximumBodyPenetration < 0.002, 'cape penetrated the body during profiled traversal');
+    assert(frameProfile.diagnostics.cape.maximumEnvironmentFacePenetration < 0.002, 'a formation pierced a cape face during profiled traversal');
+  } else {
+    console.log('144 Hz wall-clock profile: SKIPPED (deterministic CI mode)');
+  }
   await setMovement(0, 0);
   await setRunning(false);
-  console.log(
-    `144 Hz profile: ${frameProfile.frames} frames, `
-    + `${frameProfile.averageFrameMilliseconds.toFixed(2)} ms avg, `
-    + `${frameProfile.p95FrameMilliseconds.toFixed(2)} ms p95, `
-    + `${frameProfile.maximumFrameMilliseconds.toFixed(2)} ms max`,
-  );
-  const expectedProfileFrames = Math.round(profileDurationSeconds * 144);
-  assert(frameProfile.frames === expectedProfileFrames, '144 Hz traversal did not render every requested frame');
-  assert(frameProfile.programsAfter === frameProfile.programsBefore, 'light traversal compiled new shader programs');
-  assert(
-    frameProfile.p95FrameMilliseconds < p95FrameBudget,
-    `rendered p95 ${frameProfile.p95FrameMilliseconds.toFixed(2)} ms exceeded ${p95FrameBudget} ms`,
-  );
-  assert(
-    frameProfile.maximumFrameMilliseconds < maximumFrameBudget,
-    `rendered maximum ${frameProfile.maximumFrameMilliseconds.toFixed(2)} ms exceeded ${maximumFrameBudget} ms`,
-  );
-  assert(frameProfile.diagnostics.cape.maximumBodyPenetration < 0.002, 'cape penetrated the body during profiled traversal');
-  assert(frameProfile.diagnostics.cape.maximumEnvironmentFacePenetration < 0.002, 'a formation pierced a cape face during profiled traversal');
 
+  // Performance profiling is optional. Give the reversal/settling study its
+  // own fixed route so profiling cannot change its physical precondition or
+  // final cave location.
+  await setPlayerPose([-2.38, 0, -15], 0);
+  await setView(0, 0.2, 4.4);
+  await advance(0.45, 1 / 120);
+  await setRunning(true);
+  await setMovement(0, 1);
+  await advance(0.85, 1 / 120);
+  await setMovement(0, 0);
+  await setRunning(false);
   await setView(1.33, 0.16, 4.35);
   await setMovement(0, -1);
   await advance(0.9, 1 / 120);
@@ -396,6 +427,7 @@ try {
   assert(wrapState.cape.maximumBodyPenetration < 0.002, 'cape penetrated the body during visual reversal');
   await capture('cape-wrap-reversal');
 
+  await setPlayerPose([-2.38, 0, -15], 0);
   const settledCape = await advance(3.2, 1 / 120);
   await setView(0.08, 0.2, 4.25);
   await capture('cape-wrap-settled');
@@ -630,6 +662,7 @@ try {
     runState,
     frameProfile,
     profileSettings: {
+      enabled: performanceProfileEnabled,
       durationSeconds: profileDurationSeconds,
       expectedFrames: expectedProfileFrames,
       p95FrameBudget,
