@@ -7,6 +7,17 @@ import type {
 const PLANE_EPSILON = 0.000_01;
 const SUPPORT_EPSILON = 0.000_01;
 const CARTESIAN_AXES = ['x', 'y', 'z'] as const;
+export const WALKABLE_ROCK_SHOULDER_FRACTION = 0.72;
+
+export function isBelowWalkableRockShoulder(
+  collider: WorldRockCollider,
+  height: number,
+): boolean {
+  return collider.walkable
+    && height <= collider.bounds.min.y
+      + (collider.bounds.max.y - collider.bounds.min.y)
+        * WALKABLE_ROCK_SHOULDER_FRACTION;
+}
 
 /**
  * Builds one convex contact surface from the exact transformed render mesh.

@@ -1,6 +1,7 @@
 import type { PerformanceSnapshot } from '../core/PerformanceMonitor';
 import type { QualityState } from '../core/AdaptiveQuality';
 import type { DepthOcclusionProbeResult } from '../testing/DepthOcclusionProbe';
+import type { ShadowLayerProbeResult } from '../testing/ShadowLayerProbe';
 
 interface CapeDemoDiagnostics {
   readonly ready: boolean;
@@ -73,6 +74,7 @@ interface CapeDemoDiagnostics {
     readonly maximumEnvironmentPenetration: number;
     readonly maximumEnvironmentFacePenetration: number;
     readonly maximumParticleMotion: number;
+    readonly maximumParticleVerticalMotion: number;
     readonly sleeping: boolean;
     readonly minimumSelfSeparation: number;
     readonly maximumUpwardFold: number;
@@ -151,6 +153,7 @@ declare global {
         readonly diagnostics: CapeDemoDiagnostics;
       };
       runDepthOcclusionProbe: () => DepthOcclusionProbeResult;
+      runShadowLayerProbe: () => ShadowLayerProbeResult;
     };
   }
 }

@@ -58,6 +58,7 @@ export class CapeSimulation {
   private settledSeconds = 0;
   private sleeping = false;
   private maximumParticleMotion = 0;
+  private maximumParticleVerticalMotion = 0;
 
   public constructor(initialAnchors: CapeAnchors) {
     const particleCount = CAPE.columns * CAPE.rows;
@@ -244,6 +245,7 @@ export class CapeSimulation {
     this.settledSeconds = 0;
     this.sleeping = false;
     this.maximumParticleMotion = 0;
+    this.maximumParticleVerticalMotion = 0;
   }
 
   public setOpacity(opacity: number): void {
@@ -348,6 +350,10 @@ export class CapeSimulation {
 
   public getMaximumParticleMotion(): number {
     return this.maximumParticleMotion;
+  }
+
+  public getMaximumParticleVerticalMotion(): number {
+    return this.maximumParticleVerticalMotion;
   }
 
   public isSleeping(): boolean {
@@ -522,12 +528,16 @@ export class CapeSimulation {
 
   private measureStepMotion(): void {
     let maximum = 0;
+    let maximumVertical = 0;
     for (let index = CAPE.columns; index < this.positions.length; index += 1) {
       const position = this.positions[index];
       const start = this.stepStart[index];
-      if (position && start) maximum = Math.max(maximum, position.distanceTo(start));
+      if (!position || !start) continue;
+      maximum = Math.max(maximum, position.distanceTo(start));
+      maximumVertical = Math.max(maximumVertical, Math.abs(position.y - start.y));
     }
     this.maximumParticleMotion = maximum;
+    this.maximumParticleVerticalMotion = maximumVertical;
   }
 
   private solveConstraint(constraint: DistanceConstraint): void {

@@ -19,7 +19,7 @@ import type { CaveHorizontalBounds } from './CaveShellSampler';
 const PLAYER_WALL_MARGIN = PLAYER.radius + 0.42;
 const SUPPORT_INSET = 0.94;
 const CEILING_CLEARANCE = 0.08;
-const WALKABLE_ROCK_FOOTPRINT = PLAYER.radius * 0.72;
+const WALKABLE_ROCK_FOOTPRINT = PLAYER.radius * 1.5;
 
 export interface PlayerVerticalMotion {
   readonly previousY: number;

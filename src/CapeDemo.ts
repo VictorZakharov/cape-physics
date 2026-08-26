@@ -6,6 +6,7 @@ import {
   synchronizePerspectiveCameraAspect,
 } from './camera/viewportProjection';
 import { AdaptiveQuality, type QualityState } from './core/AdaptiveQuality';
+import { enableCameraIndependentShadowCaster } from './core/CameraIndependentShadowCaster';
 import { FixedStepClock } from './core/FixedStepClock';
 import { PerformanceMonitor } from './core/PerformanceMonitor';
 import type { PerformanceReportDetails } from './core/PerformanceReport';
@@ -19,6 +20,7 @@ import type { WorldCollider } from './physics/colliders';
 import { Character } from './player/Character';
 import { CharacterController } from './player/CharacterController';
 import { runDepthOcclusionProbe } from './testing/DepthOcclusionProbe';
+import { runShadowLayerProbe } from './testing/ShadowLayerProbe';
 import { LoadingScreen } from './ui/LoadingScreen';
 import { invariant } from './utils/assert';
 import { CaveAtmosphere } from './world/CaveAtmosphere';
@@ -110,8 +112,14 @@ export class CapeDemo {
     this.scene.add(this.character.root);
     this.cape = new CapeSimulation(this.character.getCapeAnchors());
     this.scene.add(this.cape.mesh);
-    this.character.root.traverse((object) => object.layers.set(CHARACTER_RENDER_LAYER));
+    this.character.root.traverse((object) => {
+      object.layers.set(CHARACTER_RENDER_LAYER);
+      if (object instanceof THREE.Mesh && object.castShadow) {
+        enableCameraIndependentShadowCaster(object);
+      }
+    });
     this.cape.mesh.layers.set(CHARACTER_RENDER_LAYER);
+    enableCameraIndependentShadowCaster(this.cape.mesh);
 
     this.input = new InputController(this.canvas, this.dismissOnboarding);
     this.characterController = new CharacterController(this.character, this.input, this.worldCollision);
@@ -265,6 +273,7 @@ export class CapeDemo {
         this.camera,
         this.pipeline,
       ),
+      runShadowLayerProbe: () => runShadowLayerProbe(this.pipeline.renderer),
     };
   }
 
@@ -393,6 +402,7 @@ export class CapeDemo {
         maximumEnvironmentPenetration: this.cape.getMaximumEnvironmentPenetration(this.worldColliders),
         maximumEnvironmentFacePenetration: this.cape.getMaximumEnvironmentFacePenetration(this.worldColliders),
         maximumParticleMotion: this.cape.getMaximumParticleMotion(),
+        maximumParticleVerticalMotion: this.cape.getMaximumParticleVerticalMotion(),
         sleeping: this.cape.isSleeping(),
         minimumSelfSeparation: this.cape.getMinimumSelfSeparation(),
         maximumUpwardFold: this.cape.getMaximumUpwardFold(),

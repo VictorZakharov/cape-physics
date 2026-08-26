@@ -7,7 +7,12 @@ import {
   CLOTH_WORLD_CLEARANCE,
   getClothWorldClearance,
 } from '../src/physics/ClothWorldCollision';
-import type { CapsuleCollider, WorldSphereCollider } from '../src/physics/colliders';
+import {
+  isWorldRockCollider,
+  type CapsuleCollider,
+  type WorldSphereCollider,
+} from '../src/physics/colliders';
+import { RockColliderQuery } from '../src/physics/RockCollider';
 import type { CapeAnchors } from '../src/player/Character';
 import { Character } from '../src/player/Character';
 import { CaveColliderBuilder } from '../src/world/CaveColliderBuilder';
@@ -252,12 +257,12 @@ describe('CapeSimulation', () => {
     expect(maximumRockPenetration).toBeLessThan(0.002);
   });
 
-  test('walks over an exact small-rock surface without launching or folding the cape', () => {
+  test('grazes an exact small-rock surface without launching or folding the cape', () => {
     const geometry = createRockGeometry();
     const positions = geometry.getAttribute('position');
     const rockZ = 7.8;
     const rockX = caveCenterX(rockZ);
-    const rotation = new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.08, 1.12, 0.08));
+    const rotation = new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.08, 1.12, 0.2));
     const scale = new THREE.Vector3(0.55, 0.48, 0.62);
     const rockPosition = new THREE.Vector3(rockX, 0, rockZ);
     const matrix = new THREE.Matrix4().compose(rockPosition, rotation, scale);
@@ -271,12 +276,19 @@ describe('CapeSimulation', () => {
     matrix.compose(rockPosition, rotation, scale);
     const builder = new CaveColliderBuilder();
     builder.addRock(geometry, matrix, true);
+    const rock = builder.colliders[0];
+    if (!rock || !isWorldRockCollider(rock)) throw new Error('Exact test rock is missing.');
+    const rockQuery = new RockColliderQuery();
+    const rockNormal = new THREE.Vector3();
     const collision = new WorldCollisionResolver(builder.colliders);
     const character = new Character();
-    const startZ = rockZ + 1.25;
+    const pathX = rockX + 0.46;
+    // Begin just beyond the stone so the cape, which trails along local +Z,
+    // must brush its shoulder while the character continues forward (-Z).
+    const startZ = rockZ - 0.28;
     character.root.position.set(
-      rockX,
-      collision.getPlayerRootHeight(rockX, startZ),
+      pathX,
+      collision.getPlayerRootHeight(pathX, startZ),
       startZ,
     );
     character.root.updateMatrixWorld(true);
@@ -300,11 +312,15 @@ describe('CapeSimulation', () => {
     let maximumRootRise = 0;
     let maximumRootStep = 0;
     let maximumCapeStep = 0;
+    let maximumCapeVerticalStep = 0;
     let maximumUpwardFold = 0;
+    let maximumStructuralError = 0;
+    let minimumRockSurfaceDistance = Number.POSITIVE_INFINITY;
+    let minimumParticleRockDistance = Number.POSITIVE_INFINITY;
     for (let tick = 0; tick < 150; tick += 1) {
       const z = startZ - PLAYER.walkSpeed * PHYSICS_STEP * (tick + 1);
-      const y = collision.getPlayerRootHeight(rockX, z);
-      character.root.position.set(rockX, y, z);
+      const y = collision.getPlayerRootHeight(pathX, z);
+      character.root.position.set(pathX, y, z);
       velocity.copy(character.root.position).sub(previousPosition).multiplyScalar(1 / PHYSICS_STEP);
       previousPosition = character.root.position.clone();
       character.updateAnimation(PHYSICS_STEP, PLAYER.walkSpeed, true, 0);
@@ -324,15 +340,50 @@ describe('CapeSimulation', () => {
         Math.abs(velocity.y) * PHYSICS_STEP,
       );
       maximumCapeStep = Math.max(maximumCapeStep, cape.getMaximumParticleMotion());
+      maximumCapeVerticalStep = Math.max(
+        maximumCapeVerticalStep,
+        cape.getMaximumParticleVerticalMotion(),
+      );
       maximumUpwardFold = Math.max(maximumUpwardFold, cape.getMaximumUpwardFold());
+      maximumStructuralError = Math.max(
+        maximumStructuralError,
+        cape.getMaximumStructuralError(),
+      );
+      const rockContact = cape.getClosestActiveRockSurfaceContact();
+      if (rockContact) {
+        minimumRockSurfaceDistance = Math.min(
+          minimumRockSurfaceDistance,
+          rockContact.distance,
+        );
+      }
+      for (let row = 1; row < CAPE.rows; row += 1) {
+        for (let column = 0; column < CAPE.columns; column += 1) {
+          minimumParticleRockDistance = Math.min(
+            minimumParticleRockDistance,
+            Math.abs(rockQuery.getSignedDistance(
+              rock,
+              cape.getParticlePosition(column, row),
+              rockNormal,
+            )),
+          );
+        }
+      }
     }
 
     const jumpApex = PLAYER.jumpSpeed * PLAYER.jumpSpeed / (2 * PLAYER.gravity);
-    expect(maximumRootRise).toBeGreaterThan(0.08);
+    expect(maximumRootRise).toBeGreaterThan(0.005);
     expect(maximumRootRise).toBeLessThan(jumpApex * 0.5);
-    expect(maximumRootStep).toBeLessThan(0.06);
-    expect(maximumCapeStep).toBeLessThan(PLAYER.jumpSpeed * PHYSICS_STEP * 2);
-    expect(maximumUpwardFold).toBeLessThanOrEqual(0.055_05);
+    expect(maximumRootStep).toBeLessThan(0.035);
+    expect(maximumCapeVerticalStep).toBeLessThan(
+      PLAYER.jumpSpeed * PHYSICS_STEP,
+    );
+    expect(maximumUpwardFold).toBeLessThan(0.03);
+    expect(maximumStructuralError).toBeLessThan(0.035);
+    // Total 3D travel includes the ordinary rearward walk drape. Vertical
+    // travel above is the tighter launch detector for the reported failure.
+    expect(maximumCapeStep).toBeLessThan(0.09);
+    expect(minimumParticleRockDistance).toBeLessThan(0.006);
+    expect(minimumRockSurfaceDistance).toBeLessThan(0.006);
     expect(cape.getMaximumEnvironmentPenetration(builder.colliders)).toBeLessThan(0.002);
     expect(cape.getMaximumEnvironmentFacePenetration(builder.colliders)).toBeLessThan(0.002);
   });

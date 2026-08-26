@@ -1,7 +1,13 @@
 import * as THREE from 'three';
 import type { WorldRockCollider } from './colliders';
+import {
+  isBelowWalkableRockShoulder,
+  RockColliderQuery,
+} from './RockCollider';
 
 const DISTANCE_EPSILON = 0.000_001;
+const VERTEX_CONTACT_EPSILON = 0.0005;
+const MAXIMUM_FACE_CORRECTION_CLEARANCES = 4;
 
 export interface ClothRockSurfaceContact {
   readonly distance: number;
@@ -27,6 +33,9 @@ export class ClothRockCollision {
   private readonly firstDirection = new THREE.Vector3();
   private readonly secondDirection = new THREE.Vector3();
   private readonly segmentOffset = new THREE.Vector3();
+  private readonly vertexNormal = new THREE.Vector3();
+  private readonly rockQuery = new RockColliderQuery();
+  private readonly faceCorrectionUsed: Float32Array;
 
   public constructor(
     private readonly positions: readonly THREE.Vector3[],
@@ -35,7 +44,15 @@ export class ClothRockCollision {
     private readonly columns: number,
     private readonly rows: number,
     private readonly clearance: number,
-  ) {}
+    private readonly correctionUsed: Float32Array,
+    private readonly maximumCorrectionPerStep: number,
+  ) {
+    this.faceCorrectionUsed = new Float32Array(inverseMass.length);
+  }
+
+  public beginStep(): void {
+    this.faceCorrectionUsed.fill(0);
+  }
 
   public solve(
     colliders: readonly WorldRockCollider[],
@@ -120,6 +137,11 @@ export class ClothRockCollision {
     );
     if (penetration <= 0) return 0;
     if (this.clothTriangle.getBarycoord(this.clothPoint, this.barycentric) === null) return 0;
+    // This solver is deliberately complementary to particle collision. If a
+    // triangle vertex already touches the rock, applying a second full
+    // triangle projection duplicates the response across adjacent faces and
+    // can turn millimetres of clearance into a large cloth impulse.
+    if (this.hasVertexContact(firstIndex, secondIndex, thirdIndex, collider)) return 0;
 
     const firstWeight = this.inverseMass[firstIndex] ?? 0;
     const secondWeight = this.inverseMass[secondIndex] ?? 0;
@@ -130,8 +152,11 @@ export class ClothRockCollision {
     if (denominator < DISTANCE_EPSILON) return 0;
 
     if (
-      this.normal.y < 0
-      && this.clothPoint.y <= collider.bounds.min.y + this.clearance * 2
+      isBelowWalkableRockShoulder(collider, this.clothPoint.y)
+      || (
+        this.normal.y < 0
+        && this.clothPoint.y <= collider.bounds.min.y + this.clearance * 2
+      )
     ) {
       this.normal.set(
         this.clothPoint.x - collider.center.x,
@@ -155,7 +180,40 @@ export class ClothRockCollision {
     thirdIndex: number,
     collider: WorldRockCollider,
   ): number {
-    return this.findTrianglePenetration(firstIndex, secondIndex, thirdIndex, collider);
+    const penetration = this.findTrianglePenetration(
+      firstIndex,
+      secondIndex,
+      thirdIndex,
+      collider,
+    );
+    if (
+      penetration <= 0
+      || this.hasVertexContact(firstIndex, secondIndex, thirdIndex, collider)
+    ) return 0;
+    return penetration;
+  }
+
+  private hasVertexContact(
+    firstIndex: number,
+    secondIndex: number,
+    thirdIndex: number,
+    collider: WorldRockCollider,
+  ): boolean {
+    return this.isVertexContact(firstIndex, collider)
+      || this.isVertexContact(secondIndex, collider)
+      || this.isVertexContact(thirdIndex, collider);
+  }
+
+  private isVertexContact(index: number, collider: WorldRockCollider): boolean {
+    const position = this.positions[index];
+    return Boolean(
+      position
+      && this.rockQuery.getSignedDistance(
+        collider,
+        position,
+        this.vertexNormal,
+      ) <= this.clearance + VERTEX_CONTACT_EPSILON,
+    );
   }
 
   private findTrianglePenetration(
@@ -319,8 +377,22 @@ export class ClothRockCollision {
 
   private applyCorrection(index: number, scale: number): void {
     if (scale <= 0) return;
-    this.positions[index]?.addScaledVector(this.normal, scale);
-    this.previous[index]?.addScaledVector(this.normal, scale);
+    const remaining = Math.max(
+      0,
+      Math.min(
+        this.maximumCorrectionPerStep - (this.correctionUsed[index] ?? 0),
+        this.clearance * MAXIMUM_FACE_CORRECTION_CLEARANCES
+          - (this.faceCorrectionUsed[index] ?? 0),
+      ),
+    );
+    const appliedScale = Math.min(scale, remaining);
+    if (appliedScale <= 0) return;
+    this.positions[index]?.addScaledVector(this.normal, appliedScale);
+    this.previous[index]?.addScaledVector(this.normal, appliedScale);
+    this.correctionUsed[index] = (this.correctionUsed[index] ?? 0) + appliedScale;
+    this.faceCorrectionUsed[index] = (
+      this.faceCorrectionUsed[index] ?? 0
+    ) + appliedScale;
   }
 
   private forEachTriangle(visit: (first: number, second: number, third: number) => void): void {

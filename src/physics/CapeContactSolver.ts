@@ -22,11 +22,21 @@ import {
   getClothWorldClearance,
 } from './ClothWorldCollision';
 import { constrainSphereContactToFloor } from './floorConstrainedContact';
-import { RockColliderQuery } from './RockCollider';
+import {
+  isBelowWalkableRockShoulder,
+  RockColliderQuery,
+} from './RockCollider';
 
 const WORLD_QUERY_RADIUS = CAPE.length + 2.2;
 const WORLD_BROADPHASE_SKIN = 0.08;
 const BODY_FACE_SOLVER_PASSES = 3;
+// Discrete overlap recovery must not move one cloth particle by a sizeable
+// fraction of a segment in one 120 Hz step. Continuous sweeps remain
+// available for physical per-frame motion, so intentional motion cannot
+// tunnel while iterative constraint displacement cannot masquerade as speed.
+const MAXIMUM_DISCRETE_ROCK_CORRECTION = 0.012;
+const MAXIMUM_BLOCKING_ROCK_CORRECTION = 0.03;
+const MAXIMUM_CONTINUOUS_ROCK_SWEEP = 0.08;
 
 export interface WorldContactDiagnostics {
   readonly lastStep: number;
@@ -65,6 +75,8 @@ export class CapeContactSolver {
   private readonly faceCollision: ClothWorldCollision;
   private readonly rockFaceCollision: ClothRockCollision;
   private readonly rockQuery = new RockColliderQuery();
+  private readonly rockCorrectionUsed: Float32Array;
+  private readonly rockSweepResolved: Uint8Array;
 
   public constructor(
     private readonly positions: readonly THREE.Vector3[],
@@ -85,6 +97,8 @@ export class CapeContactSolver {
       CAPE.columns,
       CAPE.rows,
     );
+    this.rockCorrectionUsed = new Float32Array(inverseMass.length);
+    this.rockSweepResolved = new Uint8Array(inverseMass.length);
     this.rockFaceCollision = new ClothRockCollision(
       positions,
       previous,
@@ -92,12 +106,17 @@ export class CapeContactSolver {
       CAPE.columns,
       CAPE.rows,
       CLOTH_ROCK_CLEARANCE,
+      this.rockCorrectionUsed,
+      MAXIMUM_DISCRETE_ROCK_CORRECTION,
     );
   }
 
   public beginStep(anchorCenter: THREE.Vector3, colliders: readonly WorldCollider[]): void {
     this.worldContactsLastStep = 0;
     this.bodySolvePass = 0;
+    this.rockCorrectionUsed.fill(0);
+    this.rockSweepResolved.fill(0);
+    this.rockFaceCollision.beginStep();
     this.nearbyWorldColliders.length = 0;
     for (const collider of colliders) {
       const range = WORLD_QUERY_RADIUS + collider.radius;
@@ -135,7 +154,7 @@ export class CapeContactSolver {
       if (!position || !previous) continue;
       for (const collider of this.activeWorldColliders) {
         const contacted = isWorldRockCollider(collider)
-          ? this.solveWorldRock(position, previous, collider)
+          ? this.solveWorldRock(index, position, previous, collider)
           : this.solveWorldSphere(position, previous, collider);
         if (contacted) {
           this.registerPostCaveCollider(collider);
@@ -357,6 +376,7 @@ export class CapeContactSolver {
   }
 
   private solveWorldRock(
+    particleIndex: number,
     position: THREE.Vector3,
     previous: THREE.Vector3,
     collider: WorldRockCollider,
@@ -367,6 +387,42 @@ export class CapeContactSolver {
       position,
       CLOTH_ROCK_CLEARANCE,
     )) return false;
+    const startDistance = this.rockQuery.getSignedDistance(
+      collider,
+      previous,
+      this.delta,
+    );
+    this.sweep.copy(position).sub(previous);
+    if (
+      this.rockSweepResolved[particleIndex] === 0
+      && this.sweep.lengthSq() <= MAXIMUM_CONTINUOUS_ROCK_SWEEP ** 2
+      && startDistance >= CLOTH_ROCK_CLEARANCE
+    ) {
+      const hitTime = this.rockQuery.sweep(
+        collider,
+        previous,
+        position,
+        CLOTH_ROCK_CLEARANCE,
+        this.contactNormal,
+      );
+      if (hitTime !== null) {
+        this.registerWorldContact();
+        this.rockSweepResolved[particleIndex] = 1;
+        this.hitPoint.copy(previous).addScaledVector(this.sweep, hitTime);
+        this.redirectRockContactAlongFloor(this.hitPoint, collider);
+        this.remainingMotion.copy(this.sweep).multiplyScalar(1 - hitTime);
+        const inwardMotion = this.remainingMotion.dot(this.contactNormal);
+        if (inwardMotion < 0) {
+          this.remainingMotion.addScaledVector(this.contactNormal, -inwardMotion);
+        }
+        this.remainingMotion.multiplyScalar(0.76);
+        this.hitPoint.addScaledVector(this.contactNormal, 0.001);
+        previous.copy(this.hitPoint);
+        position.copy(this.hitPoint).add(this.remainingMotion);
+        return true;
+      }
+    }
+
     const signedDistance = this.rockQuery.getSignedDistance(
       collider,
       position,
@@ -375,45 +431,46 @@ export class CapeContactSolver {
     if (signedDistance < CLOTH_ROCK_CLEARANCE) {
       this.registerWorldContact();
       let correction = CLOTH_ROCK_CLEARANCE - signedDistance;
-      const floor = caveGroundHeightAt(position.x, position.z);
-      if (
-        this.contactNormal.y < 0
-        && position.y <= floor + CLOTH_ROCK_CLEARANCE * 2
-      ) {
-        this.contactNormal.set(
-          position.x - collider.center.x,
-          0,
-          position.z - collider.center.z,
-        );
-        if (this.contactNormal.lengthSq() < 0.000_001) this.contactNormal.set(1, 0, 0);
-        else this.contactNormal.normalize();
+      if (this.redirectRockContactAlongFloor(position, collider)) {
         correction = Math.min(correction, collider.radius * 0.5);
       }
+      const remainingCorrection = Math.max(
+        0,
+        (collider.walkable
+          ? MAXIMUM_DISCRETE_ROCK_CORRECTION
+          : MAXIMUM_BLOCKING_ROCK_CORRECTION)
+          - (this.rockCorrectionUsed[particleIndex] ?? 0),
+      );
+      correction = Math.min(correction, remainingCorrection);
+      if (correction <= 0) return true;
       position.addScaledVector(this.contactNormal, correction);
       previous.addScaledVector(this.contactNormal, correction);
+      this.rockCorrectionUsed[particleIndex] = (
+        this.rockCorrectionUsed[particleIndex] ?? 0
+      ) + correction;
       return true;
     }
+    return false;
+  }
 
-    const hitTime = this.rockQuery.sweep(
-      collider,
-      previous,
-      position,
-      CLOTH_ROCK_CLEARANCE,
-      this.contactNormal,
+  private redirectRockContactAlongFloor(
+    position: THREE.Vector3,
+    collider: WorldRockCollider,
+  ): boolean {
+    const trappedBelowSurface = this.contactNormal.y < 0
+      && position.y <= caveGroundHeightAt(position.x, position.z)
+        + CLOTH_ROCK_CLEARANCE * 2;
+    if (
+      !isBelowWalkableRockShoulder(collider, position.y)
+      && !trappedBelowSurface
+    ) return false;
+    this.contactNormal.set(
+      position.x - collider.center.x,
+      0,
+      position.z - collider.center.z,
     );
-    if (hitTime === null) return false;
-    this.registerWorldContact();
-    this.sweep.copy(position).sub(previous);
-    this.hitPoint.copy(previous).addScaledVector(this.sweep, hitTime);
-    this.remainingMotion.copy(this.sweep).multiplyScalar(1 - hitTime);
-    const inwardMotion = this.remainingMotion.dot(this.contactNormal);
-    if (inwardMotion < 0) {
-      this.remainingMotion.addScaledVector(this.contactNormal, -inwardMotion);
-    }
-    this.remainingMotion.multiplyScalar(0.76);
-    this.hitPoint.addScaledVector(this.contactNormal, 0.001);
-    previous.copy(this.hitPoint);
-    position.copy(this.hitPoint).add(this.remainingMotion);
+    if (this.contactNormal.lengthSq() < 0.000_001) this.contactNormal.set(1, 0, 0);
+    else this.contactNormal.normalize();
     return true;
   }
 

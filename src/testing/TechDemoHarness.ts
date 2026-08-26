@@ -264,7 +264,11 @@ export function runTechDemoHarness(simulatedSeconds = 12): TechDemoHarnessReport
   invariant(capeStateFinite, 'cape state became non-finite');
   invariant(capeMaximumStructuralError < 0.055, `cape constraint error ${capeMaximumStructuralError.toFixed(4)} exceeded budget`);
   invariant(capeMaximumBodyPenetration < 0.002, `cape body penetration ${capeMaximumBodyPenetration.toFixed(4)} exceeded budget`);
-  invariant(capeMaximumEnvironmentPenetration < 0.002, `cape cave penetration ${capeMaximumEnvironmentPenetration.toFixed(4)} exceeded budget`);
+  invariant(
+    capeMaximumEnvironmentPenetration < 0.002,
+    `cape environment penetration ${capeMaximumEnvironmentPenetration.toFixed(4)} exceeded budget `
+      + `(face=${capeMaximumEnvironmentFacePenetration.toFixed(4)})`,
+  );
   invariant(capeMaximumEnvironmentFacePenetration < 0.002, `cape face penetration ${capeMaximumEnvironmentFacePenetration.toFixed(4)} exceeded budget`);
   invariant(capeMinimumSelfSeparation > 0.05, `cape self-separation ${capeMinimumSelfSeparation.toFixed(4)} collapsed`);
   invariant(capeHemDrop > 0.72, `cape settled into an inverted pose (hem drop ${capeHemDrop.toFixed(3)})`);

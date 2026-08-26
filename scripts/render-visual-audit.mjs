@@ -232,8 +232,13 @@ try {
     throw new Error(
       `Visual audit invariant failed: no exact ${label} rendered-rock contact within ${maximumDuration}s `
         + `(gap=${state.cape.minimumActiveRockSurfaceDistance} m, `
+        + `contacts=${state.cape.worldContacts.total - contactsBefore}, `
+        + `body=${state.cape.maximumBodyPenetration} m, `
+        + `environment=${state.cape.maximumEnvironmentPenetration} m, `
+        + `face=${state.cape.maximumEnvironmentFacePenetration} m, `
         + `fold=${state.cape.maximumUpwardFold} m, `
-        + `strain=${state.cape.maximumStructuralError} m)`,
+        + `strain=${state.cape.maximumStructuralError} m, `
+        + `closest=${JSON.stringify(state.cape.closestActiveRockCenter)})`,
     );
   };
   const profile = (duration, frameStep = 1 / 60) => evaluate(
@@ -243,6 +248,10 @@ try {
   const depthOcclusionProbe = () => evaluate(
     command,
     'window.__CAPE_DEMO__.runDepthOcclusionProbe()',
+  );
+  const shadowLayerProbe = () => evaluate(
+    command,
+    'window.__CAPE_DEMO__.runShadowLayerProbe()',
   );
   const dragOrbit = async (button, fromY, toY) => {
     const buttons = button === 'left' ? 1 : 2;
@@ -683,16 +692,110 @@ try {
   await setMovement(0, 0);
 
   await setPlayerPose(
-    [smallRock.position[0], 0, smallRock.position[2] - 0.5],
+    [smallRock.position[0] + 0.46, 0, smallRock.position[2] - 0.28],
     0,
   );
   await setView(0, 0.16, 4.1);
-  const smallContactsBefore = (await diagnostics()).cape.worldContacts.total;
-  const smallRockContact = await advanceUntilRockContact(
-    'small',
-    smallRock.position,
-    smallContactsBefore,
-    2.4,
+  let previousSmallRockState = await advance(0.4, 1 / 120);
+  const smallContactsBefore = previousSmallRockState.cape.worldContacts.total;
+  const smallRockTraversal = {
+    maximumRootVerticalStep: 0,
+    maximumCapeStep: 0,
+    maximumCapeVerticalStep: 0,
+    maximumUpwardFold: 0,
+    maximumStructuralError: 0,
+    maximumBodyPenetration: 0,
+    maximumEnvironmentPenetration: 0,
+    maximumEnvironmentFacePenetration: 0,
+  };
+  let smallRockContact = null;
+  let minimumSmallRockGap = Number.POSITIVE_INFINITY;
+  let minimumAnyRockGap = Number.POSITIVE_INFINITY;
+  let lastClosestRockCenter = null;
+  await setMovement(0, 1);
+  for (let frame = 0; frame < 110; frame += 1) {
+    const state = await advance(1 / 120, 1 / 120);
+    smallRockTraversal.maximumRootVerticalStep = Math.max(
+      smallRockTraversal.maximumRootVerticalStep,
+      Math.abs(state.player.position[1] - previousSmallRockState.player.position[1]),
+    );
+    smallRockTraversal.maximumCapeStep = Math.max(
+      smallRockTraversal.maximumCapeStep,
+      state.cape.maximumParticleMotion,
+    );
+    smallRockTraversal.maximumCapeVerticalStep = Math.max(
+      smallRockTraversal.maximumCapeVerticalStep,
+      state.cape.maximumParticleVerticalMotion,
+    );
+    for (const metric of [
+      'maximumUpwardFold',
+      'maximumStructuralError',
+      'maximumBodyPenetration',
+      'maximumEnvironmentPenetration',
+      'maximumEnvironmentFacePenetration',
+    ]) {
+      smallRockTraversal[metric] = Math.max(
+        smallRockTraversal[metric],
+        state.cape[metric],
+      );
+    }
+    const closestCenter = state.cape.closestActiveRockCenter;
+    lastClosestRockCenter = closestCenter;
+    if (state.cape.minimumActiveRockSurfaceDistance !== null) {
+      minimumAnyRockGap = Math.min(
+        minimumAnyRockGap,
+        state.cape.minimumActiveRockSurfaceDistance,
+      );
+    }
+    const targetMatches = closestCenter !== null
+      && Math.hypot(
+        closestCenter[0] - smallRock.position[0],
+        closestCenter[2] - smallRock.position[2],
+      ) < 0.18;
+    if (
+      targetMatches
+      && state.cape.minimumActiveRockSurfaceDistance !== null
+    ) {
+      minimumSmallRockGap = Math.min(
+        minimumSmallRockGap,
+        state.cape.minimumActiveRockSurfaceDistance,
+      );
+    }
+    if (
+      smallRockContact === null
+      && targetMatches
+      && state.cape.minimumActiveRockSurfaceDistance !== null
+      && state.cape.minimumActiveRockSurfaceDistance < 0.006
+      && state.cape.maximumBodyPenetration < 0.002
+      && state.cape.maximumEnvironmentPenetration < 0.002
+      && state.cape.maximumEnvironmentFacePenetration < 0.002
+      && state.cape.maximumUpwardFold < 0.03
+      && state.cape.maximumStructuralError < 0.035
+    ) {
+      smallRockContact = state;
+      await setCameraPose(
+        [
+          state.player.position[0] + 2.25,
+          state.player.position[1] + 0.92,
+          state.player.position[2] - 1.65,
+        ],
+        [
+          state.player.position[0],
+          state.player.position[1] + 0.68,
+          state.player.position[2] + 0.2,
+        ],
+      );
+      await capture('cape-rock-contact-small');
+    }
+    previousSmallRockState = state;
+  }
+  await setMovement(0, 0);
+  const smallRockTraversalEnd = await advance(0.12, 1 / 120);
+  assert(
+    smallRockContact !== null,
+    'walking cape never made resolved contact with the small test rock '
+      + `(targetGap=${minimumSmallRockGap}, anyGap=${minimumAnyRockGap}, `
+      + `lastClosest=${JSON.stringify(lastClosestRockCenter)})`,
   );
   assert(smallRockContact.cape.worldContacts.total > smallContactsBefore, 'cape never contacted the small test rock');
   assert(
@@ -709,21 +812,44 @@ try {
     `cape hovered visibly above the small test rock (${smallRockContact.cape.minimumActiveRockSurfaceDistance} m)`,
   );
   assert(smallRockContact.cape.maximumEnvironmentFacePenetration < 0.002, 'small test rock pierced a cape triangle');
-  assert(smallRockContact.cape.maximumUpwardFold <= 0.055_05, 'small-rock contact crossed the lower cape rows');
-  assert(smallRockContact.cape.maximumStructuralError < 0.055, 'small-rock contact overstretched the cape');
-  await setCameraPose(
-    [
-      smallRockContact.player.position[0] + 2.25,
-      smallRockContact.player.position[1] + 0.92,
-      smallRockContact.player.position[2] - 1.65,
-    ],
-    [
-      smallRockContact.player.position[0],
-      smallRockContact.player.position[1] + 0.68,
-      smallRockContact.player.position[2] + 0.2,
-    ],
+  assert(
+    smallRockTraversalEnd.player.position[2] < smallRock.position[2] - 0.65,
+    'player did not complete the small-stone traversal',
   );
-  await capture('cape-rock-contact-small');
+  assert(smallRockTraversal.maximumRootVerticalStep < 0.035, 'small stone launched the player support');
+  assert(
+    smallRockTraversal.maximumCapeStep < 0.09,
+    'small stone snapped the cape farther than a running cloth step '
+      + `(motion=${smallRockTraversal.maximumCapeStep.toFixed(4)}, `
+      + `vertical=${smallRockTraversal.maximumCapeVerticalStep.toFixed(4)}, `
+      + `fold=${smallRockTraversal.maximumUpwardFold.toFixed(4)}, `
+      + `strain=${smallRockTraversal.maximumStructuralError.toFixed(4)})`,
+  );
+  assert(
+    smallRockTraversal.maximumCapeVerticalStep < 0.044,
+    'small stone launched the cape like a jump '
+      + `(vertical=${smallRockTraversal.maximumCapeVerticalStep.toFixed(4)}, `
+      + `motion=${smallRockTraversal.maximumCapeStep.toFixed(4)}, `
+      + `root=${smallRockTraversal.maximumRootVerticalStep.toFixed(4)}, `
+      + `fold=${smallRockTraversal.maximumUpwardFold.toFixed(4)}, `
+      + `strain=${smallRockTraversal.maximumStructuralError.toFixed(4)})`,
+  );
+  assert(smallRockTraversal.maximumUpwardFold < 0.03, 'small stone crossed or straightened lower cape rows');
+  assert(smallRockTraversal.maximumStructuralError < 0.035, 'small-stone traversal overstretched the cape');
+  assert(
+    smallRockTraversal.maximumBodyPenetration < 0.002,
+    `small-stone traversal pushed cape through the body (${smallRockTraversal.maximumBodyPenetration.toFixed(4)} m)`,
+  );
+  assert(
+    smallRockTraversal.maximumEnvironmentPenetration < 0.002,
+    `small-stone traversal penetrated world geometry `
+      + `(${smallRockTraversal.maximumEnvironmentPenetration.toFixed(4)} m, `
+      + `face=${smallRockTraversal.maximumEnvironmentFacePenetration.toFixed(4)} m)`,
+  );
+  assert(
+    smallRockTraversal.maximumEnvironmentFacePenetration < 0.002,
+    `small-stone traversal pierced a cape face (${smallRockTraversal.maximumEnvironmentFacePenetration.toFixed(4)} m)`,
+  );
 
   const contactsBefore = (await diagnostics()).cape.worldContacts.total;
   await setPlayerPose([1.68, 0, -31.6], 0);
@@ -768,19 +894,40 @@ try {
     shadowTarget,
   );
   await capture('shadow-camera-angle-a');
-  const shadowOppositeAngle = await setCameraPose(
+  const shadowSecondAngle = await setCameraPose(
     [
-      shadowStudy.player.position[0] - 3.1,
-      shadowStudy.player.position[1] + 2.25,
-      shadowStudy.player.position[2] - 2.7,
+      shadowStudy.player.position[0] + 3.6,
+      shadowStudy.player.position[1] + 2.6,
+      shadowStudy.player.position[2] - 1.8,
     ],
     shadowTarget,
   );
   await capture('shadow-camera-angle-b');
   assert(
     JSON.stringify(shadowFirstAngle.torches.shadow)
-      === JSON.stringify(shadowOppositeAngle.torches.shadow),
+      === JSON.stringify(shadowSecondAngle.torches.shadow),
     'camera orbit changed the active shadow light at a fixed player position',
+  );
+  const renderedShadowLayers = await shadowLayerProbe();
+  assert(
+    renderedShadowLayers.direct.contrast > 18,
+    'direct character render produced no measurable cast shadow',
+  );
+  assert(
+    renderedShadowLayers.isolated.contrast > 18,
+    'close-camera isolated render dropped the character cast shadow',
+  );
+  assert(
+    renderedShadowLayers.secondAngle.contrast > 18,
+    'second camera angle produced no measurable cast shadow',
+  );
+  assert(
+    renderedShadowLayers.contrastDelta < 4,
+    `camera render mode changed shadow contrast by ${renderedShadowLayers.contrastDelta.toFixed(2)}`,
+  );
+  assert(
+    renderedShadowLayers.angleContrastDelta < 4,
+    `camera angle changed shadow contrast by ${renderedShadowLayers.angleContrastDelta.toFixed(2)}`,
   );
 
   const occlusionRock = initial.cave.contactRocks.find((rock) => rock.size === 'large');
@@ -854,12 +1001,14 @@ try {
     largeRockContact,
     movingFootRockContact,
     smallRockContact,
+    smallRockTraversal,
     formationContact,
     shadowStudy,
     shadowAngles: {
       first: shadowFirstAngle.torches.shadow,
-      opposite: shadowOppositeAngle.torches.shadow,
+      second: shadowSecondAngle.torches.shadow,
     },
+    renderedShadowLayers,
     occlusionStudy,
     depthOcclusion: {
       firstAngle: firstDepthOcclusion,
