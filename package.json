@@ -32,6 +32,7 @@
     "test": "bun test",
     "check": "tsc --noEmit && bun test",
     "harness": "bun scripts/verify-tech-demo.ts",
+    "stress:rocks": "bun scripts/run-rock-stress.ts",
     "audit:visual": "bun run build && bun scripts/render-visual-audit.mjs",
     "verify": "bun run check && bun run build && bun run harness",
     "preview": "vite preview --host 0.0.0.0"

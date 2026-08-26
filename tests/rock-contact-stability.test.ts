@@ -35,9 +35,12 @@ describe('exact rock contact stability', () => {
     expect(courseRocks).toHaveLength(cave.contactRocks.length);
   });
 
+  const extendedStressTest = process.env.CAPE_RUN_EXTENDED_ROCK_STRESS === 'true'
+    ? test
+    : test.skip;
   courseRocks.forEach((rock, index) => {
     const placement = cave.contactRocks[index]!;
-    test(`keeps sustained contact with ${placement.size} rock ${index + 1} bounded and calm`, () => {
+    extendedStressTest(`keeps sustained contact with ${placement.size} rock ${index + 1} bounded and calm`, () => {
       const metrics = simulateRockContact(rock, placement, index);
 
       expect(metrics.contacts).toBeGreaterThan(0);
@@ -47,7 +50,7 @@ describe('exact rock contact stability', () => {
       expect(metrics.maximumFacePenetration).toBeLessThan(0.002);
       expect(metrics.maximumAnchorDistance).toBeLessThan(CAPE.length * 1.32);
       expect(metrics.maximumUpwardFold).toBeLessThan(0.035);
-    });
+    }, 30_000);
   });
 });
 

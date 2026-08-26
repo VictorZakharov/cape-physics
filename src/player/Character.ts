@@ -10,9 +10,11 @@ import {
   createCapeAttachment,
 } from './CapeAttachment';
 import { createProceduralHead } from './ProceduralHead';
+import { createProceduralTorsoGeometry } from './ProceduralTorso';
 
 export const TORSO_NAME = 'Tapered torso armor';
 export const NECK_NAME = 'Visible skin neck';
+export const GORGET_NAME = 'Fitted leather gorget';
 export const LEFT_SHOULDER_NAME = 'Left fitted shoulder armor';
 export const RIGHT_SHOULDER_NAME = 'Right fitted shoulder armor';
 
@@ -207,10 +209,8 @@ export class Character {
     hips.scale.z = 0.72;
     this.rig.add(hips);
 
-    const torso = new THREE.Mesh(new THREE.CylinderGeometry(0.218, 0.18, 0.55, 10), armor);
+    const torso = new THREE.Mesh(createProceduralTorsoGeometry(), armor);
     torso.name = TORSO_NAME;
-    torso.position.y = 1.225;
-    torso.scale.z = 0.72;
     this.rig.add(torso);
 
     const breastplate = new THREE.Mesh(new THREE.CylinderGeometry(0.21, 0.178, 0.39, 10, 1, false), darkMetal);
@@ -232,9 +232,10 @@ export class Character {
     neck.name = NECK_NAME;
     neck.position.y = 1.555;
     const gorget = new THREE.Mesh(new THREE.TorusGeometry(0.132, 0.019, 6, 20), leather);
+    gorget.name = GORGET_NAME;
     gorget.rotation.x = Math.PI / 2;
     gorget.position.y = 1.49;
-    gorget.scale.z = 0.76;
+    gorget.scale.set(1, 0.68, 0.76);
     const clasp = new THREE.Mesh(new THREE.SphereGeometry(0.032, 10, 8), trim);
     clasp.name = 'Cape throat clasp';
     clasp.position.fromArray(CAPE_THROAT_CLASP_POSITION);

@@ -2,9 +2,10 @@ import { describe, expect, test } from 'bun:test';
 import * as THREE from 'three';
 import { PHYSICS_STEP, PLAYER } from '../src/config';
 import { CLOTH_BODY_CLEARANCE } from '../src/physics/ClothBodyCollision';
-import type { WorldSphereCollider } from '../src/physics/colliders';
+import type { CapsuleCollider, WorldSphereCollider } from '../src/physics/colliders';
 import {
   Character,
+  GORGET_NAME,
   LEFT_SHOULDER_NAME,
   NECK_NAME,
   RIGHT_SHOULDER_NAME,
@@ -74,6 +75,23 @@ function traverse(running: boolean): {
   };
 }
 
+function capsuleSurfaceExcess(
+  point: THREE.Vector3,
+  collider: CapsuleCollider,
+): number {
+  const axis = new THREE.Vector3().subVectors(collider.end, collider.start);
+  const axisLengthSquared = axis.lengthSq();
+  const progress = axisLengthSquared > 0.000_001
+    ? THREE.MathUtils.clamp(
+      new THREE.Vector3().subVectors(point, collider.start).dot(axis) / axisLengthSquared,
+      0,
+      1,
+    )
+    : 0;
+  const closest = new THREE.Vector3().copy(collider.start).addScaledVector(axis, progress);
+  return point.distanceTo(closest) - collider.radius - CLOTH_BODY_CLEARANCE;
+}
+
 describe('CharacterController', () => {
   test('uses a human-scale armored silhouette without the former helmet spike', () => {
     const character = new Character();
@@ -112,6 +130,33 @@ describe('CharacterController', () => {
     expect(neckWidth / headWidth).toBeLessThan(0.55);
     expect(neckBounds.max.y - neckBounds.min.y).toBeGreaterThan(0.14);
     expect(neckBounds.intersectsBox(torsoBounds)).toBe(true);
+  });
+
+  test('keeps the rendered torso and gorget inside the cape collision envelope', () => {
+    const character = new Character();
+    character.root.updateMatrixWorld(true);
+    const torso = character.root.getObjectByName(TORSO_NAME);
+    const gorget = character.root.getObjectByName(GORGET_NAME);
+    expect(torso).toBeInstanceOf(THREE.Mesh);
+    expect(gorget).toBeInstanceOf(THREE.Mesh);
+    const colliders = character.getCapeColliders();
+    const point = new THREE.Vector3();
+    let maximumSurfaceExcess = Number.NEGATIVE_INFINITY;
+
+    for (const object of [torso, gorget]) {
+      const mesh = object as THREE.Mesh<THREE.BufferGeometry>;
+      const positions = mesh.geometry.getAttribute('position');
+      for (let index = 0; index < positions.count; index += 1) {
+        point.fromBufferAttribute(positions, index);
+        mesh.localToWorld(point);
+        maximumSurfaceExcess = Math.max(
+          maximumSurfaceExcess,
+          Math.min(...colliders.map((collider) => capsuleSurfaceExcess(point, collider))),
+        );
+      }
+    }
+
+    expect(maximumSurfaceExcess).toBeLessThanOrEqual(0.000_001);
   });
 
   test('covers the belt through both animated boots with continuous cape contact', () => {

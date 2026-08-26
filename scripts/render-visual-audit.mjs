@@ -529,6 +529,13 @@ try {
   assert(lowFrontAttachment.player.opacity === 1, 'low front attachment study triggered close-camera fade');
   assert(lowFrontAttachment.player.capeAttachment.maximumAnchorGap < 0.001, 'cape detached in the low front attachment study');
   await capture('cape-neck-mount-low-front');
+  const closeRearAttachment = await setCameraPose(
+    [attachmentX + 0.55, attachmentY + 1.5, attachmentZ + 0.95],
+    [attachmentX, attachmentY + 1.48, attachmentZ + 0.08],
+  );
+  assert(closeRearAttachment.player.opacity < 0.5, 'close rear attachment study did not exercise isolated fade');
+  assert(closeRearAttachment.player.capeAttachment.maximumAnchorGap < 0.001, 'cape detached in the close rear attachment study');
+  await capture('cape-upper-back-close');
 
   const firstBasinCenter = afterWalk.water.basinCenters[0];
   assert(firstBasinCenter?.length === 3, 'first water-basin test position is missing');
