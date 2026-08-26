@@ -59,11 +59,11 @@ export class Character {
     leftThigh: this.createCapeCollider(0.085, 'left thigh'),
     leftKnee: this.createCapeCollider(0.08, 'left knee'),
     leftLowerLeg: this.createCapeCollider(0.075, 'left lower leg'),
-    leftBoot: this.createCapeCollider(0.105, 'left boot'),
+    leftBoot: this.createCapeCollider(0.095, 'left boot'),
     rightThigh: this.createCapeCollider(0.085, 'right thigh'),
     rightKnee: this.createCapeCollider(0.08, 'right knee'),
     rightLowerLeg: this.createCapeCollider(0.075, 'right lower leg'),
-    rightBoot: this.createCapeCollider(0.105, 'right boot'),
+    rightBoot: this.createCapeCollider(0.095, 'right boot'),
   };
   private readonly capeColliders: readonly CapsuleCollider[] = Object.values(this.capeColliderRig);
   private readonly animator = new CharacterAnimator({
@@ -130,11 +130,11 @@ export class Character {
     this.setWorldCapsule(leftThigh, this.leftLeg, [0, -0.29, 0], [0, -0.29, 0]);
     this.setWorldCapsule(leftKnee, this.leftLeg, [0, -0.5, 0], [0, -0.5, 0]);
     this.setWorldCapsule(leftLowerLeg, this.leftLeg, [0, -0.69, 0], [0, -0.69, 0]);
-    this.setWorldCapsule(leftBoot, this.leftFoot, [0, -0.06, -0.06], [0, -0.06, -0.06]);
+    this.setWorldCapsule(leftBoot, this.leftFoot, [0, -0.06, -0.115], [0, -0.06, -0.005]);
     this.setWorldCapsule(rightThigh, this.rightLeg, [0, -0.29, 0], [0, -0.29, 0]);
     this.setWorldCapsule(rightKnee, this.rightLeg, [0, -0.5, 0], [0, -0.5, 0]);
     this.setWorldCapsule(rightLowerLeg, this.rightLeg, [0, -0.69, 0], [0, -0.69, 0]);
-    this.setWorldCapsule(rightBoot, this.rightFoot, [0, -0.06, -0.06], [0, -0.06, -0.06]);
+    this.setWorldCapsule(rightBoot, this.rightFoot, [0, -0.06, -0.115], [0, -0.06, -0.005]);
     return this.capeColliders;
   }
 

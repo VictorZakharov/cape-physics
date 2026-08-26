@@ -224,7 +224,10 @@ try {
   const initial = await diagnostics();
   assert(initial.ready, 'demo harness did not report ready');
   assert(initial.renderer.depthComposite.layerDepthTexture, 'character layer has no resolved depth texture');
-  assert(initial.renderer.depthComposite.worldDepthConnected, 'world depth is not connected to the layer compositor');
+  assert(
+    initial.renderer.depthComposite.renderMode === 'direct-opaque',
+    'opaque character did not share the world MSAA depth pass',
+  );
   assert(
     Math.abs(initial.camera.initialProjectionAspect - initial.camera.initialViewportAspect) < 0.000_001,
     'camera projection did not match the viewport on the first frame',
@@ -301,6 +304,8 @@ try {
   assert(closeCamera.camera.distance >= 0.45, 'close orbit collapsed into the player');
   assert(closeCamera.camera.groundClearance >= 0.17, 'close orbit fell through the ground');
   assert(closeCamera.player.opacity >= 0.11 && closeCamera.player.opacity < 0.5, 'player did not become sufficiently transparent near the camera');
+  assert(closeCamera.renderer.depthComposite.renderMode === 'isolated-fade', 'close camera did not isolate the faded character layer');
+  assert(closeCamera.renderer.depthComposite.worldDepthConnected, 'close fade did not sample world depth');
   await capture('camera-close-fade');
 
   await setView(0.08, 0.22, 4.5);
@@ -596,6 +601,38 @@ try {
   await capture('cape-rock-contact-large');
 
   await setPlayerPose(
+    [courseFirst.position[0] + 0.65, 0, courseFirst.position[2] - 0.72],
+    0,
+  );
+  await setView(0, 0.16, 4.1);
+  const movingRockContactsBefore = (await diagnostics()).cape.worldContacts.total;
+  await setMovement(0, 1);
+  const movingFootRockContact = await advance(0.28, 1 / 120);
+  assert(movingFootRockContact.player.speed > 2, 'moving foot/rock study did not engage walking gait');
+  assert(
+    movingFootRockContact.cape.worldContacts.total > movingRockContactsBefore,
+    'trailing cape never contacted the nearby rock during walking',
+  );
+  assert(movingFootRockContact.cape.maximumBodyPenetration < 0.002, 'stone-pinned walking cape penetrated the character');
+  assert(movingFootRockContact.cape.maximumEnvironmentFacePenetration < 0.002, 'walking cape penetrated the nearby rock');
+  assert(movingFootRockContact.cape.bodyPenetrationByCollider['left boot'] < 0.002, 'left boot clipped through the walking cape near a rock');
+  assert(movingFootRockContact.cape.bodyPenetrationByCollider['right boot'] < 0.002, 'right boot clipped through the walking cape near a rock');
+  await setCameraPose(
+    [
+      movingFootRockContact.player.position[0] + 1.05,
+      movingFootRockContact.player.position[1] + 0.78,
+      movingFootRockContact.player.position[2] + 2.5,
+    ],
+    [
+      movingFootRockContact.player.position[0],
+      movingFootRockContact.player.position[1] + 0.52,
+      movingFootRockContact.player.position[2] + 0.28,
+    ],
+  );
+  await capture('cape-moving-foot-rock-contact');
+  await setMovement(0, 0);
+
+  await setPlayerPose(
     [smallRock.position[0] + 0.32, 0, smallRock.position[2] - 0.57],
     0,
   );
@@ -716,6 +753,7 @@ try {
     bankAfter,
     courseTraversal,
     largeRockContact,
+    movingFootRockContact,
     smallRockContact,
     formationContact,
     occlusionStudy,

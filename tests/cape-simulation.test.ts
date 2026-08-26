@@ -2,7 +2,11 @@ import { describe, expect, test } from 'bun:test';
 import * as THREE from 'three';
 import { CAPE, PHYSICS_STEP, PLAYER } from '../src/config';
 import { CapeSimulation } from '../src/physics/CapeSimulation';
-import { CLOTH_WORLD_CLEARANCE } from '../src/physics/ClothWorldCollision';
+import { CLOTH_BODY_CLEARANCE } from '../src/physics/ClothBodyCollision';
+import {
+  CLOTH_WORLD_CLEARANCE,
+  getClothWorldClearance,
+} from '../src/physics/ClothWorldCollision';
 import type { CapsuleCollider, WorldSphereCollider } from '../src/physics/colliders';
 import type { CapeAnchors } from '../src/player/Character';
 import { Character } from '../src/player/Character';
@@ -151,6 +155,99 @@ describe('CapeSimulation', () => {
       character.getCapeColliders(),
       characterAnchors.back,
     )).toBeLessThan(0.002);
+  });
+
+  test('keeps a stone-pinned cape outside animated boots throughout walking', () => {
+    const character = new Character();
+    const collision = new WorldCollisionResolver([]);
+    const z = 11.8;
+    const x = caveCenterX(z);
+    character.root.position.set(x, collision.getPlayerRootHeight(x, z), z);
+    character.root.updateMatrixWorld(true);
+    let characterAnchors = character.getCapeAnchors();
+    const cape = new CapeSimulation(characterAnchors);
+
+    for (let tick = 0; tick < 240; tick += 1) {
+      cape.step(
+        PHYSICS_STEP,
+        characterAnchors,
+        character.getCapeColliders(),
+        [],
+        new THREE.Vector3(),
+        tick * PHYSICS_STEP,
+      );
+    }
+
+    const floor = collision.getGroundHeight(x, z + 0.75);
+    const rock: WorldSphereCollider = {
+      center: new THREE.Vector3(x + 0.38, floor + 0.2, z + 0.75),
+      radius: 0.25,
+      walkable: true,
+      kind: 'rock',
+    };
+    const walkingVelocity = new THREE.Vector3(0, 0, -PLAYER.walkSpeed);
+    let maximumBootPenetration = 0;
+    let maximumBodyPenetration = 0;
+    let maximumRockPenetration = 0;
+    let minimumBootRockGap = Number.POSITIVE_INFINITY;
+    const bootAxis = new THREE.Vector3();
+    const bootToRock = new THREE.Vector3();
+    const closestBootPoint = new THREE.Vector3();
+
+    for (let tick = 240; tick < 720; tick += 1) {
+      character.updateAnimation(PHYSICS_STEP, PLAYER.walkSpeed, true, 0);
+      character.root.updateMatrixWorld(true);
+      characterAnchors = character.getCapeAnchors();
+      const bodyColliders = character.getCapeColliders();
+      const bootColliders = bodyColliders.filter((collider) => collider.name.endsWith('boot'));
+      for (const boot of bootColliders) {
+        bootAxis.copy(boot.end).sub(boot.start);
+        const axisLengthSquared = bootAxis.lengthSq();
+        const progress = axisLengthSquared > 0.000_001
+          ? THREE.MathUtils.clamp(
+            bootToRock.copy(rock.center).sub(boot.start).dot(bootAxis) / axisLengthSquared,
+            0,
+            1,
+          )
+          : 0;
+        closestBootPoint.copy(boot.start).addScaledVector(bootAxis, progress);
+        minimumBootRockGap = Math.min(
+          minimumBootRockGap,
+          closestBootPoint.distanceTo(rock.center)
+            - boot.radius
+            - CLOTH_BODY_CLEARANCE
+            - rock.radius
+            - getClothWorldClearance(rock),
+        );
+      }
+      cape.step(
+        PHYSICS_STEP,
+        characterAnchors,
+        bodyColliders,
+        [rock],
+        walkingVelocity,
+        tick * PHYSICS_STEP,
+      );
+      maximumBootPenetration = Math.max(
+        maximumBootPenetration,
+        cape.getMaximumBodyPenetration(bootColliders, characterAnchors.back),
+      );
+      maximumBodyPenetration = Math.max(
+        maximumBodyPenetration,
+        cape.getMaximumBodyPenetration(bodyColliders, characterAnchors.back),
+      );
+      maximumRockPenetration = Math.max(
+        maximumRockPenetration,
+        cape.getMaximumEnvironmentFacePenetration([rock]),
+      );
+    }
+
+    expect(cape.getWorldContactDiagnostics().total).toBeGreaterThan(0);
+    expect(minimumBootRockGap).toBeGreaterThan(0.01);
+    expect(cape.getMaximumEnvironmentFacePenetration([rock])).toBeLessThan(0.002);
+    expect(maximumBootPenetration).toBeLessThan(0.002);
+    expect(maximumBodyPenetration).toBeLessThan(0.002);
+    expect(maximumRockPenetration).toBeLessThan(0.002);
   });
 
   test('damps residual trembling after an aggressive reversal settles', () => {

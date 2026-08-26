@@ -145,6 +145,65 @@ describe('CharacterController', () => {
     }
   });
 
+  test('cape colliders enclose every animated boot corner', () => {
+    const character = new Character();
+    const point = new THREE.Vector3();
+    const pointFromStart = new THREE.Vector3();
+    const closest = new THREE.Vector3();
+    const axis = new THREE.Vector3();
+    let minimumBootCount = Number.POSITIVE_INFINITY;
+    let maximumColliderExcess = Number.NEGATIVE_INFINITY;
+
+    for (let frame = 0; frame < 120; frame += 1) {
+      character.updateAnimation(PHYSICS_STEP, PLAYER.walkSpeed, true, 0);
+      character.root.updateMatrixWorld(true);
+      const colliders = character.getCapeColliders();
+      const boots: THREE.Mesh[] = [];
+      character.root.traverse((object) => {
+        if (
+          object instanceof THREE.Mesh
+          && object.geometry instanceof THREE.BoxGeometry
+          && Math.abs(object.geometry.parameters.depth - 0.25) < 0.000_001
+        ) {
+          boots.push(object);
+        }
+      });
+      minimumBootCount = Math.min(minimumBootCount, boots.length);
+
+      for (const boot of boots) {
+        const bootCenter = boot.getWorldPosition(new THREE.Vector3());
+        const collider = colliders
+          .filter((candidate) => candidate.name.endsWith('boot'))
+          .sort((first, second) => (
+            first.start.distanceToSquared(bootCenter) - second.start.distanceToSquared(bootCenter)
+          ))[0];
+        if (!collider) continue;
+        const positions = boot.geometry.getAttribute('position');
+        axis.copy(collider.end).sub(collider.start);
+        const axisLengthSquared = axis.lengthSq();
+        for (let index = 0; index < positions.count; index += 1) {
+          point.fromBufferAttribute(positions, index);
+          boot.localToWorld(point);
+          const progress = axisLengthSquared > 0.000_001
+            ? THREE.MathUtils.clamp(
+              pointFromStart.copy(point).sub(collider.start).dot(axis) / axisLengthSquared,
+              0,
+              1,
+            )
+            : 0;
+          closest.copy(collider.start).addScaledVector(axis, progress);
+          maximumColliderExcess = Math.max(
+            maximumColliderExcess,
+            point.distanceTo(closest) - collider.radius - CLOTH_BODY_CLEARANCE,
+          );
+        }
+      }
+    }
+
+    expect(minimumBootCount).toBe(2);
+    expect(maximumColliderExcess).toBeLessThanOrEqual(0.000_001);
+  });
+
   test('builds a fitted human-proportioned head with flush helmet trim', () => {
     const character = new Character();
     character.root.updateMatrixWorld(true);

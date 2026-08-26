@@ -177,6 +177,10 @@ export class CapeSimulation {
         // Recheck triangles only against colliders that actually touched this
         // iteration; vertex contacts were already solved above.
         this.contactSolver.solvePostCaveWorldFaces();
+        // The fixed-world projection can in turn press cloth back into an
+        // animated boot or lower leg. Finish on the moving body constraint so
+        // rendered limb geometry cannot emerge through a stone-pinned cape.
+        this.contactSolver.solveBody(bodyColliders, anchors.back);
       }
       this.pinAnchors(anchors);
     }

@@ -5,7 +5,7 @@ import { SPELEOTHEM_RINGS, SPELEOTHEM_SIDES } from './SpeleothemGeometry';
 const MAXIMUM_FORMATION_PROXY_SPACING = 0.14;
 const FORMATION_PROXY_SKIN = 0.012;
 const MAXIMUM_ROCK_PROXY_SPACING = 0.13;
-const ROCK_PROXY_SKIN = 0.008;
+const ROCK_PROXY_SKIN = 0.004;
 
 interface FormationSection {
   readonly center: THREE.Vector3;
@@ -90,7 +90,7 @@ export class CaveColliderBuilder {
       this.sampleCenter.copy(this.worldVertex).addScaledVector(this.majorAxis, offset);
       this.addSphere(
         this.sampleCenter,
-        secondary + halfStep + ROCK_PROXY_SKIN,
+        Math.hypot(secondary, halfStep) + ROCK_PROXY_SKIN,
         walkable,
         'rock',
       );

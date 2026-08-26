@@ -8,7 +8,11 @@ import {
 } from '../world/caveProfile';
 import type { CapsuleCollider, WorldSphereCollider } from './colliders';
 import { CLOTH_BODY_CLEARANCE, ClothBodyCollision } from './ClothBodyCollision';
-import { CLOTH_WORLD_CLEARANCE, ClothWorldCollision } from './ClothWorldCollision';
+import {
+  CLOTH_WORLD_CLEARANCE,
+  ClothWorldCollision,
+  getClothWorldClearance,
+} from './ClothWorldCollision';
 import { constrainSphereContactToFloor } from './floorConstrainedContact';
 
 const WORLD_QUERY_RADIUS = CAPE.length + 2.2;
@@ -164,7 +168,10 @@ export class CapeContactSolver {
       const position = this.positions[index];
       if (!position) continue;
       for (const collider of colliders) {
-        maximum = Math.max(maximum, collider.radius + CLOTH_WORLD_CLEARANCE - position.distanceTo(collider.center));
+        maximum = Math.max(
+          maximum,
+          collider.radius + getClothWorldClearance(collider) - position.distanceTo(collider.center),
+        );
       }
       maximum = Math.max(maximum, caveGroundHeightAt(position.x, position.z) + CLOTH_WORLD_CLEARANCE - position.y);
       const halfWidth = caveInteriorHalfWidthAtHeight(position.y, position.z, CLOTH_WORLD_CLEARANCE);
@@ -210,7 +217,8 @@ export class CapeContactSolver {
     previous: THREE.Vector3,
     collider: WorldSphereCollider,
   ): boolean {
-    const radius = collider.radius + CLOTH_WORLD_CLEARANCE;
+    const clearance = getClothWorldClearance(collider);
+    const radius = collider.radius + clearance;
     this.delta.copy(position).sub(collider.center);
     const distanceSquared = this.delta.lengthSq();
     if (distanceSquared < radius * radius) {
@@ -228,7 +236,7 @@ export class CapeContactSolver {
         position,
         collider.center,
         radius,
-        CLOTH_WORLD_CLEARANCE,
+        clearance,
         this.contactNormal,
         previous,
       );
@@ -311,7 +319,7 @@ export class CapeContactSolver {
 
     this.activeWorldColliders.length = 0;
     for (const collider of this.nearbyWorldColliders) {
-      const radius = collider.radius + CLOTH_WORLD_CLEARANCE + WORLD_BROADPHASE_SKIN;
+      const radius = collider.radius + getClothWorldClearance(collider) + WORLD_BROADPHASE_SKIN;
       if (
         collider.center.x + radius < this.boundsMinimum.x
         || collider.center.x - radius > this.boundsMaximum.x

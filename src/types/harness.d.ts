@@ -24,6 +24,7 @@ interface CapeDemoDiagnostics {
     readonly depthComposite: {
       readonly layerDepthTexture: boolean;
       readonly worldDepthConnected: boolean;
+      readonly renderMode: 'direct-opaque' | 'isolated-fade';
     };
   };
   readonly player: {

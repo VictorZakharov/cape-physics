@@ -3,6 +3,7 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { selectCharacterRenderMode } from './characterRenderMode';
 import { calculateRenderSizing, type RenderSizing } from './renderSizing';
 import { createResolvedDepthTexture } from './depthComposite';
 import { CHARACTER_RENDER_LAYER, WORLD_RENDER_LAYER } from './renderLayers';
@@ -13,6 +14,7 @@ export class RenderPipeline {
   private readonly composer: EffectComposer;
   private readonly bloom: UnrealBloomPass;
   private readonly characterComposite: SceneLayerCompositePass;
+  private readonly camera: THREE.Camera;
   private resolutionScale = 1;
   private sizing: RenderSizing | null = null;
   private targetResizeCount = 0;
@@ -22,6 +24,7 @@ export class RenderPipeline {
     scene: THREE.Scene,
     camera: THREE.Camera,
   ) {
+    this.camera = camera;
     this.renderer = new THREE.WebGLRenderer({
       canvas,
       antialias: false,
@@ -56,6 +59,15 @@ export class RenderPipeline {
   }
 
   public render(delta: number): void {
+    const renderMode = selectCharacterRenderMode(this.characterComposite.getOpacity());
+    this.camera.layers.set(WORLD_RENDER_LAYER);
+    this.characterComposite.enabled = renderMode === 'isolated-fade';
+    if (renderMode === 'direct-opaque') {
+      // Opaque world and character samples must share the same multisampled
+      // depth/color pass. Resolving their targets separately loses coverage at
+      // silhouettes and produces a one-pixel gap around foreground rocks.
+      this.camera.layers.enable(CHARACTER_RENDER_LAYER);
+    }
     this.composer.render(delta);
   }
 
@@ -102,7 +114,10 @@ export class RenderPipeline {
   }
 
   public getDepthCompositeDiagnostics() {
-    return this.characterComposite.getDepthDiagnostics();
+    return {
+      ...this.characterComposite.getDepthDiagnostics(),
+      renderMode: selectCharacterRenderMode(this.characterComposite.getOpacity()),
+    };
   }
 
   public readScreenCenterPixel(): readonly [number, number, number, number] {

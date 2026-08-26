@@ -37,15 +37,15 @@ The renderer is uncapped for displays up to 144 Hz and beyond. Physics runs at a
 - Fixed-step jump arc with procedural arm, leg, and foot posing; terrain landing; height-aware cave-wall bounds; solid-formation separation; and ceiling contact
 - Body-clear curved neckline attachment concealed beneath a batched procedural shoulder yoke, gathered fabric seam, paired ties, gorget, and clasps
 - Allocation-free spatial-hash self-collision with explicit cloth thickness
-- Dynamic shoulder, torso, hip/belt, arm, thigh, knee, lower-leg, and boot colliders fitted to the animated silhouette
+- Dynamic shoulder, torso, hip/belt, arm, thigh, knee, lower-leg, and fitted toe-to-heel boot colliders that enclose the animated silhouette
 - One-sided body projection that lets cloth wrap around armor without selecting the character's front surface
-- Swept vertex contact plus barycentrically weighted sphere-to-cloth-triangle contact, closing the gap where a narrow object can pierce a face while all three vertices remain clear
-- Geometry-derived sphere chains that conservatively enclose curved/elliptical stalactites, stalagmites, elongated rotated rocks, torch hardware, and mineral crystals
-- 2,260 deterministic solid-object proxies plus analytic floor, bank, wall, and ceiling contact
+- Swept vertex contact plus barycentrically weighted sphere-to-cloth-triangle contact, closing the gap where a narrow object can pierce a face while all three vertices remain clear; a final coupled stone/body projection prevents rocks from pressing cloth back through animated feet
+- Geometry-derived sphere chains that conservatively enclose curved/elliptical stalactites, stalagmites, elongated rotated rocks, torch hardware, and mineral crystals; rock chains use tight hypotenuse coverage and a rock-specific cloth clearance so the cape follows the rendered boundary closely
+- 2,274 deterministic solid-object proxies plus analytic floor, bank, wall, and ceiling contact
 - Cloth-motion-aware damping and deterministic sleep/wake behavior that cannot freeze a suspended panel and does not slow gravity-driven settling
 - Terrain-aware player grounding that climbs the cave shell and walkable rocks instead of clipping through slopes
 - Measured procedural character proportions with a 1.8-head shoulder span, a 1.35-head tapered torso, a visible neck-to-shoulder transition, slimmer limbs, an exposed face, a fitted helmet shell with flush brow trim, restrained walk/run bob, and rate-limited eased turning
-- Wide third-person pitch range, collision-shortened camera boom, ground-safe close orbit, and a smooth 12% near-camera fade composited from an isolated character/cape layer that compares resolved world and layer depth before blending
+- Wide third-person pitch range, collision-shortened camera boom, and ground-safe close orbit; opaque character/cape geometry shares the world's MSAA depth pass for exact silhouette coverage, while the smooth 12% near-camera fade uses an isolated depth-resolved layer
 - Five walkable, optically clear procedural pools seated in shared height-field basins with submerged interiors, dry containing rims, continuous normals, and antialiased edges
 - Thirteen deterministic ceiling-drip emitters, splash particles, independent footstep ripples, and one-shot impact-scaled landing ripples
 - Procedural rock color, height, normal, and roughness maps
@@ -67,7 +67,7 @@ bun run verify         # check, production build, and systems harness
 
 The renderer-free harness constructs the complete scene graph and dynamically advances cloth, character animation, a moving jump and water landing, center-path rock contact, water drops, footsteps, torches, and mineral systems. It checks finite state, structural error, vertex and cloth-face penetration, pinned-neckline/body clearance, continuous belt-to-boot coverage, jump apex, airborne limb pose, cape follow-through, coupled body/rock contact, landing-ripple emission, self-separation, downward settling, basin depth and rim containment, ripple activity, geometry validity, triangle/draw-call budgets, and stable light counts. It always reports average physics-step cost, but that wall-clock measurement is enforced only by the local command and is telemetry-only in CI. Focused tests verify outward-facing, capped speleothem shells; a player-width lane beside every mixed-size contact rock; the rendered yoke's overlap with both simulation anchors; torso, shoulder, head, and neck proportions; cloth-face collision when every vertex is clear; suspended-panel wake-up after a 148-degree reversal; distinct walking and running drape; grounded hem and bank traversal; airborne terrain, ceiling, and formation contact; fitted helmet proportions; browser-free clipboard report formatting; eased turning, Shift running, and gait bob; opaque depth-writing inputs with clamped close-camera fade; and nearest-depth ordering for the isolated character layer.
 
-The visual audit launches an installed Edge or Chrome directly through the DevTools protocol; it does not depend on a browser-testing framework. It verifies that the camera projection matches the viewport on the first frame and after high-density resizes, then drives the deterministic in-app harness through 27 rendered studies, including:
+The visual audit launches an installed Edge or Chrome directly through the DevTools protocol; it does not depend on a browser-testing framework. It verifies that the camera projection matches the viewport on the first frame and after high-density resizes, then drives the deterministic in-app harness through 28 rendered studies, including:
 
 - rear, side, true front, neckline, high-oblique attachment, aggressive reversal, running, and fully settled cape views;
 - a real FPS-panel click with intercepted clipboard output and visible success-feedback assertions;
@@ -75,7 +75,7 @@ The visual audit launches an installed Edge or Chrome directly through the DevTo
 - sharp look-up and strongly faded close-camera views with camera/ground clearance assertions;
 - real Space-key moving/turning ascent and in-water landing views with procedural limb-pose, lower-body cape-contact, terrain-clearance, and one-shot ripple assertions;
 - dynamic uphill traversal with player/terrain contact checks;
-- a complete pass through the mixed-size center rock course plus close large- and small-rock cape-contact views;
+- a complete pass through the mixed-size center rock course, close large- and small-rock cape-contact views, and an at-speed walking study with a stone-pinned cape and animated boot assertions;
 - both sides of observed cape contact against a generated stalagmite;
 - controlled views from both sides of a real boulder plus a two-angle framebuffer probe that proves a visible character-layer signal becomes pixel-identical to the world-only frame when nearer world depth occludes it;
 - footstep and ceiling-drop ripple evolution, a low clear-water close-up, and a side-on view proving the water is below its dry rim; and
@@ -109,7 +109,7 @@ Useful implementation references:
 
 ## Deployment
 
-Every push and pull request runs strict TypeScript, renderer-free unit tests, the deterministic full-scene harness, production and Pages builds, and asset-path validation. Pull requests additionally run the 27-study dynamic Windows render audit and upload its PNG/JSON evidence. PR history is checked for merge commits so branches stay reviewable and linear.
+Every push and pull request runs strict TypeScript, renderer-free unit tests, the deterministic full-scene harness, production and Pages builds, and asset-path validation. Pull requests additionally run the 28-study dynamic Windows render audit and upload its PNG/JSON evidence. PR history is checked for merge commits so branches stay reviewable and linear.
 
 Same-repository pull requests receive a sticky preview link at:
 

@@ -133,4 +133,26 @@ describe('procedural speleothem geometry', () => {
       expect(signedDistance).toBeLessThanOrEqual(0.000_01);
     }
   });
+
+  test('rock proxy sampling uses a tight conservative coverage radius', () => {
+    const geometry = new THREE.DodecahedronGeometry(0.42, 1);
+    const matrix = new THREE.Matrix4().compose(
+      new THREE.Vector3(-0.2, 0.18, 1.2),
+      new THREE.Quaternion(),
+      new THREE.Vector3(0.55, 0.48, 0.62),
+    );
+    const builder = new CaveColliderBuilder();
+    builder.addRock(geometry, matrix);
+    const positions = geometry.getAttribute('position');
+    const vertex = new THREE.Vector3();
+
+    for (let index = 0; index < positions.count; index += 1) {
+      vertex.fromBufferAttribute(positions, index).applyMatrix4(matrix);
+      const signedDistance = Math.min(
+        ...builder.colliders.map((collider) => vertex.distanceTo(collider.center) - collider.radius),
+      );
+      expect(signedDistance).toBeLessThanOrEqual(0.000_01);
+    }
+    expect(Math.max(...builder.colliders.map(({ radius }) => radius))).toBeLessThan(0.245);
+  });
 });

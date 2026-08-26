@@ -1,6 +1,10 @@
 import { describe, expect, test } from 'bun:test';
 import * as THREE from 'three';
 import {
+  DIRECT_OPAQUE_THRESHOLD,
+  selectCharacterRenderMode,
+} from '../src/core/characterRenderMode';
+import {
   createResolvedDepthTexture,
   isLayerDepthVisible,
   LAYER_DEPTH_EPSILON,
@@ -50,5 +54,12 @@ describe('SceneLayerCompositePass', () => {
 
   test('measures the largest deterministic framebuffer channel change', () => {
     expect(maximumPixelDelta([10, 20, 30, 255], [12, 13, 33, 255])).toBe(7);
+  });
+
+  test('uses shared MSAA depth for opaque edges and isolates only camera fade', () => {
+    expect(selectCharacterRenderMode(1)).toBe('direct-opaque');
+    expect(selectCharacterRenderMode(DIRECT_OPAQUE_THRESHOLD)).toBe('direct-opaque');
+    expect(selectCharacterRenderMode(DIRECT_OPAQUE_THRESHOLD - 0.000_001)).toBe('isolated-fade');
+    expect(selectCharacterRenderMode(0.12)).toBe('isolated-fade');
   });
 });
