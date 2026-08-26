@@ -301,7 +301,7 @@ try {
     'cape contact course blocks a player-width traversal lane',
   );
   assert(initial.cape.maximumBodyPenetration < 0.002, 'pinned cape neckline starts inside the character');
-  assert(initial.player.capeAttachment.meshes === 2, 'batched shoulder yoke or cape ties are missing');
+  assert(initial.player.capeAttachment.meshes === 2, 'neckline seam or throat ties are missing');
   assert(initial.player.capeAttachment.maximumAnchorGap < 0.001, 'rendered cape attachment does not overlap both simulation anchors');
   assert(initial.water.surfaceAlphaRange[1] <= 0.6, 'water surface is too opaque');
   assert(initial.water.minimumInteriorDepth > 0.04, 'water is not seated inside a terrain basin');
@@ -521,6 +521,14 @@ try {
   const obliqueAttachment = await setView(-0.72, 0.52, 3.25);
   assert(obliqueAttachment.player.capeAttachment.maximumAnchorGap < 0.001, 'cape detached in the oblique attachment study');
   await capture('cape-attachment-oblique');
+  const [attachmentX, attachmentY, attachmentZ] = settledCape.player.position;
+  const lowFrontAttachment = await setCameraPose(
+    [attachmentX, attachmentY + 1.25, attachmentZ - 2.3],
+    [attachmentX, attachmentY + 1.49, attachmentZ],
+  );
+  assert(lowFrontAttachment.player.opacity === 1, 'low front attachment study triggered close-camera fade');
+  assert(lowFrontAttachment.player.capeAttachment.maximumAnchorGap < 0.001, 'cape detached in the low front attachment study');
+  await capture('cape-neck-mount-low-front');
 
   const firstBasinCenter = afterWalk.water.basinCenters[0];
   assert(firstBasinCenter?.length === 3, 'first water-basin test position is missing');

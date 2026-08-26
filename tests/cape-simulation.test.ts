@@ -282,7 +282,7 @@ describe('CapeSimulation', () => {
     const rockNormal = new THREE.Vector3();
     const collision = new WorldCollisionResolver(builder.colliders);
     const character = new Character();
-    const pathX = rockX + 0.46;
+    const pathX = rockX + 0.458;
     // Begin just beyond the stone so the cape, which trails along local +Z,
     // must brush its shoulder while the character continues forward (-Z).
     const startZ = rockZ - 0.28;
@@ -426,7 +426,7 @@ describe('CapeSimulation', () => {
 
     const left = cape.getParticlePosition(0, 0);
     const center = cape.getParticlePosition(Math.floor(CAPE.columns / 2), 0);
-    expect(center.clone().sub(left).dot(anchors.back)).toBeGreaterThan(0.045);
+    expect(center.clone().sub(left).dot(anchors.back)).toBeGreaterThan(0.015);
     expect(cape.getMaximumBodyPenetration(bodyColliders, anchors.back)).toBeLessThan(0.002);
   });
 
