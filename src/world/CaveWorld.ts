@@ -4,6 +4,12 @@ import type { SurfaceTextures } from '../graphics/proceduralTextures';
 import type { WorldSphereCollider } from '../physics/colliders';
 import { SeededRandom, periodicFbm } from '../utils/random';
 import { CaveColliderBuilder } from './CaveColliderBuilder';
+import {
+  CAPE_CONTACT_ROCKS,
+  getCapeContactRockOpenLaneWidth,
+  getCapeContactRockX,
+  type CapeContactRockPlacement,
+} from './CapeContactCourse';
 import { caveCeiling, caveCenterX, caveHalfWidth, floorHeightAt } from './caveProfile';
 import { createSpeleothemGeometry } from './SpeleothemGeometry';
 
@@ -11,6 +17,7 @@ export class CaveWorld {
   public readonly group = new THREE.Group();
   public readonly cameraColliders: THREE.Object3D[];
   public readonly worldColliders: readonly WorldSphereCollider[];
+  public readonly contactRocks: readonly CapeContactRockPlacement[];
 
   private readonly walls: THREE.Mesh;
   private readonly floor: THREE.Mesh;
@@ -22,7 +29,7 @@ export class CaveWorld {
     this.floor = this.createFloor(textures);
     this.group.add(this.walls, this.floor);
     this.createFormations(textures);
-    this.createRockScatter(textures);
+    this.contactRocks = this.createRockScatter(textures);
     this.cameraColliders = [this.walls];
     this.worldColliders = this.colliderBuilder.colliders;
   }
@@ -98,8 +105,8 @@ export class CaveWorld {
   }
 
   private createFloor(textures: SurfaceTextures): THREE.Mesh {
-    const widthSegments = 18;
-    const lengthSegments = 112;
+    const widthSegments = 36;
+    const lengthSegments = 180;
     const positions: number[] = [];
     const uvs: number[] = [];
     const indices: number[] = [];
@@ -237,21 +244,58 @@ export class CaveWorld {
     this.group.add(attachments);
   }
 
-  private createRockScatter(textures: SurfaceTextures): void {
+  private createRockScatter(textures: SurfaceTextures): readonly CapeContactRockPlacement[] {
     const random = new SeededRandom(0xb01de7);
     const geometry = new THREE.DodecahedronGeometry(0.42, 1);
     const material = this.createMaterial(textures, true);
     material.color.multiplyScalar(0.72);
-    const rocks = new THREE.InstancedMesh(geometry, material, 72);
-    rocks.name = 'Rock scatter';
+    const scatteredRockCount = 72;
+    const rocks = new THREE.InstancedMesh(
+      geometry,
+      material,
+      scatteredRockCount + CAPE_CONTACT_ROCKS.length,
+    );
+    rocks.name = 'Rock scatter and cape contact course';
     rocks.castShadow = true;
     rocks.receiveShadow = true;
     const matrix = new THREE.Matrix4();
     const quaternion = new THREE.Quaternion();
     const scale = new THREE.Vector3();
     const position = new THREE.Vector3();
+    const transformedVertex = new THREE.Vector3();
+    const positions = geometry.getAttribute('position');
+    const contactRocks: CapeContactRockPlacement[] = [];
 
-    for (let index = 0; index < rocks.count; index += 1) {
+    for (let index = 0; index < CAPE_CONTACT_ROCKS.length; index += 1) {
+      const spec = CAPE_CONTACT_ROCKS[index];
+      if (!spec) continue;
+      const x = getCapeContactRockX(spec);
+      quaternion.setFromEuler(new THREE.Euler(...spec.rotation));
+      scale.fromArray(spec.scale);
+      position.set(x, 0, spec.z);
+      matrix.compose(position, quaternion, scale);
+
+      let minimumRelativeY = Number.POSITIVE_INFINITY;
+      for (let vertexIndex = 0; vertexIndex < positions.count; vertexIndex += 1) {
+        transformedVertex.fromBufferAttribute(positions, vertexIndex).applyMatrix4(matrix);
+        minimumRelativeY = Math.min(minimumRelativeY, transformedVertex.y);
+      }
+      position.y = floorHeightAt(x, spec.z) - minimumRelativeY - spec.embedDepth;
+      matrix.compose(position, quaternion, scale);
+      rocks.setMatrixAt(index, matrix);
+      const walkable = spec.size === 'small';
+      this.colliderBuilder.addRock(geometry, matrix, walkable);
+      contactRocks.push({
+        size: spec.size,
+        walkable,
+        position: [position.x, position.y, position.z],
+        lateralOffset: spec.lateralOffset,
+        scale: spec.scale,
+        openLaneWidth: getCapeContactRockOpenLaneWidth(spec),
+      });
+    }
+
+    for (let index = 0; index < scatteredRockCount; index += 1) {
       const z = random.range(CAVE.endZ + 1.5, CAVE.startZ - 1.5);
       const side = random.next() > 0.5 ? 1 : -1;
       const x = caveCenterX(z) + side * caveHalfWidth(z) * random.range(0.64, 0.94);
@@ -259,10 +303,11 @@ export class CaveWorld {
       quaternion.setFromEuler(new THREE.Euler(random.range(0, Math.PI), random.range(0, Math.PI), random.range(0, Math.PI)));
       scale.set(random.range(0.25, 1.25), random.range(0.18, 0.72), random.range(0.35, 1.4));
       matrix.compose(position, quaternion, scale);
-      rocks.setMatrixAt(index, matrix);
+      rocks.setMatrixAt(CAPE_CONTACT_ROCKS.length + index, matrix);
       this.colliderBuilder.addRock(geometry, matrix);
     }
     rocks.instanceMatrix.needsUpdate = true;
     this.group.add(rocks);
+    return contactRocks;
   }
 }

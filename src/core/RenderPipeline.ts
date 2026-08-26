@@ -4,11 +4,15 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { calculateRenderSizing, type RenderSizing } from './renderSizing';
+import { createResolvedDepthTexture } from './depthComposite';
+import { CHARACTER_RENDER_LAYER, WORLD_RENDER_LAYER } from './renderLayers';
+import { SceneLayerCompositePass } from './SceneLayerCompositePass';
 
 export class RenderPipeline {
   public readonly renderer: THREE.WebGLRenderer;
   private readonly composer: EffectComposer;
   private readonly bloom: UnrealBloomPass;
+  private readonly characterComposite: SceneLayerCompositePass;
   private resolutionScale = 1;
   private sizing: RenderSizing | null = null;
   private targetResizeCount = 0;
@@ -32,15 +36,19 @@ export class RenderPipeline {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.info.autoReset = true;
+    camera.layers.set(WORLD_RENDER_LAYER);
 
     const renderTarget = new THREE.WebGLRenderTarget(1, 1, {
       type: THREE.HalfFloatType,
       depthBuffer: true,
+      depthTexture: createResolvedDepthTexture('World scene depth'),
       stencilBuffer: false,
     });
     renderTarget.samples = 2;
     this.composer = new EffectComposer(this.renderer, renderTarget);
     this.composer.addPass(new RenderPass(scene, camera));
+    this.characterComposite = new SceneLayerCompositePass(scene, camera, CHARACTER_RENDER_LAYER);
+    this.composer.addPass(this.characterComposite);
     this.bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.42, 0.48, 0.88);
     this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());
@@ -85,6 +93,35 @@ export class RenderPipeline {
     this.resize();
   }
 
+  public setCharacterOpacity(opacity: number): void {
+    this.characterComposite.setOpacity(opacity);
+  }
+
+  public getCharacterOpacity(): number {
+    return this.characterComposite.getOpacity();
+  }
+
+  public getDepthCompositeDiagnostics() {
+    return this.characterComposite.getDepthDiagnostics();
+  }
+
+  public readScreenCenterPixel(): readonly [number, number, number, number] {
+    const context = this.renderer.getContext();
+    const size = this.renderer.getDrawingBufferSize(new THREE.Vector2());
+    const pixel = new Uint8Array(4);
+    context.finish();
+    context.readPixels(
+      Math.floor(size.x * 0.5),
+      Math.floor(size.y * 0.5),
+      1,
+      1,
+      context.RGBA,
+      context.UNSIGNED_BYTE,
+      pixel,
+    );
+    return [pixel[0]!, pixel[1]!, pixel[2]!, pixel[3]!];
+  }
+
   public getSizingDiagnostics() {
     const sizing = this.sizing ?? calculateRenderSizing(1, 1, 1, this.resolutionScale);
     return {
@@ -94,11 +131,18 @@ export class RenderPipeline {
   }
 
   public async compile(scene: THREE.Scene, camera: THREE.Camera): Promise<void> {
-    await this.renderer.compileAsync(scene, camera);
+    const previousLayerMask = camera.layers.mask;
+    try {
+      camera.layers.enable(CHARACTER_RENDER_LAYER);
+      await this.renderer.compileAsync(scene, camera);
+    } finally {
+      camera.layers.mask = previousLayerMask;
+    }
   }
 
   public dispose(): void {
     this.composer.dispose();
+    this.characterComposite.dispose();
     this.renderer.dispose();
   }
 }

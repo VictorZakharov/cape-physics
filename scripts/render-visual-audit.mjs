@@ -41,6 +41,32 @@ function assert(condition, message) {
   if (!condition) throw new Error(`Visual audit invariant failed: ${message}`);
 }
 
+function numericSetting(name, fallback, minimum, maximum) {
+  const value = Number(process.env[name] ?? fallback);
+  if (!Number.isFinite(value) || value < minimum || value > maximum) {
+    throw new Error(`${name} must be a finite number from ${minimum} to ${maximum}.`);
+  }
+  return value;
+}
+
+function booleanSetting(name, fallback) {
+  const value = (process.env[name] ?? String(fallback)).trim().toLowerCase();
+  if (value === 'true' || value === '1' || value === 'on') return true;
+  if (value === 'false' || value === '0' || value === 'off') return false;
+  throw new Error(`${name} must be true or false.`);
+}
+
+const performanceProfileEnabled = booleanSetting('CAPE_AUDIT_PERFORMANCE_PROFILE', true);
+const profileDurationSeconds = performanceProfileEnabled
+  ? numericSetting('CAPE_AUDIT_PROFILE_SECONDS', 12, 2, 12)
+  : 0;
+const p95FrameBudget = performanceProfileEnabled
+  ? numericSetting('CAPE_AUDIT_P95_BUDGET_MS', 120, 1, 1_000)
+  : null;
+const maximumFrameBudget = performanceProfileEnabled
+  ? numericSetting('CAPE_AUDIT_MAX_FRAME_BUDGET_MS', 750, 1, 5_000)
+  : null;
+
 const server = createStaticServer(distRoot);
 const temporaryRoot = mkdtempSync(join(tmpdir(), 'cape-physics-audit-'));
 const staticPort = await listen(server);
@@ -90,6 +116,36 @@ try {
   ]);
   await waitForExpression(command, 'window.__CAPE_DEMO__?.ready === true', 60_000);
   await evaluate(command, `(() => {
+    window.__COPIED_CAPE_PERFORMANCE_REPORT__ = null;
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: async (text) => {
+          window.__COPIED_CAPE_PERFORMANCE_REPORT__ = text;
+        },
+      },
+    });
+    document.querySelector('[data-performance-panel]')?.click();
+    return true;
+  })()`);
+  await waitForExpression(
+    command,
+    'typeof window.__COPIED_CAPE_PERFORMANCE_REPORT__ === "string"',
+    5_000,
+  );
+  const copiedPerformanceReport = await evaluate(
+    command,
+    'window.__COPIED_CAPE_PERFORMANCE_REPORT__',
+  );
+  assert(copiedPerformanceReport.includes('Cape Physics performance report'), 'FPS panel copied no diagnostic report');
+  assert(copiedPerformanceReport.includes('Renderer:'), 'copied performance report omitted renderer data');
+  assert(copiedPerformanceReport.includes('Scene:'), 'copied performance report omitted scene data');
+  const copyFeedback = await evaluate(
+    command,
+    'document.querySelector("[data-performance-copy]")?.textContent?.trim()',
+  );
+  assert(copyFeedback === 'COPIED 15S REPORT', 'FPS panel did not show successful copy feedback');
+  await evaluate(command, `(() => {
     const style = document.createElement('style');
     style.textContent = '.performance-panel,.controls,.title-card,.quality-badge,.onboarding,.loading,.film-grain{display:none!important}';
     document.head.append(style);
@@ -130,6 +186,16 @@ try {
     command,
     `window.__CAPE_DEMO__.setRunning(${running})`,
   );
+  const pressSpace = async () => {
+    const keyEvent = {
+      key: ' ',
+      code: 'Space',
+      windowsVirtualKeyCode: 32,
+      nativeVirtualKeyCode: 32,
+    };
+    await command('Input.dispatchKeyEvent', { type: 'keyDown', ...keyEvent });
+    await command('Input.dispatchKeyEvent', { type: 'keyUp', ...keyEvent });
+  };
   const advance = (duration, frameStep = 1 / 60) => evaluate(
     command,
     `window.__CAPE_DEMO__.advance(${JSON.stringify({ duration, frameStep })})`,
@@ -137,6 +203,10 @@ try {
   const profile = (duration, frameStep = 1 / 60) => evaluate(
     command,
     `window.__CAPE_DEMO__.profile(${JSON.stringify({ duration, frameStep })})`,
+  );
+  const depthOcclusionProbe = () => evaluate(
+    command,
+    'window.__CAPE_DEMO__.runDepthOcclusionProbe()',
   );
   const dragOrbit = async (button, fromY, toY) => {
     const buttons = button === 'left' ? 1 : 2;
@@ -153,12 +223,41 @@ try {
 
   const initial = await diagnostics();
   assert(initial.ready, 'demo harness did not report ready');
+  assert(initial.renderer.depthComposite.layerDepthTexture, 'character layer has no resolved depth texture');
+  assert(initial.renderer.depthComposite.worldDepthConnected, 'world depth is not connected to the layer compositor');
+  assert(
+    Math.abs(initial.camera.initialProjectionAspect - initial.camera.initialViewportAspect) < 0.000_001,
+    'camera projection did not match the viewport on the first frame',
+  );
+  assert(
+    Math.abs(initial.camera.aspect - initial.camera.viewportAspect) < 0.000_001,
+    'camera projection did not track the current viewport',
+  );
   assert(initial.water.puddles === 5, 'procedural puddles are missing');
   assert(initial.water.drops >= 10, 'ceiling drips are missing');
   assert(initial.torches.lights.visibleLights === initial.torches.lights.lights, 'torch light pool is not compile-stable');
   assert(initial.minerals.lights.visibleLights === initial.minerals.lights.lights, 'mineral light pool is not compile-stable');
   assert(initial.cape.worldColliders >= 1_800, 'geometry-derived cave-object collision proxies are missing');
+  assert(initial.cave.contactRocks.length === 6, 'mixed-size cape contact rock course is missing');
+  assert(
+    initial.cave.contactRocks.some(({ size }) => size === 'large')
+      && initial.cave.contactRocks.some(({ size }) => size === 'small'),
+    'cape contact course lost its large/small size range',
+  );
+  assert(
+    initial.cave.contactRocks.every(({ size, walkable }) => walkable === (size === 'small')),
+    'large contact rocks do not block the player or small rocks are not walkable',
+  );
+  assert(
+    initial.cave.contactRocks.every(({ openLaneWidth }) => openLaneWidth > 0.93),
+    'cape contact course blocks a player-width traversal lane',
+  );
+  assert(initial.cape.maximumBodyPenetration < 0.002, 'pinned cape neckline starts inside the character');
+  assert(initial.player.capeAttachment.meshes === 2, 'batched shoulder yoke or cape ties are missing');
+  assert(initial.player.capeAttachment.maximumAnchorGap < 0.001, 'rendered cape attachment does not overlap both simulation anchors');
   assert(initial.water.surfaceAlphaRange[1] <= 0.6, 'water surface is too opaque');
+  assert(initial.water.minimumInteriorDepth > 0.04, 'water is not seated inside a terrain basin');
+  assert(initial.water.minimumRimClearance > 0.02, 'water surface rises above its containing rim');
 
   await command('Emulation.setDeviceMetricsOverride', {
     width: 3840,
@@ -169,6 +268,10 @@ try {
   await evaluate(command, 'window.dispatchEvent(new Event("resize")); true');
   await delay(120);
   const highDensity = await diagnostics();
+  assert(
+    Math.abs(highDensity.camera.aspect - highDensity.camera.viewportAspect) < 0.000_001,
+    'camera projection did not track the high-density viewport resize',
+  );
   assert(highDensity.renderer.sizing.renderPixels <= 3_600_000, 'high-density render targets exceeded their memory budget');
   await command('Emulation.setDeviceMetricsOverride', {
     width: 1600,
@@ -197,7 +300,7 @@ try {
   const closeCamera = await setView(0.08, -0.82, 1.15);
   assert(closeCamera.camera.distance >= 0.45, 'close orbit collapsed into the player');
   assert(closeCamera.camera.groundClearance >= 0.17, 'close orbit fell through the ground');
-  assert(closeCamera.player.opacity >= 0.17 && closeCamera.player.opacity < 0.55, 'player did not become sufficiently transparent near the camera');
+  assert(closeCamera.player.opacity >= 0.11 && closeCamera.player.opacity < 0.5, 'player did not become sufficiently transparent near the camera');
   await capture('camera-close-fade');
 
   await setView(0.08, 0.22, 4.5);
@@ -222,6 +325,7 @@ try {
   assert(afterWalk.cape.maximumBodyPenetration < 0.002, 'cape penetrated the animated character');
   assert(afterWalk.cape.maximumEnvironmentPenetration < 0.002, 'cape penetrated the cave during visual traversal');
   assert(afterWalk.cape.maximumEnvironmentFacePenetration < 0.002, 'a cave object pierced a cape triangle during visual traversal');
+  assert(afterWalk.cape.hemBackOffset < 0.75, 'walking pulled the cape into a running-length trail');
   assert(
     Math.abs(afterWalk.cape.hemCenter[2] - beforeWalk.cape.hemCenter[2]) > 1,
     'cape hem did not respond dynamically to traversal',
@@ -233,6 +337,11 @@ try {
     [afterWalk.player.position[0], afterWalk.player.position[1] + 0.04, afterWalk.player.position[2]],
   );
   await capture('water-smooth-close');
+  await setCameraPose(
+    [afterWalk.player.position[0] + 3.1, afterWalk.player.position[1] + 0.28, afterWalk.player.position[2] + 1.35],
+    [afterWalk.player.position[0], afterWalk.player.position[1] - 0.07, afterWalk.player.position[2]],
+  );
+  await capture('water-contained-basin');
 
   const beforeDrips = await diagnostics();
   const dynamicBefore = await capture('water-dynamic-before');
@@ -258,24 +367,64 @@ try {
   );
   await capture('mineral-veins');
 
+  // Keep the locomotion airflow baseline independent from the deliberate rock
+  // contact course below. Otherwise collision drag correctly shortens the cape
+  // and makes a clean walk-versus-run trail comparison meaningless.
+  await setPlayerPose([-2.38, 0, -15], 0);
+  await setView(0, 0.2, 4.4);
+  await advance(0.45, 1 / 120);
   await setRunning(true);
   await setMovement(0, 1);
   const runState = await advance(0.85, 1 / 120);
   assert(runState.player.running, 'Shift running state did not engage');
   assert(runState.player.speed > 5.5, 'running did not exceed walking speed');
   assert(runState.player.gait.runningBlend > 0.85, 'running gait animation did not engage');
+  assert(
+    runState.cape.hemBackOffset > afterWalk.cape.hemBackOffset + 0.5,
+    'running did not produce a materially stronger cape trail than walking',
+  );
   await setView(1.18, 0.12, 4.1);
   await capture('character-running');
-  const frameProfile = await profile(12, 1 / 144);
+  let frameProfile = null;
+  let expectedProfileFrames = 0;
+  if (performanceProfileEnabled) {
+    frameProfile = await profile(profileDurationSeconds, 1 / 144);
+    expectedProfileFrames = Math.round(profileDurationSeconds * 144);
+    console.log(
+      `144 Hz profile: ${frameProfile.frames} frames, `
+      + `${frameProfile.averageFrameMilliseconds.toFixed(2)} ms avg, `
+      + `${frameProfile.p95FrameMilliseconds.toFixed(2)} ms p95, `
+      + `${frameProfile.maximumFrameMilliseconds.toFixed(2)} ms max`,
+    );
+    assert(frameProfile.frames === expectedProfileFrames, '144 Hz traversal did not render every requested frame');
+    assert(frameProfile.programsAfter === frameProfile.programsBefore, 'light traversal compiled new shader programs');
+    assert(
+      frameProfile.p95FrameMilliseconds < p95FrameBudget,
+      `rendered p95 ${frameProfile.p95FrameMilliseconds.toFixed(2)} ms exceeded ${p95FrameBudget} ms`,
+    );
+    assert(
+      frameProfile.maximumFrameMilliseconds < maximumFrameBudget,
+      `rendered maximum ${frameProfile.maximumFrameMilliseconds.toFixed(2)} ms exceeded ${maximumFrameBudget} ms`,
+    );
+    assert(frameProfile.diagnostics.cape.maximumBodyPenetration < 0.002, 'cape penetrated the body during profiled traversal');
+    assert(frameProfile.diagnostics.cape.maximumEnvironmentFacePenetration < 0.002, 'a formation pierced a cape face during profiled traversal');
+  } else {
+    console.log('144 Hz wall-clock profile: SKIPPED (deterministic CI mode)');
+  }
   await setMovement(0, 0);
   await setRunning(false);
-  assert(frameProfile.frames === 1_728, '144 Hz traversal did not render every requested frame');
-  assert(frameProfile.programsAfter === frameProfile.programsBefore, 'light traversal compiled new shader programs');
-  assert(frameProfile.p95FrameMilliseconds < 120, 'sustained rendered traversal exceeded the p95 frame budget');
-  assert(frameProfile.maximumFrameMilliseconds < 750, 'rendered traversal contained a severe long frame');
-  assert(frameProfile.diagnostics.cape.maximumBodyPenetration < 0.002, 'cape penetrated the body during profiled traversal');
-  assert(frameProfile.diagnostics.cape.maximumEnvironmentFacePenetration < 0.002, 'a formation pierced a cape face during profiled traversal');
 
+  // Performance profiling is optional. Give the reversal/settling study its
+  // own fixed route so profiling cannot change its physical precondition or
+  // final cave location.
+  await setPlayerPose([-2.38, 0, -15], 0);
+  await setView(0, 0.2, 4.4);
+  await advance(0.45, 1 / 120);
+  await setRunning(true);
+  await setMovement(0, 1);
+  await advance(0.85, 1 / 120);
+  await setMovement(0, 0);
+  await setRunning(false);
   await setView(1.33, 0.16, 4.35);
   await setMovement(0, -1);
   await advance(0.9, 1 / 120);
@@ -284,13 +433,26 @@ try {
   assert(wrapState.cape.maximumBodyPenetration < 0.002, 'cape penetrated the body during visual reversal');
   await capture('cape-wrap-reversal');
 
+  await setPlayerPose([-2.38, 0, -15], 0);
   const settledCape = await advance(3.2, 1 / 120);
-  assert(settledCape.cape.maximumBodyPenetration < 0.002, 'settled cape penetrated the character');
+  await setView(0.08, 0.2, 4.25);
+  await capture('cape-wrap-settled');
+  assert(
+    settledCape.cape.maximumBodyPenetration < 0.002,
+    `settled cape penetrated the character (${settledCape.cape.maximumBodyPenetration.toFixed(5)} m; `
+      + `${JSON.stringify(settledCape.cape.bodyPenetrationByCollider)})`,
+  );
   assert(settledCape.cape.maximumEnvironmentPenetration < 0.002, 'settled cape penetrated cave geometry');
   assert(settledCape.cape.minimumSelfSeparation > 0.05, 'settled cape collapsed through itself');
   assert(settledCape.cape.hemDrop > 0.72, 'cape retained a physically impossible inverted resting pose');
-  await setView(0.08, 0.2, 4.25);
-  await capture('cape-wrap-settled');
+  assert(settledCape.cape.minimumLowerCapeDrop > 0.48, 'a lower cape panel remained suspended in mid-air');
+  assert(
+    settledCape.cape.maximumLowerCapeLateralOffset < 0.18,
+    `settled cape remained swept sideways (${settledCape.cape.maximumLowerCapeLateralOffset.toFixed(4)} m; `
+      + `${settledCape.cape.worldContacts.lastStep} contacts; sleeping=${settledCape.cape.sleeping})`,
+  );
+  assert(settledCape.cape.minimumHemGroundClearance >= 0.032, 'cape hem penetrated the cave floor');
+  assert(settledCape.cape.minimumHemGroundClearance < 0.09, 'cape hem floated above the cave floor');
   assert(
     settledCape.cape.maximumParticleMotion < 0.001,
     `idle cape motion ${settledCape.cape.maximumParticleMotion.toFixed(6)} exceeded the settling budget`,
@@ -303,6 +465,65 @@ try {
   await capture('front-character');
   await setView(0, 0.12, 3.1);
   await capture('cape-neckline');
+  const obliqueAttachment = await setView(-0.72, 0.52, 3.25);
+  assert(obliqueAttachment.player.capeAttachment.maximumAnchorGap < 0.001, 'cape detached in the oblique attachment study');
+  await capture('cape-attachment-oblique');
+
+  const firstBasinCenter = afterWalk.water.basinCenters[0];
+  assert(firstBasinCenter?.length === 3, 'first water-basin test position is missing');
+  await setPlayerPose(
+    [firstBasinCenter[0], afterWalk.player.position[1], firstBasinCenter[2]],
+    0,
+  );
+  const waterJumpStart = await advance(0.35, 1 / 120);
+  assert(waterJumpStart.player.inWater, 'jump audit did not start inside the first pool');
+  await setView(0, 0.08, 4.05);
+  await setMovement(0, 1);
+  await advance(0.12, 1 / 120);
+  const beforeJump = await diagnostics();
+  await pressSpace();
+  await advance(0.1, 1 / 120);
+  await setView(0.88, 0.08, 4.05);
+  await setMovement(1, 0);
+  const jumpAscent = await advance(0.14, 1 / 120);
+  await setMovement(0, 0);
+  assert(!jumpAscent.player.grounded, 'Space did not launch the player');
+  assert(jumpAscent.player.verticalSpeed > 1.5, 'jump lost upward velocity too early');
+  assert(jumpAscent.player.groundClearance > 0.45, 'jump did not clear the cave floor');
+  assert(jumpAscent.player.gait.airborneBlend > 0.9, 'procedural airborne pose did not engage');
+  assert(Math.max(...jumpAscent.player.gait.armAngles) > 0.65, 'jump did not animate the arms');
+  assert(Math.max(...jumpAscent.player.gait.legAngles) > 0.4, 'jump did not animate the legs');
+  assert(
+    Math.max(...jumpAscent.player.gait.footAngles.map((angle) => Math.abs(angle))) > 0.15,
+    'jump did not animate the feet',
+  );
+  const jumpYawDelta = Math.abs(Math.atan2(
+    Math.sin(jumpAscent.player.yaw - beforeJump.player.yaw),
+    Math.cos(jumpAscent.player.yaw - beforeJump.player.yaw),
+  ));
+  assert(jumpYawDelta > 0.08, 'moving jump did not exercise an airborne turn');
+  assert(
+    Math.hypot(
+      jumpAscent.player.position[0] - beforeJump.player.position[0],
+      jumpAscent.player.position[2] - beforeJump.player.position[2],
+    ) > 0.25,
+    'jump audit remained static instead of traversing the lower-body contact path',
+  );
+  assert(jumpAscent.cape.hemCenter[1] > beforeJump.cape.hemCenter[1] + 0.08, 'cape hem did not follow the jump');
+  assert(jumpAscent.cape.maximumBodyPenetration < 0.002, 'jumping cape penetrated the player');
+  assert(jumpAscent.cape.maximumEnvironmentPenetration < 0.002, 'jumping cape penetrated cave geometry');
+  await capture('character-jump-ascent');
+  const jumpLanded = await advance(0.9, 1 / 120);
+  assert(jumpLanded.player.grounded, 'player did not land after jumping');
+  assert(jumpLanded.player.inWater, 'moving jump did not land inside the tested pool');
+  assert(
+    jumpLanded.water.landingRipples === beforeJump.water.landingRipples + 1,
+    'water landing did not emit exactly one impact ripple',
+  );
+  assert(Math.abs(jumpLanded.player.groundClearance) < 0.002, 'landed player clipped through or floated above terrain');
+  assert(jumpLanded.cape.maximumBodyPenetration < 0.002, 'cape penetrated the player on landing');
+  assert(jumpLanded.cape.maximumEnvironmentPenetration < 0.002, 'cape penetrated cave geometry on landing');
+  await capture('character-jump-landed');
 
   await setPlayerPose([0.8, 0, -8], 0);
   await advance(0.35, 1 / 120);
@@ -321,6 +542,88 @@ try {
     [bankAfter.player.position[0], bankAfter.player.position[1] + 0.62, bankAfter.player.position[2]],
   );
   await capture('terrain-bank-walk');
+
+  const courseRocks = initial.cave.contactRocks;
+  const courseFirst = courseRocks[0];
+  const smallRock = courseRocks[1];
+  const courseLast = courseRocks.at(-1);
+  assert(courseFirst && smallRock?.size === 'small' && courseLast, 'cape contact course has no traversal endpoints');
+  const courseCenterX = courseFirst.position[0] - courseFirst.lateralOffset;
+  const coursePathX = courseCenterX + 1.75;
+  await setPlayerPose([coursePathX, 0, courseFirst.position[2] + 1.15], 0);
+  await setView(0, 0.18, 4.3);
+  await setMovement(0, 1);
+  await advance(3.7, 1 / 120);
+  await setMovement(0, 0);
+  const courseTraversal = await advance(0.2, 1 / 120);
+  assert(
+    courseTraversal.player.position[2] < courseLast.position[2] - 0.35,
+    'player could not traverse the center-path rock course',
+  );
+  assert(Math.abs(courseTraversal.player.groundClearance) < 0.002, 'rock-course traversal detached the player from support');
+  assert(courseTraversal.cape.maximumBodyPenetration < 0.002, 'rock contact pushed the cape through the player');
+  assert(courseTraversal.cape.maximumEnvironmentPenetration < 0.002, 'cape passed through a rock during course traversal');
+  await capture('cape-rock-course-traversal');
+
+  await setPlayerPose(
+    [courseFirst.position[0] + 0.62, 0, courseFirst.position[2] - 0.62],
+    0,
+  );
+  const largeContactsBefore = (await diagnostics()).cape.worldContacts.total;
+  const largeRockContact = await advance(1.8, 1 / 120);
+  assert(largeRockContact.cape.worldContacts.total > largeContactsBefore, 'cape never contacted the large test rock');
+  assert(
+    largeRockContact.cape.maximumBodyPenetration < 0.002,
+    `large rock pushed the cape through the player (${largeRockContact.cape.maximumBodyPenetration.toFixed(4)})`,
+  );
+  assert(
+    largeRockContact.cape.maximumEnvironmentPenetration < 0.002,
+    `cape penetrated the large test rock (${largeRockContact.cape.maximumEnvironmentPenetration.toFixed(4)})`,
+  );
+  assert(largeRockContact.cape.maximumEnvironmentFacePenetration < 0.002, 'large test rock pierced a cape triangle');
+  await setCameraPose(
+    [
+      largeRockContact.player.position[0] + 2.45,
+      largeRockContact.player.position[1] + 1.1,
+      largeRockContact.player.position[2] + 2.15,
+    ],
+    [
+      largeRockContact.player.position[0],
+      largeRockContact.player.position[1] + 0.76,
+      largeRockContact.player.position[2] + 0.25,
+    ],
+  );
+  await capture('cape-rock-contact-large');
+
+  await setPlayerPose(
+    [smallRock.position[0] + 0.32, 0, smallRock.position[2] - 0.57],
+    0,
+  );
+  const smallContactsBefore = (await diagnostics()).cape.worldContacts.total;
+  const smallRockContact = await advance(1.8, 1 / 120);
+  assert(smallRockContact.cape.worldContacts.total > smallContactsBefore, 'cape never contacted the small test rock');
+  assert(
+    smallRockContact.cape.maximumBodyPenetration < 0.002,
+    `small rock pushed the cape through the player (${smallRockContact.cape.maximumBodyPenetration.toFixed(4)})`,
+  );
+  assert(
+    smallRockContact.cape.maximumEnvironmentPenetration < 0.002,
+    `cape penetrated the small test rock (${smallRockContact.cape.maximumEnvironmentPenetration.toFixed(4)})`,
+  );
+  assert(smallRockContact.cape.maximumEnvironmentFacePenetration < 0.002, 'small test rock pierced a cape triangle');
+  await setCameraPose(
+    [
+      smallRockContact.player.position[0] - 2.25,
+      smallRockContact.player.position[1] + 0.92,
+      smallRockContact.player.position[2] + 1.85,
+    ],
+    [
+      smallRockContact.player.position[0],
+      smallRockContact.player.position[1] + 0.68,
+      smallRockContact.player.position[2] + 0.2,
+    ],
+  );
+  await capture('cape-rock-contact-small');
 
   const contactsBefore = (await diagnostics()).cape.worldContacts.total;
   await setPlayerPose([1.68, 0, -31.6], 0);
@@ -344,6 +647,37 @@ try {
   );
   await capture('cape-formation-contact-opposite');
 
+  const occlusionRock = initial.cave.contactRocks.find((rock) => rock.size === 'large');
+  assert(occlusionRock, 'real-world depth study has no large occluding rock');
+  await setPlayerPose(
+    [occlusionRock.position[0], 0, occlusionRock.position[2] - 1.45],
+    0,
+  );
+  const occlusionStudy = await advance(0.45, 1 / 120);
+  const occlusionTarget = [
+    occlusionStudy.player.position[0],
+    occlusionStudy.player.position[1] + 0.72,
+    occlusionStudy.player.position[2],
+  ];
+  await setCameraPose(
+    [occlusionRock.position[0], occlusionTarget[1], occlusionRock.position[2] + 2.3],
+    occlusionTarget,
+  );
+  await capture('world-depth-occludes-character');
+  const firstDepthOcclusion = await depthOcclusionProbe();
+  assertDepthOcclusion(firstDepthOcclusion, 'world-facing rock angle');
+  await setCameraPose(
+    [
+      occlusionStudy.player.position[0],
+      occlusionTarget[1],
+      occlusionStudy.player.position[2] - 2.3,
+    ],
+    occlusionTarget,
+  );
+  await capture('character-depth-occludes-world');
+  const oppositeDepthOcclusion = await depthOcclusionProbe();
+  assertDepthOcclusion(oppositeDepthOcclusion, 'character-facing rock angle');
+
   const runtimeFailures = events.filter((event) => (
     event.method === 'Runtime.exceptionThrown'
     || event.method === 'Inspector.targetCrashed'
@@ -364,13 +698,31 @@ try {
     afterDrips,
     runState,
     frameProfile,
+    profileSettings: {
+      enabled: performanceProfileEnabled,
+      durationSeconds: profileDurationSeconds,
+      expectedFrames: expectedProfileFrames,
+      p95FrameBudget,
+      maximumFrameBudget,
+    },
     wrapState,
     settledCape,
     sharpLookUp,
     closeCamera,
+    beforeJump,
+    jumpAscent,
+    jumpLanded,
     bankBefore,
     bankAfter,
+    courseTraversal,
+    largeRockContact,
+    smallRockContact,
     formationContact,
+    occlusionStudy,
+    depthOcclusion: {
+      firstAngle: firstDepthOcclusion,
+      oppositeAngle: oppositeDepthOcclusion,
+    },
     final,
   };
   writeFileSync(join(outputRoot, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
@@ -394,4 +746,17 @@ try {
   } catch (error) {
     console.warn(`Temporary audit profile will be removed later: ${error.message}`);
   }
+}
+
+function assertDepthOcclusion(probe, angle) {
+  assert(probe.depthComposite.layerDepthTexture, `${angle} had no character-layer depth texture`);
+  assert(probe.depthComposite.worldDepthConnected, `${angle} had no sampled world depth texture`);
+  assert(
+    probe.visibleLayerDelta >= 24,
+    `${angle} did not render a measurable character-layer marker (${probe.visibleLayerDelta})`,
+  );
+  assert(
+    probe.occludedLayerDelta <= 2,
+    `${angle} let the character layer overwrite a nearer world object (${probe.occludedLayerDelta})`,
+  );
 }

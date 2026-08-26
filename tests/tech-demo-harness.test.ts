@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { runTechDemoHarness } from '../src/testing/TechDemoHarness';
 
 describe('procedural tech demo harness', () => {
-  test('survives a representative traversal inside its budgets', () => {
+  test('survives a representative traversal with deterministic invariants', () => {
     const report = runTechDemoHarness(4);
     expect(report.capeStateFinite).toBe(true);
     expect(report.water.puddles).toBeGreaterThanOrEqual(5);

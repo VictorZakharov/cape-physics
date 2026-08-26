@@ -1,10 +1,16 @@
 import * as THREE from 'three';
-import { PHYSICS_STEP, PLAYER } from './config';
+import { CAMERA_NEAR_OPACITY, PHYSICS_STEP, PLAYER } from './config';
 import { ThirdPersonCamera } from './camera/ThirdPersonCamera';
+import {
+  calculateViewportAspect,
+  synchronizePerspectiveCameraAspect,
+} from './camera/viewportProjection';
 import { AdaptiveQuality, type QualityState } from './core/AdaptiveQuality';
 import { FixedStepClock } from './core/FixedStepClock';
 import { PerformanceMonitor } from './core/PerformanceMonitor';
+import type { PerformanceReportDetails } from './core/PerformanceReport';
 import { RenderPipeline } from './core/RenderPipeline';
+import { CHARACTER_RENDER_LAYER } from './core/renderLayers';
 import { configureTextureFiltering, createRockTextures } from './graphics/proceduralTextures';
 import { InputController } from './input/InputController';
 import { CinematicLighting } from './lighting/CinematicLighting';
@@ -12,6 +18,7 @@ import { CapeSimulation } from './physics/CapeSimulation';
 import type { WorldSphereCollider } from './physics/colliders';
 import { Character } from './player/Character';
 import { CharacterController } from './player/CharacterController';
+import { runDepthOcclusionProbe } from './testing/DepthOcclusionProbe';
 import { LoadingScreen } from './ui/LoadingScreen';
 import { invariant } from './utils/assert';
 import { CaveAtmosphere } from './world/CaveAtmosphere';
@@ -25,10 +32,20 @@ import { WorldCollisionResolver } from './world/WorldCollisionResolver';
 export class CapeDemo {
   private readonly canvas: HTMLCanvasElement;
   private readonly scene = new THREE.Scene();
-  private readonly camera = new THREE.PerspectiveCamera(52, 1, 0.08, 120);
+  private readonly initialViewportAspect = calculateViewportAspect(
+    window.innerWidth,
+    window.innerHeight,
+  );
+  private readonly camera = new THREE.PerspectiveCamera(
+    52,
+    this.initialViewportAspect,
+    0.08,
+    120,
+  );
+  private readonly initialProjectionAspect = this.camera.aspect;
   private readonly loading = new LoadingScreen();
   private readonly pipeline: RenderPipeline;
-  private readonly performance = new PerformanceMonitor();
+  private readonly performance: PerformanceMonitor;
   private readonly clock = new FixedStepClock();
   private readonly quality: AdaptiveQuality;
   private readonly qualityLabel: HTMLElement;
@@ -57,6 +74,7 @@ export class CapeDemo {
     this.pipeline = new RenderPipeline(this.canvas, this.scene, this.camera);
     this.qualityLabel = invariant(document.querySelector<HTMLElement>('[data-quality-label]'), 'Quality label is missing.');
     this.quality = new AdaptiveQuality((state) => this.applyQuality(state));
+    this.performance = new PerformanceMonitor(this.getPerformanceReportDetails);
     document.body.classList.toggle('is-harness', this.harnessMode);
   }
 
@@ -92,6 +110,8 @@ export class CapeDemo {
     this.scene.add(this.character.root);
     this.cape = new CapeSimulation(this.character.getCapeAnchors());
     this.scene.add(this.cape.mesh);
+    this.character.root.traverse((object) => object.layers.set(CHARACTER_RENDER_LAYER));
+    this.cape.mesh.layers.set(CHARACTER_RENDER_LAYER);
 
     this.input = new InputController(this.canvas, this.dismissOnboarding);
     this.characterController = new CharacterController(this.character, this.input, this.worldCollision);
@@ -99,6 +119,7 @@ export class CapeDemo {
     this.thirdPersonCamera.snapTo(this.character.root.position);
     this.lighting = new CinematicLighting(this.scene, this.pipeline.renderer);
     this.scene.add(this.lighting.group);
+    this.enableCharacterLighting();
     this.lighting.update(this.character.root.position, 0);
     this.torches.update(0, this.character.root.position);
     this.veins.update(0, this.character.root.position);
@@ -139,6 +160,10 @@ export class CapeDemo {
   private readonly simulateStep = (step: number): void => {
     this.fixedTime += step;
     this.characterController.update(step, this.thirdPersonCamera.yaw);
+    const landingImpact = this.characterController.consumeLandingImpact();
+    if (landingImpact > 0) {
+      this.water.addLandingRipple(this.character.root.position, this.fixedTime, landingImpact);
+    }
     const anchors = this.character.getCapeAnchors();
     this.cape.step(
       step,
@@ -152,10 +177,16 @@ export class CapeDemo {
 
   private updateScene(delta: number): void {
     const playerPosition = this.character.root.position;
-    const playerSpeed = this.character.velocity.length();
+    const planarSpeed = Math.hypot(this.character.velocity.x, this.character.velocity.z);
     this.thirdPersonCamera.update(delta, playerPosition);
     this.updateCameraFade();
-    this.water.update(delta, this.fixedTime, playerPosition, this.character.root.rotation.y, playerSpeed);
+    this.water.update(
+      delta,
+      this.fixedTime,
+      playerPosition,
+      this.character.root.rotation.y,
+      this.characterController.isGrounded() ? planarSpeed : 0,
+    );
     this.torches.update(this.fixedTime, playerPosition);
     this.veins.update(this.fixedTime, playerPosition);
     this.atmosphere.update(this.fixedTime);
@@ -163,8 +194,7 @@ export class CapeDemo {
   }
 
   private readonly handleResize = (): void => {
-    this.camera.aspect = window.innerWidth / window.innerHeight;
-    this.camera.updateProjectionMatrix();
+    synchronizePerspectiveCameraAspect(this.camera, window.innerWidth, window.innerHeight);
     this.pipeline.resize();
     this.atmosphere.resize();
   };
@@ -210,6 +240,7 @@ export class CapeDemo {
         this.worldCollision.resolvePlayer(this.character.root.position);
         this.character.root.rotation.y = yaw;
         this.character.velocity.set(0, 0, 0);
+        this.characterController.resetVerticalState();
         this.character.root.updateMatrixWorld(true);
         this.cape.reset(this.character.getCapeAnchors());
         this.cape.syncGeometry();
@@ -224,8 +255,16 @@ export class CapeDemo {
       setRunning: (running) => {
         this.input.setVirtualRunning(running);
       },
+      jump: () => {
+        this.input.queueVirtualJump();
+      },
       advance: ({ duration, frameStep = 1 / 60 }) => this.advanceHarness(duration, frameStep),
       profile: ({ duration, frameStep = 1 / 60 }) => this.profileHarness(duration, frameStep),
+      runDepthOcclusionProbe: () => runDepthOcclusionProbe(
+        this.scene,
+        this.camera,
+        this.pipeline,
+      ),
     };
   }
 
@@ -291,6 +330,13 @@ export class CapeDemo {
 
   private getDiagnostics() {
     const capeAnchors = this.character.getCapeAnchors();
+    const capeColliders = this.character.getCapeColliders();
+    const bodyPenetrationByCollider = Object.fromEntries(
+      capeColliders.map((collider) => [
+        collider.name,
+        this.cape.getMaximumBodyPenetration([collider], capeAnchors.back),
+      ]),
+    );
     return {
       ready: this.ready,
       simulationTime: this.fixedTime,
@@ -302,10 +348,14 @@ export class CapeDemo {
         pixelRatio: this.pipeline.renderer.getPixelRatio(),
         programs: this.pipeline.renderer.info.programs?.length ?? 0,
         sizing: this.pipeline.getSizingDiagnostics(),
+        depthComposite: this.pipeline.getDepthCompositeDiagnostics(),
       },
       player: {
         position: this.character.root.position.toArray(),
-        speed: this.character.velocity.length(),
+        yaw: this.character.root.rotation.y,
+        speed: Math.hypot(this.character.velocity.x, this.character.velocity.z),
+        verticalSpeed: this.character.velocity.y,
+        grounded: this.characterController.isGrounded(),
         inWater: this.water.isInWater(this.character.root.position),
         groundClearance: this.character.root.position.y - PLAYER.footOffset - this.worldCollision.getGroundHeight(
           this.character.root.position.x,
@@ -314,8 +364,13 @@ export class CapeDemo {
         opacity: this.character.getOpacity(),
         running: this.characterController.isRunning(),
         gait: this.character.getAnimationDiagnostics(),
+        capeAttachment: this.character.getCapeAttachmentDiagnostics(),
       },
       camera: {
+        aspect: this.camera.aspect,
+        viewportAspect: calculateViewportAspect(window.innerWidth, window.innerHeight),
+        initialProjectionAspect: this.initialProjectionAspect,
+        initialViewportAspect: this.initialViewportAspect,
         distance: this.thirdPersonCamera.getActualDistance(),
         pitch: this.thirdPersonCamera.getPitch(),
         position: this.camera.position.toArray(),
@@ -324,18 +379,26 @@ export class CapeDemo {
           this.camera.position.z,
         ),
       },
+      cave: {
+        contactRocks: this.cave.contactRocks,
+      },
       cape: {
         maximumStructuralError: this.cape.getMaximumStructuralError(),
         maximumBodyPenetration: this.cape.getMaximumBodyPenetration(
-          this.character.getCapeColliders(),
+          capeColliders,
           capeAnchors.back,
         ),
+        bodyPenetrationByCollider,
         maximumEnvironmentPenetration: this.cape.getMaximumEnvironmentPenetration(this.worldColliders),
         maximumEnvironmentFacePenetration: this.cape.getMaximumEnvironmentFacePenetration(this.worldColliders),
         maximumParticleMotion: this.cape.getMaximumParticleMotion(),
         sleeping: this.cape.isSleeping(),
         minimumSelfSeparation: this.cape.getMinimumSelfSeparation(),
         hemDrop: this.cape.getHemDrop(),
+        minimumLowerCapeDrop: this.cape.getMinimumLowerCapeDrop(),
+        maximumLowerCapeLateralOffset: this.cape.getMaximumLowerCapeLateralOffset(capeAnchors),
+        hemBackOffset: this.cape.getHemBackOffset(capeAnchors),
+        minimumHemGroundClearance: this.cape.getMinimumHemGroundClearance(),
         hemCenter: this.cape.getParticlePosition(6, 17).toArray(),
         worldColliders: this.worldColliders.length,
         worldContacts: this.cape.getWorldContactDiagnostics(),
@@ -353,15 +416,83 @@ export class CapeDemo {
 
   private updateCameraFade(): void {
     const distance = this.thirdPersonCamera.getActualDistance();
-    const opacity = 0.18 + THREE.MathUtils.smoothstep(distance, 0.78, 2.15) * 0.82;
+    const opacity = CAMERA_NEAR_OPACITY
+      + THREE.MathUtils.smoothstep(distance, 0.78, 2.15) * (1 - CAMERA_NEAR_OPACITY);
     this.character.setOpacity(opacity);
     this.cape.setOpacity(opacity);
+    this.pipeline.setCharacterOpacity(opacity);
+  }
+
+  private readonly getPerformanceReportDetails = (): PerformanceReportDetails => {
+    const renderer = this.pipeline.renderer;
+    const context = renderer.getContext();
+    const debugInfo = context.getExtension('WEBGL_debug_renderer_info');
+    const vendor = String(context.getParameter(debugInfo?.UNMASKED_VENDOR_WEBGL ?? context.VENDOR));
+    const device = String(context.getParameter(debugInfo?.UNMASKED_RENDERER_WEBGL ?? context.RENDERER));
+    const sizing = this.pipeline.getSizingDiagnostics();
+    const screenWithTopology = window.screen as Screen & { readonly isExtended?: boolean };
+    const multipleScreens = typeof screenWithTopology.isExtended === 'boolean'
+      ? screenWithTopology.isExtended
+      : null;
+
+    return {
+      renderer: {
+        backend: String(context.getParameter(context.VERSION)),
+        vendor,
+        device,
+        drawCalls: renderer.info.render.calls,
+        triangles: renderer.info.render.triangles,
+        programs: renderer.info.programs?.length ?? 0,
+      },
+      canvas: {
+        drawingBufferWidth: sizing.drawingBufferWidth,
+        drawingBufferHeight: sizing.drawingBufferHeight,
+        cssWidth: window.innerWidth,
+        cssHeight: window.innerHeight,
+      },
+      quality: {
+        label: this.quality.getState().label,
+        scale: this.quality.getState().scale,
+      },
+      scene: {
+        simulationSeconds: this.fixedTime,
+        capeSleeping: this.ready ? this.cape.isSleeping() : false,
+        worldColliders: this.worldColliders.length,
+        activeRipples: this.ready ? this.water.getDiagnostics().activeRipples : 0,
+      },
+      page: {
+        visibility: document.visibilityState,
+        focused: document.hasFocus(),
+        devicePixelRatio: window.devicePixelRatio,
+        multipleScreens,
+        url: window.location.href,
+      },
+      runtime: {
+        platform: navigator.platform || 'Unknown platform',
+        userAgent: navigator.userAgent || 'Unavailable',
+      },
+    };
+  };
+
+  private enableCharacterLighting(): void {
+    this.scene.traverse((object) => {
+      if (!(object instanceof THREE.Light)) return;
+      object.layers.enable(CHARACTER_RENDER_LAYER);
+      if (
+        object instanceof THREE.DirectionalLight
+        || object instanceof THREE.PointLight
+        || object instanceof THREE.SpotLight
+      ) {
+        object.shadow.camera.layers.enable(CHARACTER_RENDER_LAYER);
+      }
+    });
   }
 
   private readonly dispose = (): void => {
     this.pipeline.renderer.setAnimationLoop(null);
     this.input?.dispose();
     this.lighting?.dispose();
+    this.performance.dispose();
     this.pipeline.dispose();
     window.removeEventListener('resize', this.handleResize);
     document.removeEventListener('visibilitychange', this.handleVisibilityChange);

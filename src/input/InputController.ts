@@ -11,6 +11,8 @@ export class InputController {
   private interacted = false;
   private virtualMovementEnabled = false;
   private virtualRunning = false;
+  private jumpQueued = false;
+  private virtualJumpQueued = false;
 
   public constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -48,10 +50,22 @@ export class InputController {
     this.virtualRunning = running;
   }
 
+  public consumeJump(): boolean {
+    const queued = this.jumpQueued || this.virtualJumpQueued;
+    this.jumpQueued = false;
+    this.virtualJumpQueued = false;
+    return queued;
+  }
+
+  public queueVirtualJump(): void {
+    this.virtualJumpQueued = true;
+  }
+
   public clearVirtualMovement(): void {
     this.virtualMovement.set(0, 0);
     this.virtualMovementEnabled = false;
     this.virtualRunning = false;
+    this.virtualJumpQueued = false;
   }
 
   public consumeOrbitDelta(target: THREE.Vector2): void {
@@ -91,9 +105,11 @@ export class InputController {
       || event.code === 'KeyD'
       || event.code === 'ShiftLeft'
       || event.code === 'ShiftRight'
+      || event.code === 'Space'
     ) {
       event.preventDefault();
       this.pressed.add(event.code);
+      if (event.code === 'Space' && !event.repeat) this.jumpQueued = true;
       this.markInteracted();
     }
   };
@@ -104,6 +120,7 @@ export class InputController {
 
   private readonly handleBlur = (): void => {
     this.pressed.clear();
+    this.jumpQueued = false;
     this.activePointer = null;
     document.body.classList.remove('is-orbiting');
   };

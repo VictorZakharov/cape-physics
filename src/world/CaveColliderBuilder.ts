@@ -61,7 +61,11 @@ export class CaveColliderBuilder {
     this.addSphere(position, 0.38 * Math.max(scale.x, scale.z), false, 'formation');
   }
 
-  public addRock(geometry: THREE.BufferGeometry, instanceMatrix: THREE.Matrix4): void {
+  public addRock(
+    geometry: THREE.BufferGeometry,
+    instanceMatrix: THREE.Matrix4,
+    walkable = true,
+  ): void {
     if (!geometry.boundingSphere) geometry.computeBoundingSphere();
     const bounds = geometry.boundingSphere;
     if (!bounds) throw new Error('Rock collision geometry has no bounding sphere.');
@@ -84,7 +88,12 @@ export class CaveColliderBuilder {
     for (let sample = 0; sample <= subdivisions; sample += 1) {
       const offset = THREE.MathUtils.lerp(-halfSegment, halfSegment, sample / subdivisions);
       this.sampleCenter.copy(this.worldVertex).addScaledVector(this.majorAxis, offset);
-      this.addSphere(this.sampleCenter, secondary + halfStep + ROCK_PROXY_SKIN, true, 'rock');
+      this.addSphere(
+        this.sampleCenter,
+        secondary + halfStep + ROCK_PROXY_SKIN,
+        walkable,
+        'rock',
+      );
     }
   }
 

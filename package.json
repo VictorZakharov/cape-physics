@@ -3,6 +3,24 @@
   "private": true,
   "version": "1.0.0",
   "description": "A cinematic procedural cape-physics tech demo set in a living cave.",
+  "homepage": "https://victorzakharov.github.io/cape-physics/",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/VictorZakharov/cape-physics.git"
+  },
+  "bugs": {
+    "url": "https://github.com/VictorZakharov/cape-physics/issues"
+  },
+  "keywords": [
+    "threejs",
+    "typescript",
+    "webgl",
+    "cloth-simulation",
+    "position-based-dynamics",
+    "physics-simulation",
+    "procedural-generation",
+    "game-development"
+  ],
   "license": "MIT",
   "author": "Victor Zakharov",
   "type": "module",

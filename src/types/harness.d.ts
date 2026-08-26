@@ -1,5 +1,6 @@
 import type { PerformanceSnapshot } from '../core/PerformanceMonitor';
 import type { QualityState } from '../core/AdaptiveQuality';
+import type { DepthOcclusionProbeResult } from '../testing/DepthOcclusionProbe';
 
 interface CapeDemoDiagnostics {
   readonly ready: boolean;
@@ -20,10 +21,17 @@ interface CapeDemoDiagnostics {
       readonly renderPixels: number;
       readonly targetResizeCount: number;
     };
+    readonly depthComposite: {
+      readonly layerDepthTexture: boolean;
+      readonly worldDepthConnected: boolean;
+    };
   };
   readonly player: {
     readonly position: number[];
+    readonly yaw: number;
     readonly speed: number;
+    readonly verticalSpeed: number;
+    readonly grounded: boolean;
     readonly inWater: boolean;
     readonly groundClearance: number;
     readonly opacity: number;
@@ -32,22 +40,45 @@ interface CapeDemoDiagnostics {
       readonly bob: number;
       readonly runningBlend: number;
     };
+    readonly capeAttachment: {
+      readonly meshes: number;
+      readonly maximumAnchorGap: number;
+    };
   };
   readonly camera: {
+    readonly aspect: number;
+    readonly viewportAspect: number;
+    readonly initialProjectionAspect: number;
+    readonly initialViewportAspect: number;
     readonly distance: number;
     readonly pitch: number;
     readonly position: number[];
     readonly groundClearance: number;
   };
+  readonly cave: {
+    readonly contactRocks: readonly {
+      readonly size: 'large' | 'small';
+      readonly walkable: boolean;
+      readonly position: readonly [number, number, number];
+      readonly lateralOffset: number;
+      readonly scale: readonly [number, number, number];
+      readonly openLaneWidth: number;
+    }[];
+  };
   readonly cape: {
     readonly maximumStructuralError: number;
     readonly maximumBodyPenetration: number;
+    readonly bodyPenetrationByCollider: Readonly<Record<string, number>>;
     readonly maximumEnvironmentPenetration: number;
     readonly maximumEnvironmentFacePenetration: number;
     readonly maximumParticleMotion: number;
     readonly sleeping: boolean;
     readonly minimumSelfSeparation: number;
     readonly hemDrop: number;
+    readonly minimumLowerCapeDrop: number;
+    readonly maximumLowerCapeLateralOffset: number;
+    readonly hemBackOffset: number;
+    readonly minimumHemGroundClearance: number;
     readonly hemCenter: number[];
     readonly worldColliders: number;
     readonly worldContacts: {
@@ -61,9 +92,13 @@ interface CapeDemoDiagnostics {
     readonly activeRipples: number;
     readonly activeSplashes: number;
     readonly rippleEmissions: number;
-    readonly footstepRipples: number;
-    readonly dripRipples: number;
+      readonly footstepRipples: number;
+      readonly dripRipples: number;
+      readonly landingRipples: number;
+      readonly basinCenters: readonly (readonly [number, number, number])[];
     readonly surfaceAlphaRange: readonly [number, number];
+    readonly minimumInteriorDepth: number;
+    readonly minimumRimClearance: number;
   };
   readonly minerals: {
     readonly clusters: number[][];
@@ -92,6 +127,7 @@ declare global {
       setPlayerPose: (pose: { position: number[]; yaw?: number }) => CapeDemoDiagnostics;
       setMovement: (horizontal: number, forward: number) => void;
       setRunning: (running: boolean) => void;
+      jump: () => void;
       advance: (options: { duration: number; frameStep?: number }) => CapeDemoDiagnostics;
       profile: (options: { duration: number; frameStep?: number }) => {
         readonly frames: number;
@@ -102,6 +138,7 @@ declare global {
         readonly programsAfter: number;
         readonly diagnostics: CapeDemoDiagnostics;
       };
+      runDepthOcclusionProbe: () => DepthOcclusionProbeResult;
     };
   }
 }
