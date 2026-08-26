@@ -13,7 +13,12 @@ import { createRockGeometry } from '../src/world/RockGeometry';
 describe('procedural speleothem geometry', () => {
   test('builds floor rocks with a broad planar load-bearing base', () => {
     const geometry = createRockGeometry();
+    const repeatedGeometry = createRockGeometry();
     const positions = geometry.getAttribute('position');
+    expect(Array.from(positions.array)).toEqual(
+      Array.from(repeatedGeometry.getAttribute('position').array),
+    );
+    expect(positions.count / 3).toBe(60);
     geometry.computeBoundingBox();
     const bounds = geometry.boundingBox;
     expect(bounds).not.toBeNull();
@@ -27,6 +32,24 @@ describe('procedural speleothem geometry', () => {
     expect(basePoints.size).toBeGreaterThanOrEqual(5);
     expect(bounds.max.y - bounds.min.y).toBeLessThan(bounds.max.x - bounds.min.x);
     expect(bounds.max.y - bounds.min.y).toBeLessThan(bounds.max.z - bounds.min.z);
+
+    const builder = new CaveColliderBuilder();
+    builder.addRock(geometry, new THREE.Matrix4());
+    const collider = builder.colliders[0];
+    expect(collider && isWorldRockCollider(collider)).toBe(true);
+    if (!collider || !isWorldRockCollider(collider)) return;
+    const vertex = new THREE.Vector3();
+    let maximumPlaneViolation = 0;
+    for (const face of collider.faces) {
+      for (let index = 0; index < positions.count; index += 1) {
+        vertex.fromBufferAttribute(positions, index);
+        maximumPlaneViolation = Math.max(
+          maximumPlaneViolation,
+          face.normal.dot(vertex) - face.planeConstant,
+        );
+      }
+    }
+    expect(maximumPlaneViolation).toBeLessThan(0.000_001);
   });
 
   test('is deterministic, curved, and materially more detailed than a cone', () => {

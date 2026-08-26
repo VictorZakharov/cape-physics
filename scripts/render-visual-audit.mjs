@@ -222,6 +222,9 @@ try {
         && targetMatches
         && state.cape.minimumActiveRockSurfaceDistance !== null
         && state.cape.minimumActiveRockSurfaceDistance < 0.006
+        && state.cape.maximumBodyPenetration < 0.002
+        && state.cape.maximumEnvironmentPenetration < 0.002
+        && state.cape.maximumEnvironmentFacePenetration < 0.002
         && state.cape.maximumUpwardFold <= 0.055_05
         && state.cape.maximumStructuralError < 0.055
       ) return state;

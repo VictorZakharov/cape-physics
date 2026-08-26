@@ -40,7 +40,7 @@ The renderer is uncapped for displays up to 144 Hz and beyond. Physics runs at a
 - Dynamic shoulder, torso, hip/belt, arm, thigh, knee, lower-leg, and fitted toe-to-heel boot colliders that enclose the animated silhouette
 - One-sided body projection that lets cloth wrap around armor without selecting the character's front surface
 - Swept vertex contact plus barycentrically weighted sphere-to-cloth-triangle contact, closing the gap where a narrow object can pierce a face while all three vertices remain clear; a final coupled stone/body projection prevents rocks from pressing cloth back through animated feet
-- Exact transformed convex surfaces for every floor and contact-course rock: continuous vertex sweeps, cloth-triangle/render-triangle closest-point contact, exact walkable support, and a 3 mm render-surface skin replace oversized rock proxy spheres
+- Exact transformed convex surfaces for every floor and contact-course rock: fixed cross-platform topology, continuous vertex sweeps, cloth-triangle/render-triangle closest-point contact, exact walkable support, and a 3 mm render-surface skin replace oversized rock proxy spheres and runtime hull triangulation
 - Geometry-derived sphere chains conservatively enclose curved/elliptical stalactites, stalagmites, torch hardware, and mineral crystals, while 2,062 deterministic colliders combine with the exact displaced floor, bank, wall, and ceiling shell
 - Allocation-free swept-AABB and exact-box rejection keeps triangle work restricted to cloth motion that can genuinely reach a rock
 - Cloth-motion-aware damping and deterministic sleep/wake behavior that cannot freeze a suspended panel and does not slow gravity-driven settling
@@ -49,7 +49,7 @@ The renderer is uncapped for displays up to 144 Hz and beyond. Physics runs at a
 - Wide third-person pitch range, collision-shortened camera boom, and ground-safe close orbit; opaque character/cape geometry shares the world's MSAA depth pass for exact silhouette coverage, while the smooth 12% near-camera fade uses an isolated depth-resolved layer
 - Five walkable, optically clear procedural pools seated in shared height-field basins with submerged interiors, dry containing rims, continuous normals, and antialiased edges
 - Thirteen deterministic ceiling-drip emitters, splash particles, independent footstep ripples, and one-shot impact-scaled landing ripples
-- Procedural rock color, height, normal, and roughness maps; low-profile irregular floor rocks use broad planar bases, restrained tilt, and physical ground embed instead of balancing on spherical undersides
+- Procedural rock color, height, normal, and roughness maps; low-profile irregular floor rocks use deterministic closed meshes, broad planar bases, restrained tilt, and physical ground embed instead of balancing on spherical undersides
 - Closed, outward-facing wet speleothem shells with curved centerlines, deposition bands, capped attachment ends, and instanced flowstone collars; ceiling formations retain their silhouettes but use a darker, rough, near-nonmetallic response that blends with the cave
 - A six-rock, mixed-size cape-contact course through the middle passage, batched into the existing scatter draw: large boulders are solid with a measured route around them, while small stones are walkable
 - Flickering torches, emissive mineral veins, bloom, fog, dust, AgX tone mapping, PBR materials, and soft shadows
