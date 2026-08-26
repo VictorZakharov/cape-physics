@@ -282,7 +282,7 @@ describe('CapeSimulation', () => {
     const rockNormal = new THREE.Vector3();
     const collision = new WorldCollisionResolver(builder.colliders);
     const character = new Character();
-    const pathX = rockX + 0.458;
+    const pathX = rockX + 0.454;
     // Begin just beyond the stone so the cape, which trails along local +Z,
     // must brush its shoulder while the character continues forward (-Z).
     const startZ = rockZ - 0.28;

@@ -30,7 +30,7 @@ export const CAPE = {
   rows: 18,
   width: 0.98,
   length: 1.68,
-  solverIterations: 6,
+  solverIterations: 10,
   attachment: {
     halfWidth: 0.105,
     height: 1.525,
