@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { WorldSphereCollider } from './colliders';
+import { constrainSphereContactToFloor } from './floorConstrainedContact';
 
 export const CLOTH_WORLD_CLEARANCE = 0.034;
 
@@ -98,7 +99,17 @@ export class ClothWorldCollision {
       if (this.normal.lengthSq() < 0.000_001) this.normal.set(0, 1, 0);
     }
 
-    const lambda = (radius - distance) / denominator;
+    this.triangle.getMidpoint(this.centroid);
+    const constrainedCorrection = constrainSphereContactToFloor(
+      this.closestPoint,
+      collider.center,
+      radius,
+      CLOTH_WORLD_CLEARANCE,
+      this.normal,
+      this.centroid,
+    );
+    const penetration = constrainedCorrection ?? radius - distance;
+    const lambda = penetration / denominator;
     this.applyCorrection(firstIndex, firstWeight * this.barycentric.x * lambda);
     this.applyCorrection(secondIndex, secondWeight * this.barycentric.y * lambda);
     this.applyCorrection(thirdIndex, thirdWeight * this.barycentric.z * lambda);

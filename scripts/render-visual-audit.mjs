@@ -218,6 +218,20 @@ try {
   assert(initial.torches.lights.visibleLights === initial.torches.lights.lights, 'torch light pool is not compile-stable');
   assert(initial.minerals.lights.visibleLights === initial.minerals.lights.lights, 'mineral light pool is not compile-stable');
   assert(initial.cape.worldColliders >= 1_800, 'geometry-derived cave-object collision proxies are missing');
+  assert(initial.cave.contactRocks.length === 6, 'mixed-size cape contact rock course is missing');
+  assert(
+    initial.cave.contactRocks.some(({ size }) => size === 'large')
+      && initial.cave.contactRocks.some(({ size }) => size === 'small'),
+    'cape contact course lost its large/small size range',
+  );
+  assert(
+    initial.cave.contactRocks.every(({ size, walkable }) => walkable === (size === 'small')),
+    'large contact rocks do not block the player or small rocks are not walkable',
+  );
+  assert(
+    initial.cave.contactRocks.every(({ openLaneWidth }) => openLaneWidth > 0.93),
+    'cape contact course blocks a player-width traversal lane',
+  );
   assert(initial.cape.maximumBodyPenetration < 0.002, 'pinned cape neckline starts inside the character');
   assert(initial.player.capeAttachment.meshes === 2, 'batched shoulder yoke or cape ties are missing');
   assert(initial.player.capeAttachment.maximumAnchorGap < 0.001, 'rendered cape attachment does not overlap both simulation anchors');
@@ -333,6 +347,12 @@ try {
   );
   await capture('mineral-veins');
 
+  // Keep the locomotion airflow baseline independent from the deliberate rock
+  // contact course below. Otherwise collision drag correctly shortens the cape
+  // and makes a clean walk-versus-run trail comparison meaningless.
+  await setPlayerPose([-2.38, 0, -15], 0);
+  await setView(0, 0.2, 4.4);
+  await advance(0.45, 1 / 120);
   await setRunning(true);
   await setMovement(0, 1);
   const runState = await advance(0.85, 1 / 120);
@@ -485,6 +505,88 @@ try {
   );
   await capture('terrain-bank-walk');
 
+  const courseRocks = initial.cave.contactRocks;
+  const courseFirst = courseRocks[0];
+  const smallRock = courseRocks[1];
+  const courseLast = courseRocks.at(-1);
+  assert(courseFirst && smallRock?.size === 'small' && courseLast, 'cape contact course has no traversal endpoints');
+  const courseCenterX = courseFirst.position[0] - courseFirst.lateralOffset;
+  const coursePathX = courseCenterX + 1.75;
+  await setPlayerPose([coursePathX, 0, courseFirst.position[2] + 1.15], 0);
+  await setView(0, 0.18, 4.3);
+  await setMovement(0, 1);
+  await advance(3.7, 1 / 120);
+  await setMovement(0, 0);
+  const courseTraversal = await advance(0.2, 1 / 120);
+  assert(
+    courseTraversal.player.position[2] < courseLast.position[2] - 0.35,
+    'player could not traverse the center-path rock course',
+  );
+  assert(Math.abs(courseTraversal.player.groundClearance) < 0.002, 'rock-course traversal detached the player from support');
+  assert(courseTraversal.cape.maximumBodyPenetration < 0.002, 'rock contact pushed the cape through the player');
+  assert(courseTraversal.cape.maximumEnvironmentPenetration < 0.002, 'cape passed through a rock during course traversal');
+  await capture('cape-rock-course-traversal');
+
+  await setPlayerPose(
+    [courseFirst.position[0] + 0.62, 0, courseFirst.position[2] - 0.62],
+    0,
+  );
+  const largeContactsBefore = (await diagnostics()).cape.worldContacts.total;
+  const largeRockContact = await advance(1.8, 1 / 120);
+  assert(largeRockContact.cape.worldContacts.total > largeContactsBefore, 'cape never contacted the large test rock');
+  assert(
+    largeRockContact.cape.maximumBodyPenetration < 0.002,
+    `large rock pushed the cape through the player (${largeRockContact.cape.maximumBodyPenetration.toFixed(4)})`,
+  );
+  assert(
+    largeRockContact.cape.maximumEnvironmentPenetration < 0.002,
+    `cape penetrated the large test rock (${largeRockContact.cape.maximumEnvironmentPenetration.toFixed(4)})`,
+  );
+  assert(largeRockContact.cape.maximumEnvironmentFacePenetration < 0.002, 'large test rock pierced a cape triangle');
+  await setCameraPose(
+    [
+      largeRockContact.player.position[0] + 2.45,
+      largeRockContact.player.position[1] + 1.1,
+      largeRockContact.player.position[2] + 2.15,
+    ],
+    [
+      largeRockContact.player.position[0],
+      largeRockContact.player.position[1] + 0.76,
+      largeRockContact.player.position[2] + 0.25,
+    ],
+  );
+  await capture('cape-rock-contact-large');
+
+  await setPlayerPose(
+    [smallRock.position[0] + 0.32, 0, smallRock.position[2] - 0.57],
+    0,
+  );
+  const smallContactsBefore = (await diagnostics()).cape.worldContacts.total;
+  const smallRockContact = await advance(1.8, 1 / 120);
+  assert(smallRockContact.cape.worldContacts.total > smallContactsBefore, 'cape never contacted the small test rock');
+  assert(
+    smallRockContact.cape.maximumBodyPenetration < 0.002,
+    `small rock pushed the cape through the player (${smallRockContact.cape.maximumBodyPenetration.toFixed(4)})`,
+  );
+  assert(
+    smallRockContact.cape.maximumEnvironmentPenetration < 0.002,
+    `cape penetrated the small test rock (${smallRockContact.cape.maximumEnvironmentPenetration.toFixed(4)})`,
+  );
+  assert(smallRockContact.cape.maximumEnvironmentFacePenetration < 0.002, 'small test rock pierced a cape triangle');
+  await setCameraPose(
+    [
+      smallRockContact.player.position[0] - 2.25,
+      smallRockContact.player.position[1] + 0.92,
+      smallRockContact.player.position[2] + 1.85,
+    ],
+    [
+      smallRockContact.player.position[0],
+      smallRockContact.player.position[1] + 0.68,
+      smallRockContact.player.position[2] + 0.2,
+    ],
+  );
+  await capture('cape-rock-contact-small');
+
   const contactsBefore = (await diagnostics()).cape.worldContacts.total;
   await setPlayerPose([1.68, 0, -31.6], 0);
   await advance(2.4, 1 / 120);
@@ -542,6 +644,9 @@ try {
     jumpLanded,
     bankBefore,
     bankAfter,
+    courseTraversal,
+    largeRockContact,
+    smallRockContact,
     formationContact,
     final,
   };

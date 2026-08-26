@@ -103,6 +103,56 @@ describe('CapeSimulation', () => {
     expect(cape.getWorldContactDiagnostics().total).toBeGreaterThan(0);
   });
 
+  test('slides laterally around a floor-seated rock instead of oscillating through it', () => {
+    const character = new Character();
+    const collision = new WorldCollisionResolver([]);
+    const z = 11.8;
+    const x = caveCenterX(z);
+    character.root.position.set(x, collision.getPlayerRootHeight(x, z), z);
+    character.root.updateMatrixWorld(true);
+    const characterAnchors = character.getCapeAnchors();
+    const cape = new CapeSimulation(characterAnchors);
+
+    for (let tick = 0; tick < 360; tick += 1) {
+      cape.step(
+        PHYSICS_STEP,
+        characterAnchors,
+        character.getCapeColliders(),
+        [],
+        new THREE.Vector3(),
+        tick * PHYSICS_STEP,
+      );
+    }
+
+    const hem = cape.getParticlePosition(6, CAPE.rows - 1);
+    const floor = collision.getGroundHeight(hem.x, hem.z);
+    const rock: WorldSphereCollider = {
+      center: new THREE.Vector3(hem.x + 0.19, floor + 0.17, hem.z),
+      radius: 0.27,
+      walkable: true,
+      kind: 'rock',
+    };
+    const brushingVelocity = new THREE.Vector3(0, 0, -0.2);
+    for (let tick = 360; tick < 540; tick += 1) {
+      cape.step(
+        PHYSICS_STEP,
+        characterAnchors,
+        character.getCapeColliders(),
+        [rock],
+        brushingVelocity,
+        tick * PHYSICS_STEP,
+      );
+    }
+
+    expect(cape.getWorldContactDiagnostics().total).toBeGreaterThan(0);
+    expect(cape.getMaximumEnvironmentFacePenetration([rock])).toBeLessThan(0.002);
+    expect(cape.getMaximumEnvironmentPenetration([rock])).toBeLessThan(0.002);
+    expect(cape.getMaximumBodyPenetration(
+      character.getCapeColliders(),
+      characterAnchors.back,
+    )).toBeLessThan(0.002);
+  });
+
   test('damps residual trembling after an aggressive reversal settles', () => {
     const cape = new CapeSimulation(anchors);
     const bodyColliders: CapsuleCollider[] = [

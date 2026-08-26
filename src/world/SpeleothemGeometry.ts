@@ -69,7 +69,10 @@ export function createSpeleothemGeometry(seed: number): THREE.BufferGeometry {
     for (let side = 0; side < SPELEOTHEM_SIDES; side += 1) {
       const topLeft = ring * stride + side;
       const lowerLeft = topLeft + stride;
-      indices.push(topLeft, lowerLeft, topLeft + 1, lowerLeft, lowerLeft + 1, topLeft + 1);
+      // Counter-clockwise from outside the shell. The previous ordering pointed
+      // every normal inward, so FrontSide rendering exposed only the hollow
+      // interior of both stalactites and their rotated stalagmite variants.
+      indices.push(topLeft, topLeft + 1, lowerLeft, lowerLeft, topLeft + 1, lowerLeft + 1);
     }
   }
 
@@ -79,7 +82,17 @@ export function createSpeleothemGeometry(seed: number): THREE.BufferGeometry {
   uvs.push(0.5, 1);
   const finalRing = (SPELEOTHEM_RINGS - 1) * stride;
   for (let side = 0; side < SPELEOTHEM_SIDES; side += 1) {
-    indices.push(finalRing + side, tipIndex, finalRing + side + 1);
+    indices.push(finalRing + side, finalRing + side + 1, tipIndex);
+  }
+
+  // Close the attachment end as a real solid. It normally sits inside the
+  // flowstone collar, but the cap prevents a bent formation from revealing a
+  // black open tube at grazing camera angles.
+  const baseCenterIndex = positions.length / 3;
+  positions.push(0, 0, 0);
+  uvs.push(0.5, 0);
+  for (let side = 0; side < SPELEOTHEM_SIDES; side += 1) {
+    indices.push(baseCenterIndex, side + 1, side);
   }
 
   const geometry = new THREE.BufferGeometry();

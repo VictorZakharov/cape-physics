@@ -172,6 +172,12 @@ export class CapeSimulation {
       this.contactSolver.solveBody(bodyColliders, anchors.back);
       this.contactSolver.solveWorld();
       this.contactSolver.solveCave();
+      if (
+        iteration === CAPE.solverIterations - 1
+        && this.contactSolver.hadWorldContactThisStep()
+      ) {
+        this.contactSolver.solveWorld();
+      }
       this.pinAnchors(anchors);
     }
 

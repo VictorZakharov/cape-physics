@@ -9,6 +9,7 @@ import {
 import type { CapsuleCollider, WorldSphereCollider } from './colliders';
 import { CLOTH_BODY_CLEARANCE, ClothBodyCollision } from './ClothBodyCollision';
 import { CLOTH_WORLD_CLEARANCE, ClothWorldCollision } from './ClothWorldCollision';
+import { constrainSphereContactToFloor } from './floorConstrainedContact';
 
 const WORLD_QUERY_RADIUS = CAPE.length + 2.2;
 const BODY_FACE_SOLVER_PASSES = 3;
@@ -161,6 +162,10 @@ export class CapeContactSolver {
     return { lastStep: this.worldContactsLastStep, total: this.worldContactEvents };
   }
 
+  public hadWorldContactThisStep(): boolean {
+    return this.worldContactsLastStep > 0;
+  }
+
   private getCapsulePenetration(
     position: THREE.Vector3,
     collider: CapsuleCollider,
@@ -203,7 +208,16 @@ export class CapeContactSolver {
       } else {
         this.contactNormal.copy(this.delta).multiplyScalar(1 / distance);
       }
-      const correction = radius - distance;
+      let correction = radius - distance;
+      const constrainedCorrection = constrainSphereContactToFloor(
+        position,
+        collider.center,
+        radius,
+        CLOTH_WORLD_CLEARANCE,
+        this.contactNormal,
+        previous,
+      );
+      if (constrainedCorrection !== null) correction = constrainedCorrection;
       position.addScaledVector(this.contactNormal, correction);
       previous.addScaledVector(this.contactNormal, correction);
       return;

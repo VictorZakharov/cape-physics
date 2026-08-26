@@ -372,6 +372,9 @@ export class CapeDemo {
           this.camera.position.z,
         ),
       },
+      cave: {
+        contactRocks: this.cave.contactRocks,
+      },
       cape: {
         maximumStructuralError: this.cape.getMaximumStructuralError(),
         maximumBodyPenetration: this.cape.getMaximumBodyPenetration(

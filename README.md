@@ -49,7 +49,8 @@ The renderer is uncapped for displays up to 144 Hz and beyond. Physics runs at a
 - Five walkable, optically clear procedural pools seated in shared height-field basins with submerged interiors, dry containing rims, continuous normals, and antialiased edges
 - Thirteen deterministic ceiling-drip emitters, splash particles, independent footstep ripples, and one-shot impact-scaled landing ripples
 - Procedural rock color, height, normal, and roughness maps
-- Organic wet speleothem profiles with curved centerlines, deposition bands, and instanced flowstone collars
+- Closed, outward-facing wet speleothem shells with curved centerlines, deposition bands, capped attachment ends, and instanced flowstone collars
+- A six-rock, mixed-size cape-contact course through the middle passage, batched into the existing scatter draw: large boulders are solid with a measured route around them, while small stones are walkable
 - Flickering torches, emissive mineral veins, bloom, fog, dust, AgX tone mapping, PBR materials, and soft shadows
 - Fixed-size nearest-light pools and fixed-allocation physics paths that avoid traversal-time shader compilation and garbage-collection stalls
 - Pixel-budgeted post-processing and rate-limited adaptive-resolution reallocations
@@ -64,9 +65,9 @@ bun run audit:visual   # production build plus repository-owned Edge/Chrome CDP 
 bun run verify         # check, production build, and systems harness
 ```
 
-The renderer-free harness constructs the complete scene graph and dynamically advances cloth, character animation, a moving jump and water landing, water drops, footsteps, torches, and mineral systems. It checks finite state, structural error, vertex and cloth-face penetration, pinned-neckline/body clearance, continuous belt-to-boot coverage, jump apex, airborne limb pose, cape follow-through, landing-ripple emission, self-separation, downward settling, basin depth and rim containment, ripple activity, geometry validity, triangle/draw-call budgets, stable light counts, and average physics-step cost. Focused tests also prove that the rendered yoke overlaps both simulation anchors, measure torso/shoulder/head ratios and the visible neck bridge, reproduce a narrow collider piercing the center of a cloth triangle while every vertex is clear, force a 148-degree cape rotation to prove that a suspended panel cannot sleep, distinguish walking drape from running trail, verify ground-touching hem clearance and bank traversal, exercise airborne terrain/ceiling/formation contact, validate transformed procedural geometry and fitted helmet proportions, exercise clipboard output and report formatting without a browser, prove eased turning plus Shift running and gait bob, and validate the opaque depth-writing inputs plus clamped opacity of the close-fade compositor.
+The renderer-free harness constructs the complete scene graph and dynamically advances cloth, character animation, a moving jump and water landing, center-path rock contact, water drops, footsteps, torches, and mineral systems. It checks finite state, structural error, vertex and cloth-face penetration, pinned-neckline/body clearance, continuous belt-to-boot coverage, jump apex, airborne limb pose, cape follow-through, coupled body/rock contact, landing-ripple emission, self-separation, downward settling, basin depth and rim containment, ripple activity, geometry validity, triangle/draw-call budgets, stable light counts, and average physics-step cost. Focused tests verify outward-facing, capped speleothem shells; a player-width lane beside every mixed-size contact rock; the rendered yoke's overlap with both simulation anchors; torso, shoulder, head, and neck proportions; cloth-face collision when every vertex is clear; suspended-panel wake-up after a 148-degree reversal; distinct walking and running drape; grounded hem and bank traversal; airborne terrain, ceiling, and formation contact; fitted helmet proportions; browser-free clipboard report formatting; eased turning, Shift running, and gait bob; and opaque depth-writing inputs with clamped close-camera fade.
 
-The visual audit launches an installed Edge or Chrome directly through the DevTools protocol; it does not depend on a browser-testing framework. It verifies that the camera projection matches the viewport on the first frame and after high-density resizes, then drives the deterministic in-app harness through 22 rendered studies, including:
+The visual audit launches an installed Edge or Chrome directly through the DevTools protocol; it does not depend on a browser-testing framework. It verifies that the camera projection matches the viewport on the first frame and after high-density resizes, then drives the deterministic in-app harness through 25 rendered studies, including:
 
 - rear, side, true front, neckline, high-oblique attachment, aggressive reversal, running, and fully settled cape views;
 - a real FPS-panel click with intercepted clipboard output and visible success-feedback assertions;
@@ -74,6 +75,7 @@ The visual audit launches an installed Edge or Chrome directly through the DevTo
 - sharp look-up and strongly faded close-camera views with camera/ground clearance assertions;
 - real Space-key moving/turning ascent and in-water landing views with procedural limb-pose, lower-body cape-contact, terrain-clearance, and one-shot ripple assertions;
 - dynamic uphill traversal with player/terrain contact checks;
+- a complete pass through the mixed-size center rock course plus close large- and small-rock cape-contact views;
 - both sides of observed cape contact against a generated stalagmite;
 - footstep and ceiling-drop ripple evolution, a low clear-water close-up, and a side-on view proving the water is below its dry rim; and
 - a 1,728-frame, 144 Hz running traversal across torch and mineral light boundaries.

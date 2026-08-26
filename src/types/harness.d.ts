@@ -50,6 +50,16 @@ interface CapeDemoDiagnostics {
     readonly position: number[];
     readonly groundClearance: number;
   };
+  readonly cave: {
+    readonly contactRocks: readonly {
+      readonly size: 'large' | 'small';
+      readonly walkable: boolean;
+      readonly position: readonly [number, number, number];
+      readonly lateralOffset: number;
+      readonly scale: readonly [number, number, number];
+      readonly openLaneWidth: number;
+    }[];
+  };
   readonly cape: {
     readonly maximumStructuralError: number;
     readonly maximumBodyPenetration: number;

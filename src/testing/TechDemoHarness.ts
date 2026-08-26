@@ -42,6 +42,9 @@ export interface TechDemoHarnessReport {
     readonly landed: boolean;
   };
   readonly water: ReturnType<WaterSystem['getDiagnostics']>;
+  readonly cave: {
+    readonly contactRocks: CaveWorld['contactRocks'];
+  };
   readonly scene: SceneBudget;
   readonly lighting: {
     readonly torches: ReturnType<TorchSystem['getLightDiagnostics']>;
@@ -277,6 +280,20 @@ export function runTechDemoHarness(simulatedSeconds = 12): TechDemoHarnessReport
     `cape crossed the lower body during the harness jump (${jumpMaximumBodyPenetration.toFixed(4)})`,
   );
   invariant(jumpLanded, 'player did not land after the harness jump');
+  invariant(cave.contactRocks.length === 6, 'mixed-size cape contact rock course is missing');
+  invariant(
+    cave.contactRocks.some(({ size }) => size === 'large')
+      && cave.contactRocks.some(({ size }) => size === 'small'),
+    'cape contact course lost its large/small size range',
+  );
+  invariant(
+    cave.contactRocks.every(({ size, walkable }) => walkable === (size === 'small')),
+    'large rocks must block the player while small rocks remain walkable',
+  );
+  invariant(
+    cave.contactRocks.every(({ openLaneWidth }) => openLaneWidth > PLAYER.radius * 2 + 0.25),
+    'cape contact course blocks the player-width traversal lane',
+  );
   invariant(worldColliders.length >= 1_800, 'geometry-derived cave-object collision coverage regressed');
   invariant(waterDiagnostics.puddles >= 5, 'walkable puddle count regressed');
   invariant(waterDiagnostics.drops >= 10, 'water-drop emitters are missing');
@@ -318,6 +335,9 @@ export function runTechDemoHarness(simulatedSeconds = 12): TechDemoHarnessReport
       landed: jumpLanded,
     },
     water: waterDiagnostics,
+    cave: {
+      contactRocks: cave.contactRocks,
+    },
     scene: sceneBudget,
     lighting: {
       torches: torchLights,
