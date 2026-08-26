@@ -30,13 +30,13 @@ export const CAPE = {
   rows: 18,
   width: 0.98,
   length: 1.68,
-  solverIterations: 5,
+  solverIterations: 10,
   attachment: {
-    halfWidth: 0.25,
-    height: 1.49,
-    depth: 0.22,
-    necklineRise: 0.052,
-    necklineDepth: 0.05,
+    halfWidth: 0.105,
+    height: 1.525,
+    depth: 0.092,
+    necklineRise: 0.015,
+    necklineDepth: 0.02,
   },
 } as const;
 

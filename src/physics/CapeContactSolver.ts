@@ -34,7 +34,7 @@ const BODY_FACE_SOLVER_PASSES = 3;
 // fraction of a segment in one 120 Hz step. Continuous sweeps remain
 // available for physical per-frame motion, so intentional motion cannot
 // tunnel while iterative constraint displacement cannot masquerade as speed.
-const MAXIMUM_DISCRETE_ROCK_CORRECTION = 0.012;
+const MAXIMUM_DISCRETE_ROCK_CORRECTION = 0.015;
 const MAXIMUM_BLOCKING_ROCK_CORRECTION = 0.03;
 const MAXIMUM_CONTINUOUS_ROCK_SWEEP = 0.08;
 

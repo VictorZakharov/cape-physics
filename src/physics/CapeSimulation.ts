@@ -8,6 +8,7 @@ import {
   type RockSurfaceContactDiagnostics,
   type WorldContactDiagnostics,
 } from './CapeContactSolver';
+import { getCapeRestBackOffset, getCapeRestWidth } from './CapeRestShape';
 import { ClothFoldGuard } from './ClothFoldGuard';
 import { ClothSelfCollision } from './ClothSelfCollision';
 import type { CapsuleCollider, WorldCollider } from './colliders';
@@ -379,16 +380,12 @@ export class CapeSimulation {
     const center = anchors.left.clone().add(anchors.right).multiplyScalar(0.5);
     for (let row = 0; row < CAPE.rows; row += 1) {
       const down = row / (CAPE.rows - 1);
-      const flare = down * down * (3 - 2 * down);
-      const width = THREE.MathUtils.lerp(anchorWidth, CAPE.width * 1.16, flare);
+      const width = getCapeRestWidth(anchorWidth, down);
       for (let column = 0; column < CAPE.columns; column += 1) {
         const across = column / (CAPE.columns - 1) - 0.5;
         const position = center.clone()
           .addScaledVector(right, across * width)
-          .addScaledVector(
-            anchors.back,
-            0.045 + down * 0.18 + (1 - down) ** 2 * (1 - Math.abs(across) * 2) * 0.035,
-          )
+          .addScaledVector(anchors.back, getCapeRestBackOffset(down, across))
           .add(new THREE.Vector3(0, -down * CAPE.length * (1 - Math.abs(across) * 0.085), 0));
         if (row === 0) this.setAnchorTarget(anchors, column / (CAPE.columns - 1), position);
         this.positions.push(position);

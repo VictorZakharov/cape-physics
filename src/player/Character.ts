@@ -5,11 +5,16 @@ import {
   CharacterAnimator,
   type CharacterAnimationDiagnostics,
 } from './CharacterAnimator';
-import { createCapeAttachment } from './CapeAttachment';
+import {
+  CAPE_THROAT_CLASP_POSITION,
+  createCapeAttachment,
+} from './CapeAttachment';
 import { createProceduralHead } from './ProceduralHead';
+import { createProceduralTorsoGeometry } from './ProceduralTorso';
 
 export const TORSO_NAME = 'Tapered torso armor';
 export const NECK_NAME = 'Visible skin neck';
+export const GORGET_NAME = 'Fitted leather gorget';
 export const LEFT_SHOULDER_NAME = 'Left fitted shoulder armor';
 export const RIGHT_SHOULDER_NAME = 'Right fitted shoulder armor';
 
@@ -50,8 +55,8 @@ export class Character {
     back: this.backWorld,
   };
   private readonly capeColliderRig = {
-    shoulders: this.createCapeCollider(0.115, 'shoulders'),
-    upperTorso: this.createCapeCollider(0.225, 'upper torso'),
+    shoulders: this.createCapeCollider(0.095, 'shoulders'),
+    upperTorso: this.createCapeCollider(0.205, 'upper torso'),
     hips: this.createCapeCollider(0.198, 'hips and belt'),
     belt: this.createCapeCollider(0.225, 'belt ring'),
     leftArm: this.createCapeCollider(0.095, 'left arm'),
@@ -122,7 +127,7 @@ export class Character {
     } = this.capeColliderRig;
 
     this.setWorldCapsule(shoulders, this.rig, [-0.195, 1.45, -0.015], [0.195, 1.45, -0.015]);
-    this.setWorldCapsule(upperTorso, this.rig, [0, 1.42, -0.06], [0, 1.11, -0.06]);
+    this.setWorldCapsule(upperTorso, this.rig, [0, 1.36, -0.06], [0, 1.11, -0.06]);
     this.setWorldCapsule(hips, this.rig, [0, 1.01, -0.035], [0, 0.79, -0.035]);
     this.setWorldCapsule(belt, this.rig, [0, 1.01, -0.005], [0, 1.01, -0.005]);
     this.setWorldCapsule(leftArm, this.leftArm, [0, -0.02, 0], [0, -0.69, 0]);
@@ -204,10 +209,8 @@ export class Character {
     hips.scale.z = 0.72;
     this.rig.add(hips);
 
-    const torso = new THREE.Mesh(new THREE.CylinderGeometry(0.218, 0.18, 0.55, 10), armor);
+    const torso = new THREE.Mesh(createProceduralTorsoGeometry(), armor);
     torso.name = TORSO_NAME;
-    torso.position.y = 1.225;
-    torso.scale.z = 0.72;
     this.rig.add(torso);
 
     const breastplate = new THREE.Mesh(new THREE.CylinderGeometry(0.21, 0.178, 0.39, 10, 1, false), darkMetal);
@@ -229,17 +232,15 @@ export class Character {
     neck.name = NECK_NAME;
     neck.position.y = 1.555;
     const gorget = new THREE.Mesh(new THREE.TorusGeometry(0.132, 0.019, 6, 20), leather);
+    gorget.name = GORGET_NAME;
     gorget.rotation.x = Math.PI / 2;
     gorget.position.y = 1.49;
-    gorget.scale.z = 0.76;
-    const claspGeometry = new THREE.SphereGeometry(0.038, 10, 8);
-    const clasps = new THREE.InstancedMesh(claspGeometry, trim, 2);
-    clasps.name = 'Paired cape clasps';
-    const claspMatrix = new THREE.Matrix4();
-    clasps.setMatrixAt(0, claspMatrix.makeTranslation(-0.185, 1.47, -0.105));
-    clasps.setMatrixAt(1, claspMatrix.makeTranslation(0.185, 1.47, -0.105));
-    clasps.instanceMatrix.needsUpdate = true;
-    this.rig.add(head, neck, gorget, clasps);
+    gorget.scale.set(1, 0.68, 0.76);
+    const clasp = new THREE.Mesh(new THREE.SphereGeometry(0.032, 10, 8), trim);
+    clasp.name = 'Cape throat clasp';
+    clasp.position.fromArray(CAPE_THROAT_CLASP_POSITION);
+    clasp.scale.z = 0.45;
+    this.rig.add(head, neck, gorget, clasp);
 
     this.createArm(this.leftArm, -1, armor, darkMetal, leather);
     this.createArm(this.rightArm, 1, armor, darkMetal, leather);
