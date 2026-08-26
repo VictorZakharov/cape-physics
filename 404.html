@@ -9,8 +9,8 @@
     />
     <meta name="theme-color" content="#05080a" />
     <title>Cape Physics — The Veiled Deep</title>
-    <script type="module" crossorigin src="/cape-physics/assets/index-J-Igj_Ru.js"></script>
-    <link rel="stylesheet" crossorigin href="/cape-physics/assets/index-By21yg73.css">
+    <script type="module" crossorigin src="/cape-physics/assets/index-BsgkJDng.js"></script>
+    <link rel="stylesheet" crossorigin href="/cape-physics/assets/index-CTwVvkUn.css">
   </head>
   <body>
     <main class="app" data-app>
@@ -26,11 +26,11 @@
         class="performance-panel"
         type="button"
         data-performance-panel
-        title="Click to reset performance history"
-        aria-label="Performance meter. Click to reset history."
+        title="Click to copy a 15-second performance report"
+        aria-label="Rendering diagnostics. Click to copy the last 15 seconds of performance data."
       >
         <strong><b data-fps>--</b><i> FPS</i></strong>
-        <span>RENDER / 5S AVERAGE</span>
+        <span>RENDER FPS / LAST 15S</span>
         <svg
           class="performance-panel__history"
           data-fps-history
@@ -44,6 +44,9 @@
           <path data-fps-history-line d=""></path>
         </svg>
         <small><b data-frame-time>--</b> MS / <b data-fps-low>--</b> 1% LOW</small>
+        <span class="performance-panel__copy" data-performance-copy aria-live="polite">
+          CLICK TO COPY 15S REPORT
+        </span>
       </button>
 
       <header class="title-card" aria-label="Demo title">
@@ -61,6 +64,8 @@
           <span>Move</span>
           <kbd class="key-wide">SHIFT</kbd>
           <span>Run</span>
+          <kbd class="key-wide">SPACE</kbd>
+          <span>Jump</span>
         </div>
         <div class="controls__row">
           <span class="mouse-icon" aria-hidden="true"><i></i></span>
