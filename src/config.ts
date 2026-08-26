@@ -34,9 +34,9 @@ export const CAPE = {
   attachment: {
     halfWidth: 0.25,
     height: 1.49,
-    depth: 0.22,
+    depth: 0.14,
     necklineRise: 0.052,
-    necklineDepth: 0.05,
+    necklineDepth: 0.048,
   },
 } as const;
 

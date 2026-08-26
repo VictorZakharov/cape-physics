@@ -516,6 +516,8 @@ try {
   await capture('front-character');
   await setView(0, 0.12, 3.1);
   await capture('cape-neckline');
+  await setView(Math.PI / 2, 0.08, 2.45);
+  await capture('cape-neck-mount-side');
   const obliqueAttachment = await setView(-0.72, 0.52, 3.25);
   assert(obliqueAttachment.player.capeAttachment.maximumAnchorGap < 0.001, 'cape detached in the oblique attachment study');
   await capture('cape-attachment-oblique');
