@@ -3,7 +3,15 @@ import * as THREE from 'three';
 import { CAVE, PLAYER } from '../src/config';
 import type { WorldSphereCollider } from '../src/physics/colliders';
 import { periodicFbm } from '../src/utils/random';
-import { caveCeiling, caveCenterX, caveGroundHeightAt, caveHalfWidth, floorHeightAt } from '../src/world/caveProfile';
+import {
+  CAVE_SHELL_CONTACT_SKIN,
+  caveCeiling,
+  caveCenterX,
+  caveGroundHeightAt,
+  caveHalfWidth,
+  caveInteriorBoundsAtHeight,
+  floorHeightAt,
+} from '../src/world/caveProfile';
 import { WorldCollisionResolver } from '../src/world/WorldCollisionResolver';
 
 describe('WorldCollisionResolver', () => {
@@ -96,8 +104,40 @@ describe('WorldCollisionResolver', () => {
     const displacement = detail * 0.72 + ridges;
     const x = caveCenterX(z) + Math.cos(angle) * (caveHalfWidth(z) + displacement);
     const renderedY = centerY + Math.sin(angle) * (verticalRadius + displacement * 0.66);
-    const expectedGround = Math.max(floorHeightAt(x, z), renderedY + 0.008);
+    const expectedGround = Math.max(
+      floorHeightAt(x, z),
+      renderedY + CAVE_SHELL_CONTACT_SKIN,
+    );
 
     expect(caveGroundHeightAt(x, z)).toBeCloseTo(expectedGround, 5);
+  });
+
+  test('traces the same displaced side-shell edge that is rendered', () => {
+    const segment = 37;
+    const firstRadial = 10;
+    const progress = segment / CAVE.segments;
+    const z = THREE.MathUtils.lerp(CAVE.startZ, CAVE.endZ, progress);
+    const sample = (radial: number): THREE.Vector2 => {
+      const around = radial / CAVE.radialSegments;
+      const angle = around * Math.PI * 2;
+      const ceiling = caveCeiling(z);
+      const centerY = ceiling * 0.5 - 0.25;
+      const verticalRadius = ceiling * 0.5 + 0.45;
+      const detail = periodicFbm(progress * 11.5, around * 8, 8, 0x782f) - 0.5;
+      const ridges = Math.sin(z * 0.42 + angle * 5) * 0.12;
+      const displacement = detail * 0.72 + ridges;
+      return new THREE.Vector2(
+        caveCenterX(z) + Math.cos(angle) * (caveHalfWidth(z) + displacement),
+        centerY + Math.sin(angle) * (verticalRadius + displacement * 0.66),
+      );
+    };
+    const first = sample(firstRadial);
+    const second = sample(firstRadial + 1);
+    const y = (first.y + second.y) * 0.5;
+    const edgeBlend = (y - first.y) / (second.y - first.y);
+    const renderedX = THREE.MathUtils.lerp(first.x, second.x, edgeBlend);
+    const bounds = caveInteriorBoundsAtHeight(y, z, 0, { minimum: 0, maximum: 0 });
+
+    expect(bounds.minimum).toBeCloseTo(renderedX, 5);
   });
 });

@@ -6,6 +6,7 @@ import {
   synchronizePerspectiveCameraAspect,
 } from './camera/viewportProjection';
 import { AdaptiveQuality, type QualityState } from './core/AdaptiveQuality';
+import { enableCameraIndependentShadowCaster } from './core/CameraIndependentShadowCaster';
 import { FixedStepClock } from './core/FixedStepClock';
 import { PerformanceMonitor } from './core/PerformanceMonitor';
 import type { PerformanceReportDetails } from './core/PerformanceReport';
@@ -15,10 +16,11 @@ import { configureTextureFiltering, createRockTextures } from './graphics/proced
 import { InputController } from './input/InputController';
 import { CinematicLighting } from './lighting/CinematicLighting';
 import { CapeSimulation } from './physics/CapeSimulation';
-import type { WorldSphereCollider } from './physics/colliders';
+import type { WorldCollider } from './physics/colliders';
 import { Character } from './player/Character';
 import { CharacterController } from './player/CharacterController';
 import { runDepthOcclusionProbe } from './testing/DepthOcclusionProbe';
+import { runShadowLayerProbe } from './testing/ShadowLayerProbe';
 import { LoadingScreen } from './ui/LoadingScreen';
 import { invariant } from './utils/assert';
 import { CaveAtmosphere } from './world/CaveAtmosphere';
@@ -62,7 +64,7 @@ export class CapeDemo {
   private atmosphere!: CaveAtmosphere;
   private lighting!: CinematicLighting;
   private worldCollision!: WorldCollisionResolver;
-  private worldColliders: readonly WorldSphereCollider[] = [];
+  private worldColliders: readonly WorldCollider[] = [];
   private fixedTime = 0;
   private harnessAccumulator = 0;
   private ready = false;
@@ -110,8 +112,14 @@ export class CapeDemo {
     this.scene.add(this.character.root);
     this.cape = new CapeSimulation(this.character.getCapeAnchors());
     this.scene.add(this.cape.mesh);
-    this.character.root.traverse((object) => object.layers.set(CHARACTER_RENDER_LAYER));
+    this.character.root.traverse((object) => {
+      object.layers.set(CHARACTER_RENDER_LAYER);
+      if (object instanceof THREE.Mesh && object.castShadow) {
+        enableCameraIndependentShadowCaster(object);
+      }
+    });
     this.cape.mesh.layers.set(CHARACTER_RENDER_LAYER);
+    enableCameraIndependentShadowCaster(this.cape.mesh);
 
     this.input = new InputController(this.canvas, this.dismissOnboarding);
     this.characterController = new CharacterController(this.character, this.input, this.worldCollision);
@@ -265,6 +273,7 @@ export class CapeDemo {
         this.camera,
         this.pipeline,
       ),
+      runShadowLayerProbe: () => runShadowLayerProbe(this.pipeline.renderer),
     };
   }
 
@@ -331,6 +340,7 @@ export class CapeDemo {
   private getDiagnostics() {
     const capeAnchors = this.character.getCapeAnchors();
     const capeColliders = this.character.getCapeColliders();
+    const closestRockSurfaceContact = this.cape.getClosestActiveRockSurfaceContact();
     const bodyPenetrationByCollider = Object.fromEntries(
       capeColliders.map((collider) => [
         collider.name,
@@ -392,13 +402,17 @@ export class CapeDemo {
         maximumEnvironmentPenetration: this.cape.getMaximumEnvironmentPenetration(this.worldColliders),
         maximumEnvironmentFacePenetration: this.cape.getMaximumEnvironmentFacePenetration(this.worldColliders),
         maximumParticleMotion: this.cape.getMaximumParticleMotion(),
+        maximumParticleVerticalMotion: this.cape.getMaximumParticleVerticalMotion(),
         sleeping: this.cape.isSleeping(),
         minimumSelfSeparation: this.cape.getMinimumSelfSeparation(),
+        maximumUpwardFold: this.cape.getMaximumUpwardFold(),
         hemDrop: this.cape.getHemDrop(),
         minimumLowerCapeDrop: this.cape.getMinimumLowerCapeDrop(),
         maximumLowerCapeLateralOffset: this.cape.getMaximumLowerCapeLateralOffset(capeAnchors),
         hemBackOffset: this.cape.getHemBackOffset(capeAnchors),
         minimumHemGroundClearance: this.cape.getMinimumHemGroundClearance(),
+        minimumActiveRockSurfaceDistance: closestRockSurfaceContact?.distance ?? null,
+        closestActiveRockCenter: closestRockSurfaceContact?.center ?? null,
         hemCenter: this.cape.getParticlePosition(6, 17).toArray(),
         worldColliders: this.worldColliders.length,
         worldContacts: this.cape.getWorldContactDiagnostics(),
@@ -410,6 +424,7 @@ export class CapeDemo {
       },
       torches: {
         lights: this.torches.getLightDiagnostics(),
+        shadow: this.torches.getShadowDiagnostics(),
       },
     };
   }

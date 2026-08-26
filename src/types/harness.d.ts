@@ -1,6 +1,7 @@
 import type { PerformanceSnapshot } from '../core/PerformanceMonitor';
 import type { QualityState } from '../core/AdaptiveQuality';
 import type { DepthOcclusionProbeResult } from '../testing/DepthOcclusionProbe';
+import type { ShadowLayerProbeResult } from '../testing/ShadowLayerProbe';
 
 interface CapeDemoDiagnostics {
   readonly ready: boolean;
@@ -24,6 +25,7 @@ interface CapeDemoDiagnostics {
     readonly depthComposite: {
       readonly layerDepthTexture: boolean;
       readonly worldDepthConnected: boolean;
+      readonly renderMode: 'direct-opaque' | 'isolated-fade';
     };
   };
   readonly player: {
@@ -72,13 +74,17 @@ interface CapeDemoDiagnostics {
     readonly maximumEnvironmentPenetration: number;
     readonly maximumEnvironmentFacePenetration: number;
     readonly maximumParticleMotion: number;
+    readonly maximumParticleVerticalMotion: number;
     readonly sleeping: boolean;
     readonly minimumSelfSeparation: number;
+    readonly maximumUpwardFold: number;
     readonly hemDrop: number;
     readonly minimumLowerCapeDrop: number;
     readonly maximumLowerCapeLateralOffset: number;
     readonly hemBackOffset: number;
     readonly minimumHemGroundClearance: number;
+    readonly minimumActiveRockSurfaceDistance: number | null;
+    readonly closestActiveRockCenter: readonly [number, number, number] | null;
     readonly hemCenter: number[];
     readonly worldColliders: number;
     readonly worldContacts: {
@@ -114,6 +120,14 @@ interface CapeDemoDiagnostics {
       readonly visibleLights: number;
       readonly activeLights: number;
     };
+    readonly shadow: {
+      readonly activeTorch: number;
+      readonly enabled: boolean;
+      readonly intensity: number;
+      readonly position: readonly [number, number, number];
+      readonly target: readonly [number, number, number];
+      readonly mapSize: readonly [number, number];
+    };
   };
 }
 
@@ -139,6 +153,7 @@ declare global {
         readonly diagnostics: CapeDemoDiagnostics;
       };
       runDepthOcclusionProbe: () => DepthOcclusionProbeResult;
+      runShadowLayerProbe: () => ShadowLayerProbeResult;
     };
   }
 }

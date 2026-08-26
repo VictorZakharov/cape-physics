@@ -42,11 +42,12 @@ describe('cape contact rock course', () => {
     const solidBuilder = new CaveColliderBuilder();
 
     solidBuilder.addRock(geometry, matrix, false);
-    expect(solidBuilder.colliders.length).toBeGreaterThan(1);
+    expect(solidBuilder.colliders).toHaveLength(1);
     expect(solidBuilder.colliders.every(({ walkable }) => !walkable)).toBe(true);
 
     const walkableBuilder = new CaveColliderBuilder();
     walkableBuilder.addRock(geometry, matrix);
+    expect(walkableBuilder.colliders).toHaveLength(1);
     expect(walkableBuilder.colliders.every(({ walkable }) => walkable)).toBe(true);
   });
 });

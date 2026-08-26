@@ -1,17 +1,25 @@
 import * as THREE from 'three';
 import { CAVE, PLAYER } from '../config';
-import type { WorldSphereCollider } from '../physics/colliders';
+import {
+  isWorldRockCollider,
+  type WorldCollider,
+  type WorldRockCollider,
+  type WorldSphereCollider,
+} from '../physics/colliders';
+import { RockColliderQuery } from '../physics/RockCollider';
 import {
   caveCeiling,
   caveCenterX,
   caveGroundHeightAt,
   caveHalfWidth,
-  caveInteriorHalfWidthAtHeight,
+  caveInteriorBoundsAtHeight,
 } from './caveProfile';
+import type { CaveHorizontalBounds } from './CaveShellSampler';
 
 const PLAYER_WALL_MARGIN = PLAYER.radius + 0.42;
 const SUPPORT_INSET = 0.94;
 const CEILING_CLEARANCE = 0.08;
+const WALKABLE_ROCK_FOOTPRINT = PLAYER.radius * 1.5;
 
 export interface PlayerVerticalMotion {
   readonly previousY: number;
@@ -26,8 +34,12 @@ export interface PlayerCollisionResult {
 
 export class WorldCollisionResolver {
   private readonly separation = new THREE.Vector2();
+  private readonly capsuleSample = new THREE.Vector3();
+  private readonly rockQuery = new RockColliderQuery();
+  private readonly middleBounds: CaveHorizontalBounds = { minimum: 0, maximum: 0 };
+  private readonly upperBounds: CaveHorizontalBounds = { minimum: 0, maximum: 0 };
 
-  public constructor(private readonly colliders: readonly WorldSphereCollider[]) {}
+  public constructor(private readonly colliders: readonly WorldCollider[]) {}
 
   public resolvePlayer(
     position: THREE.Vector3,
@@ -78,6 +90,11 @@ export class WorldCollisionResolver {
     let height = caveGroundHeightAt(x, z);
     for (const collider of this.colliders) {
       if (!collider.walkable) continue;
+      if (isWorldRockCollider(collider)) {
+        const support = this.getSmoothRockSupport(collider, x, z, height);
+        if (support !== null) height = Math.max(height, support);
+        continue;
+      }
       const dx = x - collider.center.x;
       const dz = z - collider.center.z;
       const supportRadius = collider.radius * SUPPORT_INSET;
@@ -89,17 +106,66 @@ export class WorldCollisionResolver {
     return height;
   }
 
+  private getSmoothRockSupport(
+    collider: WorldRockCollider,
+    x: number,
+    z: number,
+    groundHeight: number,
+  ): number | null {
+    const centerX = (collider.bounds.min.x + collider.bounds.max.x) * 0.5;
+    const centerZ = (collider.bounds.min.z + collider.bounds.max.z) * 0.5;
+    const radiusX = (collider.bounds.max.x - collider.bounds.min.x) * 0.5
+      + WALKABLE_ROCK_FOOTPRINT;
+    const radiusZ = (collider.bounds.max.z - collider.bounds.min.z) * 0.5
+      + WALKABLE_ROCK_FOOTPRINT;
+    const normalizedDistance = Math.hypot(
+      (x - centerX) / Math.max(radiusX, 0.001),
+      (z - centerZ) / Math.max(radiusZ, 0.001),
+    );
+    if (normalizedDistance >= 1) return null;
+
+    // This is the support surface of the character footprint, not the rock
+    // mesh itself: the expanded smooth shoulder starts lifting the feet before
+    // their volume reaches a sharp edge, preventing a one-frame step impulse.
+    const blend = 1 - THREE.MathUtils.smoothstep(normalizedDistance, 0.12, 1);
+    return THREE.MathUtils.lerp(
+      groundHeight,
+      Math.max(groundHeight, collider.bounds.max.y),
+      blend,
+    );
+  }
+
   private constrainPlanarBounds(position: THREE.Vector3): void {
     const center = caveCenterX(position.z);
     const upperCenter = position.y + PLAYER.height - PLAYER.radius;
     const middleCenter = position.y + PLAYER.height * 0.5;
     const shellClearance = PLAYER.radius + 0.12;
-    const halfWidth = Math.min(
-      caveHalfWidth(position.z) - PLAYER_WALL_MARGIN,
-      caveInteriorHalfWidthAtHeight(middleCenter, position.z, shellClearance),
-      caveInteriorHalfWidthAtHeight(upperCenter, position.z, shellClearance),
+    const corridorHalfWidth = caveHalfWidth(position.z) - PLAYER_WALL_MARGIN;
+    caveInteriorBoundsAtHeight(
+      middleCenter,
+      position.z,
+      shellClearance,
+      this.middleBounds,
     );
-    position.x = THREE.MathUtils.clamp(position.x, center - halfWidth, center + halfWidth);
+    caveInteriorBoundsAtHeight(
+      upperCenter,
+      position.z,
+      shellClearance,
+      this.upperBounds,
+    );
+    position.x = THREE.MathUtils.clamp(
+      position.x,
+      Math.max(
+        center - corridorHalfWidth,
+        this.middleBounds.minimum,
+        this.upperBounds.minimum,
+      ),
+      Math.min(
+        center + corridorHalfWidth,
+        this.middleBounds.maximum,
+        this.upperBounds.maximum,
+      ),
+    );
   }
 
   private constrainCorridorBounds(position: THREE.Vector3): void {
@@ -109,7 +175,15 @@ export class WorldCollisionResolver {
     position.x = THREE.MathUtils.clamp(position.x, center - halfWidth, center + halfWidth);
   }
 
-  private resolveObstacle(position: THREE.Vector3, collider: WorldSphereCollider): void {
+  private resolveObstacle(position: THREE.Vector3, collider: WorldCollider): void {
+    if (isWorldRockCollider(collider)) {
+      this.resolveRockObstacle(position, collider);
+      return;
+    }
+    this.resolveSphereObstacle(position, collider);
+  }
+
+  private resolveSphereObstacle(position: THREE.Vector3, collider: WorldSphereCollider): void {
     const capsuleBottom = position.y + PLAYER.radius;
     const capsuleTop = position.y + PLAYER.height - PLAYER.radius;
     const closestY = THREE.MathUtils.clamp(collider.center.y, capsuleBottom, capsuleTop);
@@ -126,5 +200,26 @@ export class WorldCollisionResolver {
     else this.separation.multiplyScalar(1 / planarDistance);
     position.x += this.separation.x * (requiredDistance - planarDistance);
     position.z += this.separation.y * (requiredDistance - planarDistance);
+  }
+
+  private resolveRockObstacle(position: THREE.Vector3, collider: WorldRockCollider): void {
+    const capsuleBottom = position.y + PLAYER.radius;
+    const capsuleTop = position.y + PLAYER.height - PLAYER.radius;
+    for (let sample = 0; sample <= 4; sample += 1) {
+      this.capsuleSample.set(
+        position.x,
+        THREE.MathUtils.lerp(capsuleBottom, capsuleTop, sample / 4),
+        position.z,
+      );
+      const penetration = this.rockQuery.getPlanarSeparation(
+        collider,
+        this.capsuleSample,
+        PLAYER.radius,
+        this.separation,
+      );
+      if (penetration <= 0) continue;
+      position.x += this.separation.x * penetration;
+      position.z += this.separation.y * penetration;
+    }
   }
 }

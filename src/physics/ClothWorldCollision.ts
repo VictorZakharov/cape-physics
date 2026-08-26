@@ -1,8 +1,13 @@
 import * as THREE from 'three';
-import type { WorldSphereCollider } from './colliders';
+import type { WorldCollider, WorldSphereCollider } from './colliders';
 import { constrainSphereContactToFloor } from './floorConstrainedContact';
 
-export const CLOTH_WORLD_CLEARANCE = 0.034;
+export const CLOTH_WORLD_CLEARANCE = 0.004;
+export const CLOTH_ROCK_CLEARANCE = 0.003;
+
+export function getClothWorldClearance(collider: WorldCollider): number {
+  return collider.kind === 'rock' ? CLOTH_ROCK_CLEARANCE : CLOTH_WORLD_CLEARANCE;
+}
 
 /** Resolves fixed-sphere contacts against the actual cloth triangles, not only their vertices. */
 export class ClothWorldCollision {
@@ -29,7 +34,7 @@ export class ClothWorldCollision {
     this.updateBounds();
     let contacts = 0;
     for (const collider of colliders) {
-      const radius = collider.radius + CLOTH_WORLD_CLEARANCE;
+      const radius = collider.radius + getClothWorldClearance(collider);
       if (!this.intersectsBounds(collider.center, radius)) continue;
       let colliderContacts = 0;
       for (let row = 0; row < this.rows - 1; row += 1) {
@@ -56,7 +61,7 @@ export class ClothWorldCollision {
     this.updateBounds();
     let maximum = 0;
     for (const collider of colliders) {
-      const radius = collider.radius + CLOTH_WORLD_CLEARANCE;
+      const radius = collider.radius + getClothWorldClearance(collider);
       if (!this.intersectsBounds(collider.center, radius)) continue;
       for (let row = 0; row < this.rows - 1; row += 1) {
         for (let column = 0; column < this.columns - 1; column += 1) {
@@ -84,7 +89,8 @@ export class ClothWorldCollision {
     const third = this.positions[thirdIndex];
     if (!first || !second || !third) return 0;
 
-    const radius = collider.radius + CLOTH_WORLD_CLEARANCE;
+    const clearance = getClothWorldClearance(collider);
+    const radius = collider.radius + clearance;
     if (!this.intersectsTriangleBounds(first, second, third, collider.center, radius)) return 0;
     this.triangle.set(first, second, third);
     this.triangle.closestPointToPoint(collider.center, this.closestPoint);
@@ -116,7 +122,7 @@ export class ClothWorldCollision {
       this.closestPoint,
       collider.center,
       radius,
-      CLOTH_WORLD_CLEARANCE,
+      clearance,
       this.normal,
       this.centroid,
     );

@@ -1,11 +1,10 @@
 import * as THREE from 'three';
-import type { WorldSphereCollider } from '../physics/colliders';
+import { createWorldRockCollider } from '../physics/RockCollider';
+import type { WorldCollider, WorldSphereCollider } from '../physics/colliders';
 import { SPELEOTHEM_RINGS, SPELEOTHEM_SIDES } from './SpeleothemGeometry';
 
 const MAXIMUM_FORMATION_PROXY_SPACING = 0.14;
 const FORMATION_PROXY_SKIN = 0.012;
-const MAXIMUM_ROCK_PROXY_SPACING = 0.13;
-const ROCK_PROXY_SKIN = 0.008;
 
 interface FormationSection {
   readonly center: THREE.Vector3;
@@ -13,14 +12,10 @@ interface FormationSection {
 }
 
 export class CaveColliderBuilder {
-  public readonly colliders: WorldSphereCollider[] = [];
+  public readonly colliders: WorldCollider[] = [];
   private readonly localVertex = new THREE.Vector3();
   private readonly worldVertex = new THREE.Vector3();
   private readonly sampleCenter = new THREE.Vector3();
-  private readonly instancePosition = new THREE.Vector3();
-  private readonly instanceQuaternion = new THREE.Quaternion();
-  private readonly instanceScale = new THREE.Vector3();
-  private readonly majorAxis = new THREE.Vector3();
 
   /**
    * Builds a conservative sphere chain from the rendered cross-sections. This
@@ -66,35 +61,7 @@ export class CaveColliderBuilder {
     instanceMatrix: THREE.Matrix4,
     walkable = true,
   ): void {
-    if (!geometry.boundingSphere) geometry.computeBoundingSphere();
-    const bounds = geometry.boundingSphere;
-    if (!bounds) throw new Error('Rock collision geometry has no bounding sphere.');
-    instanceMatrix.decompose(this.instancePosition, this.instanceQuaternion, this.instanceScale);
-    const axes = [
-      { length: Math.abs(this.instanceScale.x), direction: new THREE.Vector3(1, 0, 0) },
-      { length: Math.abs(this.instanceScale.y), direction: new THREE.Vector3(0, 1, 0) },
-      { length: Math.abs(this.instanceScale.z), direction: new THREE.Vector3(0, 0, 1) },
-    ].sort((first, second) => second.length - first.length);
-    const major = (axes[0]?.length ?? 1) * bounds.radius;
-    const secondary = (axes[1]?.length ?? 1) * bounds.radius;
-    this.majorAxis.copy(axes[0]?.direction ?? new THREE.Vector3(1, 0, 0))
-      .applyQuaternion(this.instanceQuaternion)
-      .normalize();
-    this.worldVertex.copy(bounds.center).applyMatrix4(instanceMatrix);
-    const halfSegment = Math.max(0, major - secondary);
-    const subdivisions = Math.max(1, Math.ceil(halfSegment * 2 / MAXIMUM_ROCK_PROXY_SPACING));
-    const halfStep = halfSegment / subdivisions;
-
-    for (let sample = 0; sample <= subdivisions; sample += 1) {
-      const offset = THREE.MathUtils.lerp(-halfSegment, halfSegment, sample / subdivisions);
-      this.sampleCenter.copy(this.worldVertex).addScaledVector(this.majorAxis, offset);
-      this.addSphere(
-        this.sampleCenter,
-        secondary + halfStep + ROCK_PROXY_SKIN,
-        walkable,
-        'rock',
-      );
-    }
+    this.colliders.push(createWorldRockCollider(geometry, instanceMatrix, walkable));
   }
 
   private addFormationSections(sections: readonly FormationSection[]): void {
