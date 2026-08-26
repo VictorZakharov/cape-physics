@@ -1,5 +1,6 @@
 import type { PerformanceSnapshot } from '../core/PerformanceMonitor';
 import type { QualityState } from '../core/AdaptiveQuality';
+import type { DepthOcclusionProbeResult } from '../testing/DepthOcclusionProbe';
 
 interface CapeDemoDiagnostics {
   readonly ready: boolean;
@@ -19,6 +20,10 @@ interface CapeDemoDiagnostics {
       readonly drawingBufferHeight: number;
       readonly renderPixels: number;
       readonly targetResizeCount: number;
+    };
+    readonly depthComposite: {
+      readonly layerDepthTexture: boolean;
+      readonly worldDepthConnected: boolean;
     };
   };
   readonly player: {
@@ -133,6 +138,7 @@ declare global {
         readonly programsAfter: number;
         readonly diagnostics: CapeDemoDiagnostics;
       };
+      runDepthOcclusionProbe: () => DepthOcclusionProbeResult;
     };
   }
 }

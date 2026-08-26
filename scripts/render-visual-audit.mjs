@@ -204,6 +204,10 @@ try {
     command,
     `window.__CAPE_DEMO__.profile(${JSON.stringify({ duration, frameStep })})`,
   );
+  const depthOcclusionProbe = () => evaluate(
+    command,
+    'window.__CAPE_DEMO__.runDepthOcclusionProbe()',
+  );
   const dragOrbit = async (button, fromY, toY) => {
     const buttons = button === 'left' ? 1 : 2;
     await command('Input.dispatchMouseEvent', {
@@ -219,6 +223,8 @@ try {
 
   const initial = await diagnostics();
   assert(initial.ready, 'demo harness did not report ready');
+  assert(initial.renderer.depthComposite.layerDepthTexture, 'character layer has no resolved depth texture');
+  assert(initial.renderer.depthComposite.worldDepthConnected, 'world depth is not connected to the layer compositor');
   assert(
     Math.abs(initial.camera.initialProjectionAspect - initial.camera.initialViewportAspect) < 0.000_001,
     'camera projection did not match the viewport on the first frame',
@@ -641,6 +647,37 @@ try {
   );
   await capture('cape-formation-contact-opposite');
 
+  const occlusionRock = initial.cave.contactRocks.find((rock) => rock.size === 'large');
+  assert(occlusionRock, 'real-world depth study has no large occluding rock');
+  await setPlayerPose(
+    [occlusionRock.position[0], 0, occlusionRock.position[2] - 1.45],
+    0,
+  );
+  const occlusionStudy = await advance(0.45, 1 / 120);
+  const occlusionTarget = [
+    occlusionStudy.player.position[0],
+    occlusionStudy.player.position[1] + 0.72,
+    occlusionStudy.player.position[2],
+  ];
+  await setCameraPose(
+    [occlusionRock.position[0], occlusionTarget[1], occlusionRock.position[2] + 2.3],
+    occlusionTarget,
+  );
+  await capture('world-depth-occludes-character');
+  const firstDepthOcclusion = await depthOcclusionProbe();
+  assertDepthOcclusion(firstDepthOcclusion, 'world-facing rock angle');
+  await setCameraPose(
+    [
+      occlusionStudy.player.position[0],
+      occlusionTarget[1],
+      occlusionStudy.player.position[2] - 2.3,
+    ],
+    occlusionTarget,
+  );
+  await capture('character-depth-occludes-world');
+  const oppositeDepthOcclusion = await depthOcclusionProbe();
+  assertDepthOcclusion(oppositeDepthOcclusion, 'character-facing rock angle');
+
   const runtimeFailures = events.filter((event) => (
     event.method === 'Runtime.exceptionThrown'
     || event.method === 'Inspector.targetCrashed'
@@ -681,6 +718,11 @@ try {
     largeRockContact,
     smallRockContact,
     formationContact,
+    occlusionStudy,
+    depthOcclusion: {
+      firstAngle: firstDepthOcclusion,
+      oppositeAngle: oppositeDepthOcclusion,
+    },
     final,
   };
   writeFileSync(join(outputRoot, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
@@ -704,4 +746,17 @@ try {
   } catch (error) {
     console.warn(`Temporary audit profile will be removed later: ${error.message}`);
   }
+}
+
+function assertDepthOcclusion(probe, angle) {
+  assert(probe.depthComposite.layerDepthTexture, `${angle} had no character-layer depth texture`);
+  assert(probe.depthComposite.worldDepthConnected, `${angle} had no sampled world depth texture`);
+  assert(
+    probe.visibleLayerDelta >= 24,
+    `${angle} did not render a measurable character-layer marker (${probe.visibleLayerDelta})`,
+  );
+  assert(
+    probe.occludedLayerDelta <= 2,
+    `${angle} let the character layer overwrite a nearer world object (${probe.occludedLayerDelta})`,
+  );
 }

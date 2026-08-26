@@ -18,6 +18,7 @@ import { CapeSimulation } from './physics/CapeSimulation';
 import type { WorldSphereCollider } from './physics/colliders';
 import { Character } from './player/Character';
 import { CharacterController } from './player/CharacterController';
+import { runDepthOcclusionProbe } from './testing/DepthOcclusionProbe';
 import { LoadingScreen } from './ui/LoadingScreen';
 import { invariant } from './utils/assert';
 import { CaveAtmosphere } from './world/CaveAtmosphere';
@@ -259,6 +260,11 @@ export class CapeDemo {
       },
       advance: ({ duration, frameStep = 1 / 60 }) => this.advanceHarness(duration, frameStep),
       profile: ({ duration, frameStep = 1 / 60 }) => this.profileHarness(duration, frameStep),
+      runDepthOcclusionProbe: () => runDepthOcclusionProbe(
+        this.scene,
+        this.camera,
+        this.pipeline,
+      ),
     };
   }
 
@@ -342,6 +348,7 @@ export class CapeDemo {
         pixelRatio: this.pipeline.renderer.getPixelRatio(),
         programs: this.pipeline.renderer.info.programs?.length ?? 0,
         sizing: this.pipeline.getSizingDiagnostics(),
+        depthComposite: this.pipeline.getDepthCompositeDiagnostics(),
       },
       player: {
         position: this.character.root.position.toArray(),

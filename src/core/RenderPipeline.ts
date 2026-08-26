@@ -4,6 +4,7 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { calculateRenderSizing, type RenderSizing } from './renderSizing';
+import { createResolvedDepthTexture } from './depthComposite';
 import { CHARACTER_RENDER_LAYER, WORLD_RENDER_LAYER } from './renderLayers';
 import { SceneLayerCompositePass } from './SceneLayerCompositePass';
 
@@ -40,6 +41,7 @@ export class RenderPipeline {
     const renderTarget = new THREE.WebGLRenderTarget(1, 1, {
       type: THREE.HalfFloatType,
       depthBuffer: true,
+      depthTexture: createResolvedDepthTexture('World scene depth'),
       stencilBuffer: false,
     });
     renderTarget.samples = 2;
@@ -93,6 +95,31 @@ export class RenderPipeline {
 
   public setCharacterOpacity(opacity: number): void {
     this.characterComposite.setOpacity(opacity);
+  }
+
+  public getCharacterOpacity(): number {
+    return this.characterComposite.getOpacity();
+  }
+
+  public getDepthCompositeDiagnostics() {
+    return this.characterComposite.getDepthDiagnostics();
+  }
+
+  public readScreenCenterPixel(): readonly [number, number, number, number] {
+    const context = this.renderer.getContext();
+    const size = this.renderer.getDrawingBufferSize(new THREE.Vector2());
+    const pixel = new Uint8Array(4);
+    context.finish();
+    context.readPixels(
+      Math.floor(size.x * 0.5),
+      Math.floor(size.y * 0.5),
+      1,
+      1,
+      context.RGBA,
+      context.UNSIGNED_BYTE,
+      pixel,
+    );
+    return [pixel[0]!, pixel[1]!, pixel[2]!, pixel[3]!];
   }
 
   public getSizingDiagnostics() {

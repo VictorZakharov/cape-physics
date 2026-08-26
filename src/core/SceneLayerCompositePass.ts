@@ -1,5 +1,9 @@
 import * as THREE from 'three';
 import { FullScreenQuad, Pass } from 'three/addons/postprocessing/Pass.js';
+import {
+  createResolvedDepthTexture,
+  LAYER_DEPTH_EPSILON,
+} from './depthComposite';
 
 const compositeVertexShader = /* glsl */ `
   varying vec2 vUv;
@@ -13,14 +17,20 @@ const compositeVertexShader = /* glsl */ `
 const compositeFragmentShader = /* glsl */ `
   uniform sampler2D tWorld;
   uniform sampler2D tLayer;
+  uniform sampler2D tWorldDepth;
+  uniform sampler2D tLayerDepth;
   uniform float uOpacity;
   varying vec2 vUv;
 
   void main() {
     vec4 world = texture2D(tWorld, vUv);
     vec4 layer = texture2D(tLayer, vUv);
-    float layerAlpha = layer.a * uOpacity;
-    vec3 color = world.rgb * (1.0 - layerAlpha) + layer.rgb * uOpacity;
+    float worldDepth = texture2D(tWorldDepth, vUv).r;
+    float layerDepth = texture2D(tLayerDepth, vUv).r;
+    float depthVisible = step(layerDepth, worldDepth + ${LAYER_DEPTH_EPSILON.toExponential()});
+    float layerAlpha = layer.a * uOpacity * depthVisible;
+    vec3 color = world.rgb * (1.0 - layerAlpha)
+      + layer.rgb * uOpacity * depthVisible;
     gl_FragColor = vec4(color, world.a);
   }
 `;
@@ -40,6 +50,7 @@ export class SceneLayerCompositePass extends Pass {
     this.layerTarget = new THREE.WebGLRenderTarget(1, 1, {
       type: THREE.HalfFloatType,
       depthBuffer: true,
+      depthTexture: createResolvedDepthTexture('Character fade depth'),
       stencilBuffer: false,
     });
     this.layerTarget.texture.name = 'Character fade layer';
@@ -49,6 +60,8 @@ export class SceneLayerCompositePass extends Pass {
       uniforms: {
         tWorld: { value: null },
         tLayer: { value: this.layerTarget.texture },
+        tWorldDepth: { value: null },
+        tLayerDepth: { value: this.layerTarget.depthTexture },
         uOpacity: { value: 1 },
       },
       vertexShader: compositeVertexShader,
@@ -65,6 +78,16 @@ export class SceneLayerCompositePass extends Pass {
 
   public getOpacity(): number {
     return this.material.uniforms.uOpacity!.value as number;
+  }
+
+  public getDepthDiagnostics(): {
+    readonly layerDepthTexture: boolean;
+    readonly worldDepthConnected: boolean;
+  } {
+    return {
+      layerDepthTexture: this.layerTarget.depthTexture?.isDepthTexture === true,
+      worldDepthConnected: this.material.uniforms.tWorldDepth!.value instanceof THREE.DepthTexture,
+    };
   }
 
   public override setSize(width: number, height: number): void {
@@ -99,7 +122,11 @@ export class SceneLayerCompositePass extends Pass {
       renderer.setRenderTarget(previousRenderTarget);
     }
 
+    if (!readBuffer.depthTexture) {
+      throw new Error('World render target has no depth texture for character occlusion.');
+    }
     this.material.uniforms.tWorld!.value = readBuffer.texture;
+    this.material.uniforms.tWorldDepth!.value = readBuffer.depthTexture;
     renderer.setRenderTarget(this.renderToScreen ? null : writeBuffer);
     if (this.clear) renderer.clear();
     this.quad.render(renderer);

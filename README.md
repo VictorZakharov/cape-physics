@@ -45,7 +45,7 @@ The renderer is uncapped for displays up to 144 Hz and beyond. Physics runs at a
 - Cloth-motion-aware damping and deterministic sleep/wake behavior that cannot freeze a suspended panel and does not slow gravity-driven settling
 - Terrain-aware player grounding that climbs the cave shell and walkable rocks instead of clipping through slopes
 - Measured procedural character proportions with a 1.8-head shoulder span, a 1.35-head tapered torso, a visible neck-to-shoulder transition, slimmer limbs, an exposed face, a fitted helmet shell with flush brow trim, restrained walk/run bob, and rate-limited eased turning
-- Wide third-person pitch range, collision-shortened camera boom, ground-safe close orbit, and a smooth 12% near-camera fade composited from a depth-resolved character/cape layer
+- Wide third-person pitch range, collision-shortened camera boom, ground-safe close orbit, and a smooth 12% near-camera fade composited from an isolated character/cape layer that compares resolved world and layer depth before blending
 - Five walkable, optically clear procedural pools seated in shared height-field basins with submerged interiors, dry containing rims, continuous normals, and antialiased edges
 - Thirteen deterministic ceiling-drip emitters, splash particles, independent footstep ripples, and one-shot impact-scaled landing ripples
 - Procedural rock color, height, normal, and roughness maps
@@ -65,9 +65,9 @@ bun run audit:visual   # render audit plus a local-only 144 Hz wall-clock profil
 bun run verify         # check, production build, and systems harness
 ```
 
-The renderer-free harness constructs the complete scene graph and dynamically advances cloth, character animation, a moving jump and water landing, center-path rock contact, water drops, footsteps, torches, and mineral systems. It checks finite state, structural error, vertex and cloth-face penetration, pinned-neckline/body clearance, continuous belt-to-boot coverage, jump apex, airborne limb pose, cape follow-through, coupled body/rock contact, landing-ripple emission, self-separation, downward settling, basin depth and rim containment, ripple activity, geometry validity, triangle/draw-call budgets, and stable light counts. It always reports average physics-step cost, but that wall-clock measurement is enforced only by the local command and is telemetry-only in CI. Focused tests verify outward-facing, capped speleothem shells; a player-width lane beside every mixed-size contact rock; the rendered yoke's overlap with both simulation anchors; torso, shoulder, head, and neck proportions; cloth-face collision when every vertex is clear; suspended-panel wake-up after a 148-degree reversal; distinct walking and running drape; grounded hem and bank traversal; airborne terrain, ceiling, and formation contact; fitted helmet proportions; browser-free clipboard report formatting; eased turning, Shift running, and gait bob; and opaque depth-writing inputs with clamped close-camera fade.
+The renderer-free harness constructs the complete scene graph and dynamically advances cloth, character animation, a moving jump and water landing, center-path rock contact, water drops, footsteps, torches, and mineral systems. It checks finite state, structural error, vertex and cloth-face penetration, pinned-neckline/body clearance, continuous belt-to-boot coverage, jump apex, airborne limb pose, cape follow-through, coupled body/rock contact, landing-ripple emission, self-separation, downward settling, basin depth and rim containment, ripple activity, geometry validity, triangle/draw-call budgets, and stable light counts. It always reports average physics-step cost, but that wall-clock measurement is enforced only by the local command and is telemetry-only in CI. Focused tests verify outward-facing, capped speleothem shells; a player-width lane beside every mixed-size contact rock; the rendered yoke's overlap with both simulation anchors; torso, shoulder, head, and neck proportions; cloth-face collision when every vertex is clear; suspended-panel wake-up after a 148-degree reversal; distinct walking and running drape; grounded hem and bank traversal; airborne terrain, ceiling, and formation contact; fitted helmet proportions; browser-free clipboard report formatting; eased turning, Shift running, and gait bob; opaque depth-writing inputs with clamped close-camera fade; and nearest-depth ordering for the isolated character layer.
 
-The visual audit launches an installed Edge or Chrome directly through the DevTools protocol; it does not depend on a browser-testing framework. It verifies that the camera projection matches the viewport on the first frame and after high-density resizes, then drives the deterministic in-app harness through 25 rendered studies, including:
+The visual audit launches an installed Edge or Chrome directly through the DevTools protocol; it does not depend on a browser-testing framework. It verifies that the camera projection matches the viewport on the first frame and after high-density resizes, then drives the deterministic in-app harness through 27 rendered studies, including:
 
 - rear, side, true front, neckline, high-oblique attachment, aggressive reversal, running, and fully settled cape views;
 - a real FPS-panel click with intercepted clipboard output and visible success-feedback assertions;
@@ -77,10 +77,11 @@ The visual audit launches an installed Edge or Chrome directly through the DevTo
 - dynamic uphill traversal with player/terrain contact checks;
 - a complete pass through the mixed-size center rock course plus close large- and small-rock cape-contact views;
 - both sides of observed cape contact against a generated stalagmite;
+- controlled views from both sides of a real boulder plus a two-angle framebuffer probe that proves a visible character-layer signal becomes pixel-identical to the world-only frame when nearer world depth occludes it;
 - footstep and ceiling-drop ripple evolution, a low clear-water close-up, and a side-on view proving the water is below its dry rim; and
 - a 1,728-frame, 144 Hz running traversal across torch and mineral light boundaries.
 
-The audit fails on browser errors, movement regressions, body/cave/self/cloth-face penetration, idle trembling, inverted resting cloth, missing dynamic contacts or ripples, shader-program growth, oversized render targets, or nondeterministic paused frames. Its saved images make silhouette, clipping, water clarity, and faceting regressions directly reviewable. Images and a diagnostics manifest are written to `artifacts/visual-audit/` and intentionally ignored by Git.
+The audit fails on browser errors, movement regressions, view-dependent world/character depth ordering, body/cave/self/cloth-face penetration, idle trembling, inverted resting cloth, missing dynamic contacts or ripples, shader-program growth, oversized render targets, or nondeterministic paused frames. Its saved images make silhouette, clipping, water clarity, and faceting regressions directly reviewable. Images and a diagnostics manifest are written to `artifacts/visual-audit/` and intentionally ignored by Git.
 
 The local command retains the strict 12-second, 1,728-frame D3D11 timing profile above. CI skips that hardware-dependent profile and gates only deterministic state, geometry, collision, rendering, and image invariants. Likewise, the renderer-free CI harness records physics timings without accepting or rejecting a change based on runner speed. Set `CAPE_AUDIT_PERFORMANCE_PROFILE=false` to skip the wall-clock render profile, or `CAPE_ENFORCE_PERFORMANCE_BUDGET=false` to make physics timing telemetry-only.
 
@@ -92,7 +93,7 @@ The implementation is divided by responsibility under `src/`:
 - `world` owns procedural geometry, geometry-derived collision proxies, terrain resolution, water, lights, and atmosphere;
 - `player` and `camera` own movement, running, jumping, animation, interaction, orbit safety, and close fade;
 - `core` owns fixed timing, rendering, performance telemetry, and adaptive quality; and
-- `testing` owns the renderer-independent integration harness.
+- `testing` owns the renderer-independent integration harness and deterministic GPU framebuffer probes.
 
 The cloth solver follows the real-time position-based dynamics approach described by M&uuml;ller et al. Its contact path combines projected resting constraints, swept vertex fail-safe collision, and triangle closest-point constraints, following the robust cloth-collision principle described by Bridson, Fedkiw, and Anderson. Water shading adapts the multi-scale animated slopes, Fresnel response, normal-variance roughness, and GGX highlights proven in the sibling `beautiful-water` project, specialized for bounded reactive cave pools.
 
@@ -108,7 +109,7 @@ Useful implementation references:
 
 ## Deployment
 
-Every push and pull request runs strict TypeScript, renderer-free unit tests, the deterministic full-scene harness, production and Pages builds, and asset-path validation. Pull requests additionally run the 22-angle dynamic Windows render audit and upload its PNG/JSON evidence. PR history is checked for merge commits so branches stay reviewable and linear.
+Every push and pull request runs strict TypeScript, renderer-free unit tests, the deterministic full-scene harness, production and Pages builds, and asset-path validation. Pull requests additionally run the 27-study dynamic Windows render audit and upload its PNG/JSON evidence. PR history is checked for merge commits so branches stay reviewable and linear.
 
 Same-repository pull requests receive a sticky preview link at:
 
