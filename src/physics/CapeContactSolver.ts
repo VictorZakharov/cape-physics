@@ -12,6 +12,7 @@ import { CLOTH_WORLD_CLEARANCE, ClothWorldCollision } from './ClothWorldCollisio
 import { constrainSphereContactToFloor } from './floorConstrainedContact';
 
 const WORLD_QUERY_RADIUS = CAPE.length + 2.2;
+const WORLD_BROADPHASE_SKIN = 0.08;
 const BODY_FACE_SOLVER_PASSES = 3;
 
 export interface WorldContactDiagnostics {
@@ -21,6 +22,8 @@ export interface WorldContactDiagnostics {
 
 export class CapeContactSolver {
   private readonly nearbyWorldColliders: WorldSphereCollider[] = [];
+  private readonly activeWorldColliders: WorldSphereCollider[] = [];
+  private readonly postCaveWorldColliders: WorldSphereCollider[] = [];
   private readonly delta = new THREE.Vector3();
   private readonly capsuleAxis = new THREE.Vector3();
   private readonly lateralAxis = new THREE.Vector3();
@@ -31,6 +34,8 @@ export class CapeContactSolver {
   private readonly hitPoint = new THREE.Vector3();
   private readonly contactNormal = new THREE.Vector3();
   private readonly remainingMotion = new THREE.Vector3();
+  private readonly boundsMinimum = new THREE.Vector3();
+  private readonly boundsMaximum = new THREE.Vector3();
   private worldContactsLastStep = 0;
   private worldContactEvents = 0;
   private bodySolvePass = 0;
@@ -89,15 +94,29 @@ export class CapeContactSolver {
   }
 
   public solveWorld(): void {
+    this.updateActiveWorldColliders();
+    this.postCaveWorldColliders.length = 0;
     for (let index = CAPE.columns; index < this.positions.length; index += 1) {
       const position = this.positions[index];
       const previous = this.previous[index];
       if (!position || !previous) continue;
-      for (const collider of this.nearbyWorldColliders) {
-        this.solveWorldSphere(position, previous, collider);
+      for (const collider of this.activeWorldColliders) {
+        if (this.solveWorldSphere(position, previous, collider)) {
+          this.registerPostCaveCollider(collider);
+        }
       }
     }
-    const faceContacts = this.faceCollision.solve(this.nearbyWorldColliders);
+    const faceContacts = this.faceCollision.solve(
+      this.activeWorldColliders,
+      this.postCaveWorldColliders,
+    );
+    this.worldContactsLastStep += faceContacts;
+    this.worldContactEvents += faceContacts;
+  }
+
+  public solvePostCaveWorldFaces(): void {
+    if (this.postCaveWorldColliders.length === 0) return;
+    const faceContacts = this.faceCollision.solve(this.postCaveWorldColliders);
     this.worldContactsLastStep += faceContacts;
     this.worldContactEvents += faceContacts;
   }
@@ -162,10 +181,6 @@ export class CapeContactSolver {
     return { lastStep: this.worldContactsLastStep, total: this.worldContactEvents };
   }
 
-  public hadWorldContactThisStep(): boolean {
-    return this.worldContactsLastStep > 0;
-  }
-
   private getCapsulePenetration(
     position: THREE.Vector3,
     collider: CapsuleCollider,
@@ -194,7 +209,7 @@ export class CapeContactSolver {
     position: THREE.Vector3,
     previous: THREE.Vector3,
     collider: WorldSphereCollider,
-  ): void {
+  ): boolean {
     const radius = collider.radius + CLOTH_WORLD_CLEARANCE;
     this.delta.copy(position).sub(collider.center);
     const distanceSquared = this.delta.lengthSq();
@@ -220,21 +235,21 @@ export class CapeContactSolver {
       if (constrainedCorrection !== null) correction = constrainedCorrection;
       position.addScaledVector(this.contactNormal, correction);
       previous.addScaledVector(this.contactNormal, correction);
-      return;
+      return true;
     }
 
     this.sweep.copy(position).sub(previous);
     const sweepLengthSquared = this.sweep.lengthSq();
-    if (sweepLengthSquared < 0.000_000_1) return;
+    if (sweepLengthSquared < 0.000_000_1) return false;
     this.sweepStart.copy(previous).sub(collider.center);
     const startDistance = this.sweepStart.lengthSq() - radius * radius;
-    if (startDistance <= 0) return;
+    if (startDistance <= 0) return false;
     const approach = this.sweepStart.dot(this.sweep);
-    if (approach >= 0) return;
+    if (approach >= 0) return false;
     const discriminant = approach * approach - sweepLengthSquared * startDistance;
-    if (discriminant < 0) return;
+    if (discriminant < 0) return false;
     const hitTime = (-approach - Math.sqrt(discriminant)) / sweepLengthSquared;
-    if (hitTime < 0 || hitTime > 1) return;
+    if (hitTime < 0 || hitTime > 1) return false;
 
     this.registerWorldContact();
     this.hitPoint.copy(previous).addScaledVector(this.sweep, hitTime);
@@ -246,6 +261,7 @@ export class CapeContactSolver {
     this.hitPoint.addScaledVector(this.contactNormal, 0.0015);
     previous.copy(this.hitPoint);
     position.copy(this.hitPoint).add(this.remainingMotion);
+    return true;
   }
 
   private applyAxisCorrection(
@@ -261,5 +277,50 @@ export class CapeContactSolver {
   private registerWorldContact(): void {
     this.worldContactsLastStep += 1;
     this.worldContactEvents += 1;
+  }
+
+  private registerPostCaveCollider(collider: WorldSphereCollider): void {
+    if (!this.postCaveWorldColliders.includes(collider)) {
+      this.postCaveWorldColliders.push(collider);
+    }
+  }
+
+  private updateActiveWorldColliders(): void {
+    this.boundsMinimum.set(
+      Number.POSITIVE_INFINITY,
+      Number.POSITIVE_INFINITY,
+      Number.POSITIVE_INFINITY,
+    );
+    this.boundsMaximum.set(
+      Number.NEGATIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+    );
+    for (let index = 0; index < this.positions.length; index += 1) {
+      const position = this.positions[index];
+      const previous = this.previous[index];
+      if (position) {
+        this.boundsMinimum.min(position);
+        this.boundsMaximum.max(position);
+      }
+      if (previous) {
+        this.boundsMinimum.min(previous);
+        this.boundsMaximum.max(previous);
+      }
+    }
+
+    this.activeWorldColliders.length = 0;
+    for (const collider of this.nearbyWorldColliders) {
+      const radius = collider.radius + CLOTH_WORLD_CLEARANCE + WORLD_BROADPHASE_SKIN;
+      if (
+        collider.center.x + radius < this.boundsMinimum.x
+        || collider.center.x - radius > this.boundsMaximum.x
+        || collider.center.y + radius < this.boundsMinimum.y
+        || collider.center.y - radius > this.boundsMaximum.y
+        || collider.center.z + radius < this.boundsMinimum.z
+        || collider.center.z - radius > this.boundsMaximum.z
+      ) continue;
+      this.activeWorldColliders.push(collider);
+    }
   }
 }

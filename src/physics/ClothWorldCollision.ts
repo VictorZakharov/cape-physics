@@ -22,19 +22,31 @@ export class ClothWorldCollision {
     private readonly rows: number,
   ) {}
 
-  public solve(colliders: readonly WorldSphereCollider[]): number {
+  public solve(
+    colliders: readonly WorldSphereCollider[],
+    contactColliders?: WorldSphereCollider[],
+  ): number {
     this.updateBounds();
     let contacts = 0;
     for (const collider of colliders) {
       const radius = collider.radius + CLOTH_WORLD_CLEARANCE;
       if (!this.intersectsBounds(collider.center, radius)) continue;
+      let colliderContacts = 0;
       for (let row = 0; row < this.rows - 1; row += 1) {
         for (let column = 0; column < this.columns - 1; column += 1) {
           const topLeft = this.index(column, row);
           const bottomLeft = this.index(column, row + 1);
-          contacts += this.solveTriangle(topLeft, bottomLeft, topLeft + 1, collider);
-          contacts += this.solveTriangle(bottomLeft, bottomLeft + 1, topLeft + 1, collider);
+          colliderContacts += this.solveTriangle(topLeft, bottomLeft, topLeft + 1, collider);
+          colliderContacts += this.solveTriangle(bottomLeft, bottomLeft + 1, topLeft + 1, collider);
         }
+      }
+      contacts += colliderContacts;
+      if (
+        colliderContacts > 0
+        && contactColliders
+        && !contactColliders.includes(collider)
+      ) {
+        contactColliders.push(collider);
       }
     }
     return contacts;

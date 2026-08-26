@@ -52,7 +52,7 @@ The renderer is uncapped for displays up to 144 Hz and beyond. Physics runs at a
 - Closed, outward-facing wet speleothem shells with curved centerlines, deposition bands, capped attachment ends, and instanced flowstone collars
 - A six-rock, mixed-size cape-contact course through the middle passage, batched into the existing scatter draw: large boulders are solid with a measured route around them, while small stones are walkable
 - Flickering torches, emissive mineral veins, bloom, fog, dust, AgX tone mapping, PBR materials, and soft shadows
-- Fixed-size nearest-light pools and fixed-allocation physics paths that avoid traversal-time shader compilation and garbage-collection stalls
+- Fixed-size nearest-light pools, fixed-allocation physics paths, and a two-stage anchor-radius/swept-cloth collision broad phase that avoid traversal-time shader compilation, unnecessary proxy scans, and garbage-collection stalls
 - Pixel-budgeted post-processing and rate-limited adaptive-resolution reallocations
 - Compact live FPS, frame-time, average, one-percent-low, and sparkline HUD; click it to copy renderer, quality, scene, canvas, runtime, and rolling 15-second frame diagnostics
 

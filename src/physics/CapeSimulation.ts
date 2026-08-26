@@ -172,11 +172,11 @@ export class CapeSimulation {
       this.contactSolver.solveBody(bodyColliders, anchors.back);
       this.contactSolver.solveWorld();
       this.contactSolver.solveCave();
-      if (
-        iteration === CAPE.solverIterations - 1
-        && this.contactSolver.hadWorldContactThisStep()
-      ) {
-        this.contactSolver.solveWorld();
+      if (iteration === CAPE.solverIterations - 1) {
+        // Cave-floor projection can re-enter the face of a floor-seated rock.
+        // Recheck triangles only against colliders that actually touched this
+        // iteration; vertex contacts were already solved above.
+        this.contactSolver.solvePostCaveWorldFaces();
       }
       this.pinAnchors(anchors);
     }
