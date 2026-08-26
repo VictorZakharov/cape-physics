@@ -851,6 +851,85 @@ try {
     `small-stone traversal pierced a cape face (${smallRockTraversal.maximumEnvironmentFacePenetration.toFixed(4)} m)`,
   );
 
+  const stressRock = courseRocks[4];
+  assert(stressRock?.size === 'large', 'sustained-contact stress boulder is missing');
+  await setPlayerPose(
+    [stressRock.position[0] + 0.78, 0, stressRock.position[2] - 0.28],
+    0,
+  );
+  const stressContactsBefore = (await diagnostics()).cape.worldContacts.total;
+  const stressRockContact = await advanceUntilRockContact(
+    'sustained large',
+    stressRock.position,
+    stressContactsBefore,
+  );
+  const stressRockStability = {
+    maximumCapeStep: 0,
+    maximumCapeVerticalStep: 0,
+    maximumUpwardFold: 0,
+    maximumStructuralError: 0,
+    maximumBodyPenetration: 0,
+    maximumEnvironmentPenetration: 0,
+    maximumEnvironmentFacePenetration: 0,
+  };
+  for (let frame = 0; frame < 180; frame += 1) {
+    const state = await advance(1 / 120, 1 / 120);
+    stressRockStability.maximumCapeStep = Math.max(
+      stressRockStability.maximumCapeStep,
+      state.cape.maximumParticleMotion,
+    );
+    stressRockStability.maximumCapeVerticalStep = Math.max(
+      stressRockStability.maximumCapeVerticalStep,
+      state.cape.maximumParticleVerticalMotion,
+    );
+    for (const metric of [
+      'maximumUpwardFold',
+      'maximumStructuralError',
+      'maximumBodyPenetration',
+      'maximumEnvironmentPenetration',
+      'maximumEnvironmentFacePenetration',
+    ]) {
+      stressRockStability[metric] = Math.max(
+        stressRockStability[metric],
+        state.cape[metric],
+      );
+    }
+  }
+  assert(stressRockStability.maximumCapeStep < 0.12, 'sustained boulder contact launched or spiked the cape');
+  assert(stressRockStability.maximumCapeVerticalStep < 0.07, 'sustained boulder contact kicked the cape vertically');
+  assert(stressRockStability.maximumUpwardFold < 0.035, 'sustained boulder contact folded the cape upward');
+  assert(stressRockStability.maximumStructuralError < 0.055, 'sustained boulder contact overstretched the cape');
+  assert(stressRockStability.maximumBodyPenetration < 0.002, 'sustained boulder contact pushed cape through the body');
+  assert(stressRockStability.maximumEnvironmentPenetration < 0.002, 'sustained boulder contact penetrated world geometry');
+  assert(stressRockStability.maximumEnvironmentFacePenetration < 0.002, 'sustained boulder contact pierced a cape face');
+  const stressRockSettled = await diagnostics();
+  await setCameraPose(
+    [
+      stressRockSettled.player.position[0] + 2.3,
+      stressRockSettled.player.position[1] + 0.95,
+      stressRockSettled.player.position[2] - 1.75,
+    ],
+    [
+      stressRockSettled.player.position[0],
+      stressRockSettled.player.position[1] + 0.68,
+      stressRockSettled.player.position[2] + 0.2,
+    ],
+  );
+  await capture('cape-sustained-rock-contact-a');
+  await setCameraPose(
+    [
+      stressRockSettled.player.position[0] - 2.2,
+      stressRockSettled.player.position[1] + 1.05,
+      stressRockSettled.player.position[2] + 1.8,
+    ],
+    [
+      stressRockSettled.player.position[0],
+      stressRockSettled.player.position[1] + 0.68,
+      stressRockSettled.player.position[2] + 0.2,
+    ],
+  );
+  await capture('cape-sustained-rock-contact-b');
+
   const contactsBefore = (await diagnostics()).cape.worldContacts.total;
   await setPlayerPose([1.68, 0, -31.6], 0);
   await advance(2.4, 1 / 120);
@@ -1002,6 +1081,8 @@ try {
     movingFootRockContact,
     smallRockContact,
     smallRockTraversal,
+    stressRockContact,
+    stressRockStability,
     formationContact,
     shadowStudy,
     shadowAngles: {

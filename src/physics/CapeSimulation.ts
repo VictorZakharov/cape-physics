@@ -188,8 +188,12 @@ export class CapeSimulation {
         this.contactSolver.solvePostCaveWorldFaces();
         // The fixed-world projection can in turn press cloth back into an
         // animated boot or lower leg. Finish on the moving body constraint so
-        // rendered limb geometry cannot emerge through a stone-pinned cape.
+        // rendered limb geometry cannot emerge through a stone-pinned cape,
+        // then reconcile exact world-face crossings once more. Both rock
+        // fallback projections share one strict per-particle step budget;
+        // temporal rollback itself adds no impulse.
         this.contactSolver.solveBody(bodyColliders, anchors.back);
+        this.contactSolver.solvePostCaveWorldFaces();
       }
       this.pinAnchors(anchors);
     }

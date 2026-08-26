@@ -4,10 +4,15 @@ import {
   isBelowWalkableRockShoulder,
   RockColliderQuery,
 } from './RockCollider';
+import { TriangleContactQuery } from './TriangleContactQuery';
 
 const DISTANCE_EPSILON = 0.000_001;
 const VERTEX_CONTACT_EPSILON = 0.0005;
-const MAXIMUM_FACE_CORRECTION_CLEARANCES = 4;
+const FACE_INTERSECTION_RELEASE_CLEARANCES = 1.5;
+// Face contacts are a last-resort anti-piercing constraint. Particle sweeps
+// handle ordinary surface contact, so a face-only correction must remain a
+// millimetre-scale nudge instead of accumulating into a cloth impulse.
+const MAXIMUM_FACE_CORRECTION_CLEARANCES = FACE_INTERSECTION_RELEASE_CLEARANCES;
 
 export interface ClothRockSurfaceContact {
   readonly distance: number;
@@ -21,8 +26,8 @@ export interface ClothRockSurfaceContact {
  */
 export class ClothRockCollision {
   private readonly clothTriangle = new THREE.Triangle();
+  private readonly previousTriangle = new THREE.Triangle();
   private readonly clothPoint = new THREE.Vector3();
-  private readonly rockPoint = new THREE.Vector3();
   private readonly candidateCloth = new THREE.Vector3();
   private readonly candidateRock = new THREE.Vector3();
   private readonly barycentric = new THREE.Vector3();
@@ -30,11 +35,14 @@ export class ClothRockCollision {
   private readonly boundsMinimum = new THREE.Vector3();
   private readonly boundsMaximum = new THREE.Vector3();
   private readonly clothBounds = new THREE.Box3();
-  private readonly firstDirection = new THREE.Vector3();
-  private readonly secondDirection = new THREE.Vector3();
-  private readonly segmentOffset = new THREE.Vector3();
+  private readonly previousBounds = new THREE.Box3();
   private readonly vertexNormal = new THREE.Vector3();
+  private readonly previousCentroid = new THREE.Vector3();
+  private readonly referenceDirection = new THREE.Vector3();
+  private readonly candidateContactNormal = new THREE.Vector3();
+  private readonly intersectionNormal = new THREE.Vector3();
   private readonly rockQuery = new RockColliderQuery();
+  private readonly triangleQuery = new TriangleContactQuery();
   private readonly faceCorrectionUsed: Float32Array;
 
   public constructor(
@@ -51,6 +59,10 @@ export class ClothRockCollision {
   }
 
   public beginStep(): void {
+    this.beginPass();
+  }
+
+  public beginPass(): void {
     this.faceCorrectionUsed.fill(0);
   }
 
@@ -106,7 +118,7 @@ export class ClothRockCollision {
         if (!first || !second || !third) return;
         this.clothTriangle.set(first, second, third);
         for (const face of collider.faces) {
-          const distanceSquared = this.closestTrianglePoints(
+          const distanceSquared = this.triangleQuery.closestPoints(
             this.clothTriangle,
             face.triangle,
             this.candidateCloth,
@@ -134,6 +146,7 @@ export class ClothRockCollision {
       secondIndex,
       thirdIndex,
       collider,
+      true,
     );
     if (penetration <= 0) return 0;
     if (this.clothTriangle.getBarycoord(this.clothPoint, this.barycentric) === null) return 0;
@@ -142,6 +155,16 @@ export class ClothRockCollision {
     // triangle projection duplicates the response across adjacent faces and
     // can turn millimetres of clearance into a large cloth impulse.
     if (this.hasVertexContact(firstIndex, secondIndex, thirdIndex, collider)) return 0;
+    // A face-only crossing was created during this physics step. Returning
+    // its three vertices to their last non-intersecting state is continuous,
+    // energy-dissipating contact: it cannot choose a new facet normal each
+    // iteration or ratchet a millimetre correction into a metre-long spike.
+    if (this.restorePreviousTriangle(
+      firstIndex,
+      secondIndex,
+      thirdIndex,
+      collider,
+    )) return 1;
 
     const firstWeight = this.inverseMass[firstIndex] ?? 0;
     const secondWeight = this.inverseMass[secondIndex] ?? 0;
@@ -185,6 +208,7 @@ export class ClothRockCollision {
       secondIndex,
       thirdIndex,
       collider,
+      false,
     );
     if (
       penetration <= 0
@@ -216,11 +240,73 @@ export class ClothRockCollision {
     );
   }
 
+  private restorePreviousTriangle(
+    firstIndex: number,
+    secondIndex: number,
+    thirdIndex: number,
+    collider: WorldRockCollider,
+  ): boolean {
+    const previousFirst = this.previous[firstIndex];
+    const previousSecond = this.previous[secondIndex];
+    const previousThird = this.previous[thirdIndex];
+    if (!previousFirst || !previousSecond || !previousThird) return false;
+    if (
+      this.rockQuery.getSignedDistance(collider, previousFirst, this.vertexNormal) < 0
+      || this.rockQuery.getSignedDistance(collider, previousSecond, this.vertexNormal) < 0
+      || this.rockQuery.getSignedDistance(collider, previousThird, this.vertexNormal) < 0
+    ) return false;
+
+    this.previousTriangle.set(previousFirst, previousSecond, previousThird);
+    if (this.triangleIntersectsCollider(this.previousTriangle, collider)) return false;
+
+    let restored = false;
+    for (const index of [firstIndex, secondIndex, thirdIndex]) {
+      if ((this.inverseMass[index] ?? 0) <= 0) continue;
+      const position = this.positions[index];
+      const previous = this.previous[index];
+      if (!position || !previous) continue;
+      position.copy(previous);
+      restored = true;
+    }
+    return restored;
+  }
+
+  private triangleIntersectsCollider(
+    triangle: THREE.Triangle,
+    collider: WorldRockCollider,
+  ): boolean {
+    this.previousBounds.setFromPoints([
+      triangle.a,
+      triangle.b,
+      triangle.c,
+    ]);
+    if (!this.previousBounds.intersectsBox(collider.bounds)) return false;
+    triangle.getMidpoint(this.referenceDirection).sub(collider.center);
+    if (this.referenceDirection.lengthSq() < DISTANCE_EPSILON) {
+      triangle.getNormal(this.referenceDirection);
+    } else {
+      this.referenceDirection.normalize();
+    }
+    for (const face of collider.faces) {
+      if (!this.previousBounds.intersectsBox(face.bounds)) continue;
+      if (this.triangleQuery.intersectAtPoint(
+        triangle,
+        face.triangle,
+        face.normal,
+        this.referenceDirection,
+        this.candidateCloth,
+        this.candidateContactNormal,
+      ) > 0) return true;
+    }
+    return false;
+  }
+
   private findTrianglePenetration(
     firstIndex: number,
     secondIndex: number,
     thirdIndex: number,
     collider: WorldRockCollider,
+    forCorrection: boolean,
   ): number {
     const first = this.positions[firstIndex];
     const second = this.positions[secondIndex];
@@ -230,149 +316,56 @@ export class ClothRockCollision {
     this.clothBounds.setFromPoints([first, second, third]).expandByScalar(this.clearance);
     if (!this.clothBounds.intersectsBox(collider.bounds)) return 0;
 
-    let minimumDistanceSquared = this.clearance * this.clearance;
-    let closestFaceNormal: THREE.Vector3 | undefined;
+    const previousFirst = this.previous[firstIndex] ?? first;
+    const previousSecond = this.previous[secondIndex] ?? second;
+    const previousThird = this.previous[thirdIndex] ?? third;
+    this.previousCentroid.copy(previousFirst)
+      .add(previousSecond)
+      .add(previousThird)
+      .multiplyScalar(1 / 3);
+    this.referenceDirection.copy(this.previousCentroid).sub(collider.center);
+    if (this.referenceDirection.lengthSq() < DISTANCE_EPSILON) {
+      this.clothTriangle.getMidpoint(this.referenceDirection).sub(collider.center);
+    }
+    if (this.referenceDirection.lengthSq() < DISTANCE_EPSILON) {
+      this.clothTriangle.getNormal(this.referenceDirection);
+    } else {
+      this.referenceDirection.normalize();
+    }
+
+    let intersectionKind = 0;
+    let bestIntersectionScore = Number.NEGATIVE_INFINITY;
     for (const face of collider.faces) {
       if (!this.clothBounds.intersectsBox(face.bounds)) continue;
-      const distanceSquared = this.closestTrianglePoints(
+      const candidateKind = this.triangleQuery.intersectAtPoint(
         this.clothTriangle,
         face.triangle,
+        face.normal,
+        this.referenceDirection,
         this.candidateCloth,
-        this.candidateRock,
+        this.candidateContactNormal,
       );
-      if (distanceSquared >= minimumDistanceSquared) continue;
-      minimumDistanceSquared = distanceSquared;
-      this.clothPoint.copy(this.candidateCloth);
-      this.rockPoint.copy(this.candidateRock);
-      closestFaceNormal = face.normal;
-      if (distanceSquared <= DISTANCE_EPSILON * DISTANCE_EPSILON) break;
-    }
-    if (!closestFaceNormal) return 0;
-
-    const distance = Math.sqrt(minimumDistanceSquared);
-    this.normal.copy(this.clothPoint).sub(this.rockPoint);
-    if (
-      distance > DISTANCE_EPSILON
-      && this.normal.dot(closestFaceNormal) > 0
-    ) {
-      this.normal.multiplyScalar(1 / distance);
-    } else {
-      this.normal.copy(closestFaceNormal);
-    }
-    return this.clearance - distance;
-  }
-
-  private closestTrianglePoints(
-    first: THREE.Triangle,
-    second: THREE.Triangle,
-    firstTarget: THREE.Vector3,
-    secondTarget: THREE.Vector3,
-  ): number {
-    let minimum = Number.POSITIVE_INFINITY;
-    const update = (
-      firstPoint: THREE.Vector3,
-      secondPoint: THREE.Vector3,
-    ): void => {
-      const distanceSquared = firstPoint.distanceToSquared(secondPoint);
-      if (distanceSquared >= minimum) return;
-      minimum = distanceSquared;
-      firstTarget.copy(firstPoint);
-      secondTarget.copy(secondPoint);
-    };
-
-    for (const vertex of [first.a, first.b, first.c]) {
-      second.closestPointToPoint(vertex, this.candidateRock);
-      update(vertex, this.candidateRock);
-    }
-    for (const vertex of [second.a, second.b, second.c]) {
-      first.closestPointToPoint(vertex, this.candidateCloth);
-      update(this.candidateCloth, vertex);
-    }
-
-    const firstEdges = [
-      [first.a, first.b],
-      [first.b, first.c],
-      [first.c, first.a],
-    ] as const;
-    const secondEdges = [
-      [second.a, second.b],
-      [second.b, second.c],
-      [second.c, second.a],
-    ] as const;
-    for (const [firstStart, firstEnd] of firstEdges) {
-      for (const [secondStart, secondEnd] of secondEdges) {
-        this.closestSegmentPoints(
-          firstStart,
-          firstEnd,
-          secondStart,
-          secondEnd,
-          this.candidateCloth,
-          this.candidateRock,
-        );
-        update(this.candidateCloth, this.candidateRock);
-      }
-    }
-    return minimum;
-  }
-
-  private closestSegmentPoints(
-    firstStart: THREE.Vector3,
-    firstEnd: THREE.Vector3,
-    secondStart: THREE.Vector3,
-    secondEnd: THREE.Vector3,
-    firstTarget: THREE.Vector3,
-    secondTarget: THREE.Vector3,
-  ): void {
-    this.firstDirection.copy(firstEnd).sub(firstStart);
-    this.secondDirection.copy(secondEnd).sub(secondStart);
-    this.segmentOffset.copy(firstStart).sub(secondStart);
-    const firstLengthSquared = this.firstDirection.lengthSq();
-    const secondLengthSquared = this.secondDirection.lengthSq();
-    const secondProjection = this.secondDirection.dot(this.segmentOffset);
-    let firstProgress = 0;
-    let secondProgress = 0;
-
-    if (firstLengthSquared <= DISTANCE_EPSILON && secondLengthSquared <= DISTANCE_EPSILON) {
-      firstTarget.copy(firstStart);
-      secondTarget.copy(secondStart);
-      return;
-    }
-    if (firstLengthSquared <= DISTANCE_EPSILON) {
-      secondProgress = THREE.MathUtils.clamp(secondProjection / secondLengthSquared, 0, 1);
-    } else {
-      const firstProjection = this.firstDirection.dot(this.segmentOffset);
-      if (secondLengthSquared <= DISTANCE_EPSILON) {
-        firstProgress = THREE.MathUtils.clamp(-firstProjection / firstLengthSquared, 0, 1);
-      } else {
-        const crossProjection = this.firstDirection.dot(this.secondDirection);
-        const denominator = firstLengthSquared * secondLengthSquared
-          - crossProjection * crossProjection;
-        if (Math.abs(denominator) > DISTANCE_EPSILON) {
-          firstProgress = THREE.MathUtils.clamp(
-            (crossProjection * secondProjection - firstProjection * secondLengthSquared)
-              / denominator,
-            0,
-            1,
-          );
-        }
-        secondProgress = (
-          crossProjection * firstProgress + secondProjection
-        ) / secondLengthSquared;
-        if (secondProgress < 0) {
-          secondProgress = 0;
-          firstProgress = THREE.MathUtils.clamp(-firstProjection / firstLengthSquared, 0, 1);
-        } else if (secondProgress > 1) {
-          secondProgress = 1;
-          firstProgress = THREE.MathUtils.clamp(
-            (crossProjection - firstProjection) / firstLengthSquared,
-            0,
-            1,
-          );
+      if (candidateKind > 0) {
+        const score = this.candidateContactNormal.dot(this.referenceDirection);
+        if (
+          candidateKind > intersectionKind
+          || (candidateKind === intersectionKind && score > bestIntersectionScore)
+        ) {
+          intersectionKind = candidateKind;
+          bestIntersectionScore = score;
+          this.intersectionNormal.copy(this.candidateContactNormal);
+          this.clothPoint.copy(this.candidateCloth);
         }
       }
     }
-    firstTarget.copy(firstStart).addScaledVector(this.firstDirection, firstProgress);
-    secondTarget.copy(secondStart).addScaledVector(this.secondDirection, secondProgress);
+
+    if (intersectionKind > 0) {
+      this.normal.copy(this.intersectionNormal);
+      return this.clearance * (
+        forCorrection ? FACE_INTERSECTION_RELEASE_CLEARANCES : 1
+      );
+    }
+    return 0;
   }
 
   private applyCorrection(index: number, scale: number): void {
