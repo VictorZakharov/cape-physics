@@ -10,7 +10,9 @@ import {
 import type { CapsuleCollider, WorldSphereCollider } from '../src/physics/colliders';
 import type { CapeAnchors } from '../src/player/Character';
 import { Character } from '../src/player/Character';
-import { caveCenterX } from '../src/world/caveProfile';
+import { CaveColliderBuilder } from '../src/world/CaveColliderBuilder';
+import { caveCenterX, floorHeightAt } from '../src/world/caveProfile';
+import { createRockGeometry } from '../src/world/RockGeometry';
 import { WorldCollisionResolver } from '../src/world/WorldCollisionResolver';
 
 const anchors: CapeAnchors = {
@@ -181,7 +183,7 @@ describe('CapeSimulation', () => {
     const floor = collision.getGroundHeight(x, z + 0.75);
     const rock: WorldSphereCollider = {
       center: new THREE.Vector3(x + 0.38, floor + 0.2, z + 0.75),
-      radius: 0.25,
+      radius: 0.265,
       walkable: true,
       kind: 'rock',
     };
@@ -248,6 +250,91 @@ describe('CapeSimulation', () => {
     expect(maximumBootPenetration).toBeLessThan(0.002);
     expect(maximumBodyPenetration).toBeLessThan(0.002);
     expect(maximumRockPenetration).toBeLessThan(0.002);
+  });
+
+  test('walks over an exact small-rock surface without launching or folding the cape', () => {
+    const geometry = createRockGeometry();
+    const positions = geometry.getAttribute('position');
+    const rockZ = 7.8;
+    const rockX = caveCenterX(rockZ);
+    const rotation = new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.08, 1.12, 0.08));
+    const scale = new THREE.Vector3(0.55, 0.48, 0.62);
+    const rockPosition = new THREE.Vector3(rockX, 0, rockZ);
+    const matrix = new THREE.Matrix4().compose(rockPosition, rotation, scale);
+    const transformed = new THREE.Vector3();
+    let minimumRelativeY = Number.POSITIVE_INFINITY;
+    for (let index = 0; index < positions.count; index += 1) {
+      transformed.fromBufferAttribute(positions, index).applyMatrix4(matrix);
+      minimumRelativeY = Math.min(minimumRelativeY, transformed.y);
+    }
+    rockPosition.y = floorHeightAt(rockX, rockZ) - minimumRelativeY - 0.03;
+    matrix.compose(rockPosition, rotation, scale);
+    const builder = new CaveColliderBuilder();
+    builder.addRock(geometry, matrix, true);
+    const collision = new WorldCollisionResolver(builder.colliders);
+    const character = new Character();
+    const startZ = rockZ + 1.25;
+    character.root.position.set(
+      rockX,
+      collision.getPlayerRootHeight(rockX, startZ),
+      startZ,
+    );
+    character.root.updateMatrixWorld(true);
+    let dynamicAnchors = character.getCapeAnchors();
+    const cape = new CapeSimulation(dynamicAnchors);
+    const velocity = new THREE.Vector3();
+
+    for (let tick = 0; tick < 180; tick += 1) {
+      cape.step(
+        PHYSICS_STEP,
+        dynamicAnchors,
+        character.getCapeColliders(),
+        builder.colliders,
+        new THREE.Vector3(),
+        tick * PHYSICS_STEP,
+      );
+    }
+
+    const baselineY = character.root.position.y;
+    let previousPosition = character.root.position.clone();
+    let maximumRootRise = 0;
+    let maximumRootStep = 0;
+    let maximumCapeStep = 0;
+    let maximumUpwardFold = 0;
+    for (let tick = 0; tick < 150; tick += 1) {
+      const z = startZ - PLAYER.walkSpeed * PHYSICS_STEP * (tick + 1);
+      const y = collision.getPlayerRootHeight(rockX, z);
+      character.root.position.set(rockX, y, z);
+      velocity.copy(character.root.position).sub(previousPosition).multiplyScalar(1 / PHYSICS_STEP);
+      previousPosition = character.root.position.clone();
+      character.updateAnimation(PHYSICS_STEP, PLAYER.walkSpeed, true, 0);
+      character.root.updateMatrixWorld(true);
+      dynamicAnchors = character.getCapeAnchors();
+      cape.step(
+        PHYSICS_STEP,
+        dynamicAnchors,
+        character.getCapeColliders(),
+        builder.colliders,
+        velocity,
+        (tick + 180) * PHYSICS_STEP,
+      );
+      maximumRootRise = Math.max(maximumRootRise, y - baselineY);
+      maximumRootStep = Math.max(
+        maximumRootStep,
+        Math.abs(velocity.y) * PHYSICS_STEP,
+      );
+      maximumCapeStep = Math.max(maximumCapeStep, cape.getMaximumParticleMotion());
+      maximumUpwardFold = Math.max(maximumUpwardFold, cape.getMaximumUpwardFold());
+    }
+
+    const jumpApex = PLAYER.jumpSpeed * PLAYER.jumpSpeed / (2 * PLAYER.gravity);
+    expect(maximumRootRise).toBeGreaterThan(0.08);
+    expect(maximumRootRise).toBeLessThan(jumpApex * 0.5);
+    expect(maximumRootStep).toBeLessThan(0.06);
+    expect(maximumCapeStep).toBeLessThan(PLAYER.jumpSpeed * PHYSICS_STEP * 2);
+    expect(maximumUpwardFold).toBeLessThanOrEqual(0.055_05);
+    expect(cape.getMaximumEnvironmentPenetration(builder.colliders)).toBeLessThan(0.002);
+    expect(cape.getMaximumEnvironmentFacePenetration(builder.colliders)).toBeLessThan(0.002);
   });
 
   test('damps residual trembling after an aggressive reversal settles', () => {
@@ -427,8 +514,8 @@ describe('CapeSimulation', () => {
       );
     }
 
-    expect(cape.getMinimumHemGroundClearance()).toBeGreaterThanOrEqual(0.032);
-    expect(cape.getMinimumHemGroundClearance()).toBeLessThan(0.09);
+    expect(cape.getMinimumHemGroundClearance()).toBeGreaterThanOrEqual(0.003_9);
+    expect(cape.getMinimumHemGroundClearance()).toBeLessThan(0.03);
     expect(cape.getMaximumBodyPenetration(
       character.getCapeColliders(),
       characterAnchors.back,

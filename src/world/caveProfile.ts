@@ -1,4 +1,7 @@
-import { CaveShellSampler } from './CaveShellSampler';
+import {
+  CaveShellSampler,
+  type CaveHorizontalBounds,
+} from './CaveShellSampler';
 import { smoothstep } from '../utils/math';
 
 export interface WaterBasinProfile {
@@ -69,15 +72,38 @@ const caveShellSampler = new CaveShellSampler({
   ceiling: caveCeiling,
 });
 
+export const CAVE_SHELL_CONTACT_SKIN = 0.002;
+const sharedHorizontalBounds: CaveHorizontalBounds = { minimum: 0, maximum: 0 };
+
 export function caveGroundHeightAt(x: number, z: number): number {
-  return Math.max(floorHeightAt(x, z), caveShellSampler.getLowerHeight(x, z) + 0.008);
+  return Math.max(
+    floorHeightAt(x, z),
+    caveShellSampler.getLowerHeight(x, z) + CAVE_SHELL_CONTACT_SKIN,
+  );
 }
 
 export function caveInteriorHalfWidthAtHeight(y: number, z: number, clearance = 0): number {
-  const ceiling = caveCeiling(z);
-  const centerY = ceiling * 0.5 - 0.25;
-  const verticalRadius = ceiling * 0.5 + 0.45;
-  const normalizedY = (y - centerY) / verticalRadius;
-  const section = Math.sqrt(Math.max(0.015, 1 - normalizedY * normalizedY));
-  return Math.max(0.08, caveHalfWidth(z) * section - clearance - 0.16);
+  caveInteriorBoundsAtHeight(y, z, clearance, sharedHorizontalBounds);
+  const center = caveCenterX(z);
+  return Math.max(
+    0.08,
+    Math.min(center - sharedHorizontalBounds.minimum, sharedHorizontalBounds.maximum - center),
+  );
+}
+
+export function caveInteriorBoundsAtHeight(
+  y: number,
+  z: number,
+  clearance: number,
+  target: CaveHorizontalBounds,
+): CaveHorizontalBounds {
+  caveShellSampler.getHorizontalBounds(y, z, target);
+  target.minimum += clearance;
+  target.maximum -= clearance;
+  if (target.minimum > target.maximum) {
+    const center = (target.minimum + target.maximum) * 0.5;
+    target.minimum = center - 0.08;
+    target.maximum = center + 0.08;
+  }
+  return target;
 }

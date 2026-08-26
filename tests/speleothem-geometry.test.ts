@@ -5,9 +5,30 @@ import {
   SPELEOTHEM_RINGS,
   SPELEOTHEM_SIDES,
 } from '../src/world/SpeleothemGeometry';
+import { isWorldRockCollider } from '../src/physics/colliders';
+import { RockColliderQuery } from '../src/physics/RockCollider';
 import { CaveColliderBuilder } from '../src/world/CaveColliderBuilder';
+import { createRockGeometry } from '../src/world/RockGeometry';
 
 describe('procedural speleothem geometry', () => {
+  test('builds floor rocks with a broad planar load-bearing base', () => {
+    const geometry = createRockGeometry();
+    const positions = geometry.getAttribute('position');
+    geometry.computeBoundingBox();
+    const bounds = geometry.boundingBox;
+    expect(bounds).not.toBeNull();
+    if (!bounds) return;
+    const basePoints = new Set<string>();
+    for (let index = 0; index < positions.count; index += 1) {
+      if (Math.abs(positions.getY(index) - bounds.min.y) > 0.000_01) continue;
+      basePoints.add(`${positions.getX(index).toFixed(5)}:${positions.getZ(index).toFixed(5)}`);
+    }
+
+    expect(basePoints.size).toBeGreaterThanOrEqual(5);
+    expect(bounds.max.y - bounds.min.y).toBeLessThan(bounds.max.x - bounds.min.x);
+    expect(bounds.max.y - bounds.min.y).toBeLessThan(bounds.max.z - bounds.min.z);
+  });
+
   test('is deterministic, curved, and materially more detailed than a cone', () => {
     const first = createSpeleothemGeometry(0x51a1);
     const repeat = createSpeleothemGeometry(0x51a1);
@@ -112,7 +133,7 @@ describe('procedural speleothem geometry', () => {
     }
   });
 
-  test('geometry-derived rock proxies enclose elongated rotated rocks', () => {
+  test('uses one exact transformed surface for an elongated rotated rock', () => {
     const geometry = new THREE.DodecahedronGeometry(0.42, 1);
     const matrix = new THREE.Matrix4().compose(
       new THREE.Vector3(-1.4, 0.35, 2.8),
@@ -124,17 +145,19 @@ describe('procedural speleothem geometry', () => {
     const positions = geometry.getAttribute('position');
     const vertex = new THREE.Vector3();
 
-    expect(builder.colliders.length).toBeGreaterThan(2);
+    expect(builder.colliders).toHaveLength(1);
+    const collider = builder.colliders[0];
+    expect(collider && isWorldRockCollider(collider)).toBe(true);
+    if (!collider || !isWorldRockCollider(collider)) return;
+    const query = new RockColliderQuery();
+    const normal = new THREE.Vector3();
     for (let index = 0; index < positions.count; index += 1) {
       vertex.fromBufferAttribute(positions, index).applyMatrix4(matrix);
-      const signedDistance = Math.min(
-        ...builder.colliders.map((collider) => vertex.distanceTo(collider.center) - collider.radius),
-      );
-      expect(signedDistance).toBeLessThanOrEqual(0.000_01);
+      expect(Math.abs(query.getSignedDistance(collider, vertex, normal))).toBeLessThan(0.000_01);
     }
   });
 
-  test('rock proxy sampling uses a tight conservative coverage radius', () => {
+  test('rock contact follows a rendered face without hidden proxy overreach', () => {
     const geometry = new THREE.DodecahedronGeometry(0.42, 1);
     const matrix = new THREE.Matrix4().compose(
       new THREE.Vector3(-0.2, 0.18, 1.2),
@@ -143,16 +166,30 @@ describe('procedural speleothem geometry', () => {
     );
     const builder = new CaveColliderBuilder();
     builder.addRock(geometry, matrix);
-    const positions = geometry.getAttribute('position');
-    const vertex = new THREE.Vector3();
+    const collider = builder.colliders[0];
+    expect(collider && isWorldRockCollider(collider)).toBe(true);
+    if (!collider || !isWorldRockCollider(collider)) return;
+    const face = collider.faces[0];
+    expect(face).toBeDefined();
+    if (!face) return;
+    const query = new RockColliderQuery();
+    const normal = new THREE.Vector3();
+    const surfacePoint = face.triangle.getMidpoint(new THREE.Vector3());
+    const outside = surfacePoint.clone().addScaledVector(face.normal, 0.01);
+    const sweepStart = surfacePoint.clone().addScaledVector(face.normal, 0.2);
+    const sweepEnd = surfacePoint.clone().addScaledVector(face.normal, -0.05);
+    const farOffset = new THREE.Vector3(0, collider.radius * 4 + 1, 0);
 
-    for (let index = 0; index < positions.count; index += 1) {
-      vertex.fromBufferAttribute(positions, index).applyMatrix4(matrix);
-      const signedDistance = Math.min(
-        ...builder.colliders.map((collider) => vertex.distanceTo(collider.center) - collider.radius),
-      );
-      expect(signedDistance).toBeLessThanOrEqual(0.000_01);
-    }
-    expect(Math.max(...builder.colliders.map(({ radius }) => radius))).toBeLessThan(0.245);
+    expect(Math.abs(query.getSignedDistance(collider, surfacePoint, normal))).toBeLessThan(0.000_01);
+    expect(query.getSignedDistance(collider, outside, normal)).toBeCloseTo(0.01, 5);
+    expect(normal.dot(face.normal)).toBeGreaterThan(0.999);
+    expect(query.intersectsExpandedBounds(collider, sweepStart, sweepEnd, 0.003)).toBe(true);
+    expect(query.sweep(collider, sweepStart, sweepEnd, 0.003, normal)).not.toBeNull();
+    expect(query.intersectsExpandedBounds(
+      collider,
+      sweepStart.clone().add(farOffset),
+      sweepEnd.clone().add(farOffset),
+      0.003,
+    )).toBe(false);
   });
 });

@@ -25,6 +25,7 @@ const outputRoot = join(repositoryRoot, 'artifacts', 'visual-audit');
 if (!existsSync(join(distRoot, 'index.html'))) {
   throw new Error('Production build missing. Run bun run build before audit:visual.');
 }
+rmSync(outputRoot, { recursive: true, force: true });
 mkdirSync(outputRoot, { recursive: true });
 
 const programFilesX86 = process.env['ProgramFiles(x86)'];
@@ -200,6 +201,38 @@ try {
     command,
     `window.__CAPE_DEMO__.advance(${JSON.stringify({ duration, frameStep })})`,
   );
+  const advanceUntilRockContact = async (
+    label,
+    targetPosition,
+    contactsBefore,
+    maximumDuration = 2.4,
+  ) => {
+    const slices = Math.ceil(maximumDuration / 0.05);
+    let state = await diagnostics();
+    for (let slice = 0; slice < slices; slice += 1) {
+      state = await advance(0.05, 1 / 120);
+      const closestCenter = state.cape.closestActiveRockCenter;
+      const targetMatches = closestCenter !== null
+        && Math.hypot(
+          closestCenter[0] - targetPosition[0],
+          closestCenter[2] - targetPosition[2],
+        ) < 0.18;
+      if (
+        state.cape.worldContacts.total > contactsBefore
+        && targetMatches
+        && state.cape.minimumActiveRockSurfaceDistance !== null
+        && state.cape.minimumActiveRockSurfaceDistance < 0.006
+        && state.cape.maximumUpwardFold <= 0.055_05
+        && state.cape.maximumStructuralError < 0.055
+      ) return state;
+    }
+    throw new Error(
+      `Visual audit invariant failed: no exact ${label} rendered-rock contact within ${maximumDuration}s `
+        + `(gap=${state.cape.minimumActiveRockSurfaceDistance} m, `
+        + `fold=${state.cape.maximumUpwardFold} m, `
+        + `strain=${state.cape.maximumStructuralError} m)`,
+    );
+  };
   const profile = (duration, frameStep = 1 / 60) => evaluate(
     command,
     `window.__CAPE_DEMO__.profile(${JSON.stringify({ duration, frameStep })})`,
@@ -449,6 +482,7 @@ try {
   );
   assert(settledCape.cape.maximumEnvironmentPenetration < 0.002, 'settled cape penetrated cave geometry');
   assert(settledCape.cape.minimumSelfSeparation > 0.05, 'settled cape collapsed through itself');
+  assert(settledCape.cape.maximumUpwardFold <= 0.055_05, 'settled cape retained an impossible upward fold');
   assert(settledCape.cape.hemDrop > 0.72, 'cape retained a physically impossible inverted resting pose');
   assert(settledCape.cape.minimumLowerCapeDrop > 0.48, 'a lower cape panel remained suspended in mid-air');
   assert(
@@ -456,8 +490,8 @@ try {
     `settled cape remained swept sideways (${settledCape.cape.maximumLowerCapeLateralOffset.toFixed(4)} m; `
       + `${settledCape.cape.worldContacts.lastStep} contacts; sleeping=${settledCape.cape.sleeping})`,
   );
-  assert(settledCape.cape.minimumHemGroundClearance >= 0.032, 'cape hem penetrated the cave floor');
-  assert(settledCape.cape.minimumHemGroundClearance < 0.09, 'cape hem floated above the cave floor');
+  assert(settledCape.cape.minimumHemGroundClearance >= 0.003_9, 'cape hem penetrated the cave floor');
+  assert(settledCape.cape.minimumHemGroundClearance < 0.03, 'cape hem floated above the cave floor');
   assert(
     settledCape.cape.maximumParticleMotion < 0.001,
     `idle cape motion ${settledCape.cape.maximumParticleMotion.toFixed(6)} exceeded the settling budget`,
@@ -575,7 +609,11 @@ try {
     0,
   );
   const largeContactsBefore = (await diagnostics()).cape.worldContacts.total;
-  const largeRockContact = await advance(1.8, 1 / 120);
+  const largeRockContact = await advanceUntilRockContact(
+    'large',
+    courseFirst.position,
+    largeContactsBefore,
+  );
   assert(largeRockContact.cape.worldContacts.total > largeContactsBefore, 'cape never contacted the large test rock');
   assert(
     largeRockContact.cape.maximumBodyPenetration < 0.002,
@@ -584,6 +622,11 @@ try {
   assert(
     largeRockContact.cape.maximumEnvironmentPenetration < 0.002,
     `cape penetrated the large test rock (${largeRockContact.cape.maximumEnvironmentPenetration.toFixed(4)})`,
+  );
+  assert(
+    largeRockContact.cape.minimumActiveRockSurfaceDistance !== null
+      && largeRockContact.cape.minimumActiveRockSurfaceDistance < 0.006,
+    `cape hovered visibly above the large test rock (${largeRockContact.cape.minimumActiveRockSurfaceDistance} m)`,
   );
   assert(largeRockContact.cape.maximumEnvironmentFacePenetration < 0.002, 'large test rock pierced a cape triangle');
   await setCameraPose(
@@ -615,6 +658,10 @@ try {
   );
   assert(movingFootRockContact.cape.maximumBodyPenetration < 0.002, 'stone-pinned walking cape penetrated the character');
   assert(movingFootRockContact.cape.maximumEnvironmentFacePenetration < 0.002, 'walking cape penetrated the nearby rock');
+  assert(
+    movingFootRockContact.cape.maximumUpwardFold <= 0.055_05,
+    'small-rock contact folded the lower cape back through itself',
+  );
   assert(movingFootRockContact.cape.bodyPenetrationByCollider['left boot'] < 0.002, 'left boot clipped through the walking cape near a rock');
   assert(movingFootRockContact.cape.bodyPenetrationByCollider['right boot'] < 0.002, 'right boot clipped through the walking cape near a rock');
   await setCameraPose(
@@ -633,11 +680,17 @@ try {
   await setMovement(0, 0);
 
   await setPlayerPose(
-    [smallRock.position[0] + 0.32, 0, smallRock.position[2] - 0.57],
+    [smallRock.position[0], 0, smallRock.position[2] - 0.5],
     0,
   );
+  await setView(0, 0.16, 4.1);
   const smallContactsBefore = (await diagnostics()).cape.worldContacts.total;
-  const smallRockContact = await advance(1.8, 1 / 120);
+  const smallRockContact = await advanceUntilRockContact(
+    'small',
+    smallRock.position,
+    smallContactsBefore,
+    2.4,
+  );
   assert(smallRockContact.cape.worldContacts.total > smallContactsBefore, 'cape never contacted the small test rock');
   assert(
     smallRockContact.cape.maximumBodyPenetration < 0.002,
@@ -647,12 +700,19 @@ try {
     smallRockContact.cape.maximumEnvironmentPenetration < 0.002,
     `cape penetrated the small test rock (${smallRockContact.cape.maximumEnvironmentPenetration.toFixed(4)})`,
   );
+  assert(
+    smallRockContact.cape.minimumActiveRockSurfaceDistance !== null
+      && smallRockContact.cape.minimumActiveRockSurfaceDistance < 0.006,
+    `cape hovered visibly above the small test rock (${smallRockContact.cape.minimumActiveRockSurfaceDistance} m)`,
+  );
   assert(smallRockContact.cape.maximumEnvironmentFacePenetration < 0.002, 'small test rock pierced a cape triangle');
+  assert(smallRockContact.cape.maximumUpwardFold <= 0.055_05, 'small-rock contact crossed the lower cape rows');
+  assert(smallRockContact.cape.maximumStructuralError < 0.055, 'small-rock contact overstretched the cape');
   await setCameraPose(
     [
-      smallRockContact.player.position[0] - 2.25,
+      smallRockContact.player.position[0] + 2.25,
       smallRockContact.player.position[1] + 0.92,
-      smallRockContact.player.position[2] + 1.85,
+      smallRockContact.player.position[2] - 1.65,
     ],
     [
       smallRockContact.player.position[0],
@@ -683,6 +743,42 @@ try {
     ],
   );
   await capture('cape-formation-contact-opposite');
+
+  // A shadow map is selected from player position only. Orbiting the camera
+  // around an unchanged player must therefore preserve the light, target, and
+  // intensity exactly; the paired captures make any view-dependent artifact
+  // visible during review.
+  await setPlayerPose(initial.player.position, 0);
+  const shadowStudy = await advance(0.55, 1 / 120);
+  assert(shadowStudy.torches.shadow.enabled, 'shadow study has no active torch shadow');
+  const shadowTarget = [
+    shadowStudy.player.position[0],
+    shadowStudy.player.position[1] + 0.68,
+    shadowStudy.player.position[2],
+  ];
+  const shadowFirstAngle = await setCameraPose(
+    [
+      shadowStudy.player.position[0] + 3.1,
+      shadowStudy.player.position[1] + 2.25,
+      shadowStudy.player.position[2] + 2.7,
+    ],
+    shadowTarget,
+  );
+  await capture('shadow-camera-angle-a');
+  const shadowOppositeAngle = await setCameraPose(
+    [
+      shadowStudy.player.position[0] - 3.1,
+      shadowStudy.player.position[1] + 2.25,
+      shadowStudy.player.position[2] - 2.7,
+    ],
+    shadowTarget,
+  );
+  await capture('shadow-camera-angle-b');
+  assert(
+    JSON.stringify(shadowFirstAngle.torches.shadow)
+      === JSON.stringify(shadowOppositeAngle.torches.shadow),
+    'camera orbit changed the active shadow light at a fixed player position',
+  );
 
   const occlusionRock = initial.cave.contactRocks.find((rock) => rock.size === 'large');
   assert(occlusionRock, 'real-world depth study has no large occluding rock');
@@ -756,6 +852,11 @@ try {
     movingFootRockContact,
     smallRockContact,
     formationContact,
+    shadowStudy,
+    shadowAngles: {
+      first: shadowFirstAngle.torches.shadow,
+      opposite: shadowOppositeAngle.torches.shadow,
+    },
     occlusionStudy,
     depthOcclusion: {
       firstAngle: firstDepthOcclusion,
@@ -770,19 +871,25 @@ try {
 } catch (error) {
   throw new Error(`${error.message}\nHeadless browser log:\n${browserLog}`);
 } finally {
-  debuggerConnection?.socket.close();
-  browser.kill();
-  if (browser.exitCode === null) {
+  if (debuggerConnection) {
     await Promise.race([
-      new Promise((resolve) => browser.once('exit', resolve)),
+      debuggerConnection.command('Browser.close').catch(() => undefined),
       delay(1_500),
     ]);
   }
+  debuggerConnection?.socket.close();
+  if (browser.exitCode === null) {
+    await Promise.race([
+      new Promise((resolve) => browser.once('exit', resolve)),
+      delay(2_000),
+    ]);
+  }
+  if (browser.exitCode === null) browser.kill();
   await close(server);
   try {
-    rmSync(temporaryRoot, { recursive: true, force: true, maxRetries: 12, retryDelay: 200 });
+    rmSync(temporaryRoot, { recursive: true, force: true, maxRetries: 4, retryDelay: 100 });
   } catch (error) {
-    console.warn(`Temporary audit profile will be removed later: ${error.message}`);
+    console.warn(`Host denied temporary audit-profile cleanup: ${error.message}`);
   }
 }
 

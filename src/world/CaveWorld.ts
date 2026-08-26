@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { CAVE } from '../config';
 import type { SurfaceTextures } from '../graphics/proceduralTextures';
-import type { WorldSphereCollider } from '../physics/colliders';
+import type { WorldCollider } from '../physics/colliders';
 import { SeededRandom, periodicFbm } from '../utils/random';
 import { CaveColliderBuilder } from './CaveColliderBuilder';
 import {
@@ -11,12 +11,13 @@ import {
   type CapeContactRockPlacement,
 } from './CapeContactCourse';
 import { caveCeiling, caveCenterX, caveHalfWidth, floorHeightAt } from './caveProfile';
+import { createRockGeometry } from './RockGeometry';
 import { createSpeleothemGeometry } from './SpeleothemGeometry';
 
 export class CaveWorld {
   public readonly group = new THREE.Group();
   public readonly cameraColliders: THREE.Object3D[];
-  public readonly worldColliders: readonly WorldSphereCollider[];
+  public readonly worldColliders: readonly WorldCollider[];
   public readonly contactRocks: readonly CapeContactRockPlacement[];
 
   private readonly walls: THREE.Mesh;
@@ -149,8 +150,9 @@ export class CaveWorld {
   private createFormations(textures: SurfaceTextures): void {
     const random = new SeededRandom(0x5ca1e);
     const material = this.createMaterial(textures, true);
-    material.color.multiplyScalar(0.9);
-    material.roughness = 0.64;
+    material.color.multiplyScalar(0.66);
+    material.roughness = 0.86;
+    material.metalness = 0.015;
     const variantGeometries = [0x51a1, 0x51a2, 0x51a3].map(createSpeleothemGeometry);
     const ceilingFormations = variantGeometries.map((geometry, variant) => {
       const mesh = new THREE.InstancedMesh(geometry, material, 18);
@@ -246,9 +248,11 @@ export class CaveWorld {
 
   private createRockScatter(textures: SurfaceTextures): readonly CapeContactRockPlacement[] {
     const random = new SeededRandom(0xb01de7);
-    const geometry = new THREE.DodecahedronGeometry(0.42, 1);
+    const geometry = createRockGeometry();
     const material = this.createMaterial(textures, true);
-    material.color.multiplyScalar(0.72);
+    material.color.multiplyScalar(0.66);
+    material.roughness = 0.84;
+    material.metalness = 0.02;
     const scatteredRockCount = 72;
     const rocks = new THREE.InstancedMesh(
       geometry,
@@ -299,9 +303,20 @@ export class CaveWorld {
       const z = random.range(CAVE.endZ + 1.5, CAVE.startZ - 1.5);
       const side = random.next() > 0.5 ? 1 : -1;
       const x = caveCenterX(z) + side * caveHalfWidth(z) * random.range(0.64, 0.94);
-      position.set(x, floorHeightAt(x, z) + random.range(0.02, 0.12), z);
-      quaternion.setFromEuler(new THREE.Euler(random.range(0, Math.PI), random.range(0, Math.PI), random.range(0, Math.PI)));
+      position.set(x, 0, z);
+      quaternion.setFromEuler(new THREE.Euler(
+        random.range(-0.2, 0.2),
+        random.range(0, Math.PI * 2),
+        random.range(-0.2, 0.2),
+      ));
       scale.set(random.range(0.25, 1.25), random.range(0.18, 0.72), random.range(0.35, 1.4));
+      matrix.compose(position, quaternion, scale);
+      let minimumRelativeY = Number.POSITIVE_INFINITY;
+      for (let vertexIndex = 0; vertexIndex < positions.count; vertexIndex += 1) {
+        transformedVertex.fromBufferAttribute(positions, vertexIndex).applyMatrix4(matrix);
+        minimumRelativeY = Math.min(minimumRelativeY, transformedVertex.y);
+      }
+      position.y = floorHeightAt(x, z) - minimumRelativeY - random.range(0.025, 0.065);
       matrix.compose(position, quaternion, scale);
       rocks.setMatrixAt(CAPE_CONTACT_ROCKS.length + index, matrix);
       this.colliderBuilder.addRock(geometry, matrix);

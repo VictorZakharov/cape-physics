@@ -2,18 +2,27 @@ import * as THREE from 'three';
 import { CAPE, CAVE } from '../config';
 import {
   caveCeiling,
-  caveCenterX,
   caveGroundHeightAt,
-  caveInteriorHalfWidthAtHeight,
+  caveInteriorBoundsAtHeight,
 } from '../world/caveProfile';
-import type { CapsuleCollider, WorldSphereCollider } from './colliders';
-import { CLOTH_BODY_CLEARANCE, ClothBodyCollision } from './ClothBodyCollision';
+import type { CaveHorizontalBounds } from '../world/CaveShellSampler';
 import {
+  isWorldRockCollider,
+  type CapsuleCollider,
+  type WorldCollider,
+  type WorldRockCollider,
+  type WorldSphereCollider,
+} from './colliders';
+import { CLOTH_BODY_CLEARANCE, ClothBodyCollision } from './ClothBodyCollision';
+import { ClothRockCollision } from './ClothRockCollision';
+import {
+  CLOTH_ROCK_CLEARANCE,
   CLOTH_WORLD_CLEARANCE,
   ClothWorldCollision,
   getClothWorldClearance,
 } from './ClothWorldCollision';
 import { constrainSphereContactToFloor } from './floorConstrainedContact';
+import { RockColliderQuery } from './RockCollider';
 
 const WORLD_QUERY_RADIUS = CAPE.length + 2.2;
 const WORLD_BROADPHASE_SKIN = 0.08;
@@ -24,10 +33,18 @@ export interface WorldContactDiagnostics {
   readonly total: number;
 }
 
+export interface RockSurfaceContactDiagnostics {
+  readonly distance: number;
+  readonly center: readonly [number, number, number];
+}
+
 export class CapeContactSolver {
-  private readonly nearbyWorldColliders: WorldSphereCollider[] = [];
-  private readonly activeWorldColliders: WorldSphereCollider[] = [];
-  private readonly postCaveWorldColliders: WorldSphereCollider[] = [];
+  private readonly nearbyWorldColliders: WorldCollider[] = [];
+  private readonly activeWorldColliders: WorldCollider[] = [];
+  private readonly activeWorldSpheres: WorldSphereCollider[] = [];
+  private readonly activeRocks: WorldRockCollider[] = [];
+  private readonly postCaveWorldSpheres: WorldSphereCollider[] = [];
+  private readonly postCaveRocks: WorldRockCollider[] = [];
   private readonly delta = new THREE.Vector3();
   private readonly capsuleAxis = new THREE.Vector3();
   private readonly lateralAxis = new THREE.Vector3();
@@ -40,11 +57,14 @@ export class CapeContactSolver {
   private readonly remainingMotion = new THREE.Vector3();
   private readonly boundsMinimum = new THREE.Vector3();
   private readonly boundsMaximum = new THREE.Vector3();
+  private readonly caveBounds: CaveHorizontalBounds = { minimum: 0, maximum: 0 };
   private worldContactsLastStep = 0;
   private worldContactEvents = 0;
   private bodySolvePass = 0;
   private readonly bodyFaceCollision: ClothBodyCollision;
   private readonly faceCollision: ClothWorldCollision;
+  private readonly rockFaceCollision: ClothRockCollision;
+  private readonly rockQuery = new RockColliderQuery();
 
   public constructor(
     private readonly positions: readonly THREE.Vector3[],
@@ -65,9 +85,17 @@ export class CapeContactSolver {
       CAPE.columns,
       CAPE.rows,
     );
+    this.rockFaceCollision = new ClothRockCollision(
+      positions,
+      previous,
+      inverseMass,
+      CAPE.columns,
+      CAPE.rows,
+      CLOTH_ROCK_CLEARANCE,
+    );
   }
 
-  public beginStep(anchorCenter: THREE.Vector3, colliders: readonly WorldSphereCollider[]): void {
+  public beginStep(anchorCenter: THREE.Vector3, colliders: readonly WorldCollider[]): void {
     this.worldContactsLastStep = 0;
     this.bodySolvePass = 0;
     this.nearbyWorldColliders.length = 0;
@@ -99,28 +127,41 @@ export class CapeContactSolver {
 
   public solveWorld(): void {
     this.updateActiveWorldColliders();
-    this.postCaveWorldColliders.length = 0;
+    this.postCaveWorldSpheres.length = 0;
+    this.postCaveRocks.length = 0;
     for (let index = CAPE.columns; index < this.positions.length; index += 1) {
       const position = this.positions[index];
       const previous = this.previous[index];
       if (!position || !previous) continue;
       for (const collider of this.activeWorldColliders) {
-        if (this.solveWorldSphere(position, previous, collider)) {
+        const contacted = isWorldRockCollider(collider)
+          ? this.solveWorldRock(position, previous, collider)
+          : this.solveWorldSphere(position, previous, collider);
+        if (contacted) {
           this.registerPostCaveCollider(collider);
         }
       }
     }
-    const faceContacts = this.faceCollision.solve(
-      this.activeWorldColliders,
-      this.postCaveWorldColliders,
+    const sphereFaceContacts = this.faceCollision.solve(
+      this.activeWorldSpheres,
+      this.postCaveWorldSpheres,
     );
+    const rockFaceContacts = this.rockFaceCollision.solve(
+      this.activeRocks,
+      this.postCaveRocks,
+    );
+    const faceContacts = sphereFaceContacts + rockFaceContacts;
     this.worldContactsLastStep += faceContacts;
     this.worldContactEvents += faceContacts;
   }
 
   public solvePostCaveWorldFaces(): void {
-    if (this.postCaveWorldColliders.length === 0) return;
-    const faceContacts = this.faceCollision.solve(this.postCaveWorldColliders);
+    if (
+      this.postCaveWorldSpheres.length === 0
+      && this.postCaveRocks.length === 0
+    ) return;
+    const faceContacts = this.faceCollision.solve(this.postCaveWorldSpheres)
+      + this.rockFaceCollision.solve(this.postCaveRocks);
     this.worldContactsLastStep += faceContacts;
     this.worldContactEvents += faceContacts;
   }
@@ -140,9 +181,17 @@ export class CapeContactSolver {
       const ceiling = caveCeiling(position.z) + 0.12 - CLOTH_WORLD_CLEARANCE;
       if (position.y > ceiling) this.applyAxisCorrection(position, previous, 'y', ceiling - position.y);
 
-      const center = caveCenterX(position.z);
-      const halfWidth = caveInteriorHalfWidthAtHeight(position.y, position.z, CLOTH_WORLD_CLEARANCE);
-      const clampedX = THREE.MathUtils.clamp(position.x, center - halfWidth, center + halfWidth);
+      caveInteriorBoundsAtHeight(
+        position.y,
+        position.z,
+        CLOTH_WORLD_CLEARANCE,
+        this.caveBounds,
+      );
+      const clampedX = THREE.MathUtils.clamp(
+        position.x,
+        this.caveBounds.minimum,
+        this.caveBounds.maximum,
+      );
       if (clampedX !== position.x) this.applyAxisCorrection(position, previous, 'x', clampedX - position.x);
     }
   }
@@ -162,26 +211,61 @@ export class CapeContactSolver {
     return Math.max(maximum, this.bodyFaceCollision.getMaximumPenetration(colliders, back));
   }
 
-  public getMaximumEnvironmentPenetration(colliders: readonly WorldSphereCollider[]): number {
+  public getMaximumEnvironmentPenetration(colliders: readonly WorldCollider[]): number {
     let maximum = 0;
     for (let index = CAPE.columns; index < this.positions.length; index += 1) {
       const position = this.positions[index];
       if (!position) continue;
       for (const collider of colliders) {
-        maximum = Math.max(
-          maximum,
-          collider.radius + getClothWorldClearance(collider) - position.distanceTo(collider.center),
-        );
+        const penetration = isWorldRockCollider(collider)
+          ? CLOTH_ROCK_CLEARANCE
+            - this.rockQuery.getSignedDistance(collider, position, this.contactNormal)
+          : collider.radius
+            + getClothWorldClearance(collider)
+            - position.distanceTo(collider.center);
+        maximum = Math.max(maximum, penetration);
       }
       maximum = Math.max(maximum, caveGroundHeightAt(position.x, position.z) + CLOTH_WORLD_CLEARANCE - position.y);
-      const halfWidth = caveInteriorHalfWidthAtHeight(position.y, position.z, CLOTH_WORLD_CLEARANCE);
-      maximum = Math.max(maximum, Math.abs(position.x - caveCenterX(position.z)) - halfWidth);
+      caveInteriorBoundsAtHeight(
+        position.y,
+        position.z,
+        CLOTH_WORLD_CLEARANCE,
+        this.caveBounds,
+      );
+      maximum = Math.max(
+        maximum,
+        this.caveBounds.minimum - position.x,
+        position.x - this.caveBounds.maximum,
+      );
     }
-    return Math.max(maximum, this.faceCollision.getMaximumPenetration(colliders));
+    return Math.max(
+      maximum,
+      this.faceCollision.getMaximumPenetration(
+        colliders.filter((collider): collider is WorldSphereCollider => !isWorldRockCollider(collider)),
+      ),
+      this.rockFaceCollision.getMaximumPenetration(
+        colliders.filter(isWorldRockCollider),
+      ),
+    );
   }
 
-  public getMaximumEnvironmentFacePenetration(colliders: readonly WorldSphereCollider[]): number {
-    return this.faceCollision.getMaximumPenetration(colliders);
+  public getMaximumEnvironmentFacePenetration(colliders: readonly WorldCollider[]): number {
+    return Math.max(
+      this.faceCollision.getMaximumPenetration(
+        colliders.filter((collider): collider is WorldSphereCollider => !isWorldRockCollider(collider)),
+      ),
+      this.rockFaceCollision.getMaximumPenetration(colliders.filter(isWorldRockCollider)),
+    );
+  }
+
+  public getClosestActiveRockSurfaceContact(): RockSurfaceContactDiagnostics | null {
+    const contact = this.rockFaceCollision.getClosestSurfaceContact(this.activeRocks);
+    if (!contact) return null;
+    const { center } = contact.collider;
+    return {
+      distance: contact.distance,
+      center: [center.x, center.y, center.z],
+    };
   }
 
   public getDiagnostics(): WorldContactDiagnostics {
@@ -272,6 +356,67 @@ export class CapeContactSolver {
     return true;
   }
 
+  private solveWorldRock(
+    position: THREE.Vector3,
+    previous: THREE.Vector3,
+    collider: WorldRockCollider,
+  ): boolean {
+    if (!this.rockQuery.intersectsExpandedBounds(
+      collider,
+      previous,
+      position,
+      CLOTH_ROCK_CLEARANCE,
+    )) return false;
+    const signedDistance = this.rockQuery.getSignedDistance(
+      collider,
+      position,
+      this.contactNormal,
+    );
+    if (signedDistance < CLOTH_ROCK_CLEARANCE) {
+      this.registerWorldContact();
+      let correction = CLOTH_ROCK_CLEARANCE - signedDistance;
+      const floor = caveGroundHeightAt(position.x, position.z);
+      if (
+        this.contactNormal.y < 0
+        && position.y <= floor + CLOTH_ROCK_CLEARANCE * 2
+      ) {
+        this.contactNormal.set(
+          position.x - collider.center.x,
+          0,
+          position.z - collider.center.z,
+        );
+        if (this.contactNormal.lengthSq() < 0.000_001) this.contactNormal.set(1, 0, 0);
+        else this.contactNormal.normalize();
+        correction = Math.min(correction, collider.radius * 0.5);
+      }
+      position.addScaledVector(this.contactNormal, correction);
+      previous.addScaledVector(this.contactNormal, correction);
+      return true;
+    }
+
+    const hitTime = this.rockQuery.sweep(
+      collider,
+      previous,
+      position,
+      CLOTH_ROCK_CLEARANCE,
+      this.contactNormal,
+    );
+    if (hitTime === null) return false;
+    this.registerWorldContact();
+    this.sweep.copy(position).sub(previous);
+    this.hitPoint.copy(previous).addScaledVector(this.sweep, hitTime);
+    this.remainingMotion.copy(this.sweep).multiplyScalar(1 - hitTime);
+    const inwardMotion = this.remainingMotion.dot(this.contactNormal);
+    if (inwardMotion < 0) {
+      this.remainingMotion.addScaledVector(this.contactNormal, -inwardMotion);
+    }
+    this.remainingMotion.multiplyScalar(0.76);
+    this.hitPoint.addScaledVector(this.contactNormal, 0.001);
+    previous.copy(this.hitPoint);
+    position.copy(this.hitPoint).add(this.remainingMotion);
+    return true;
+  }
+
   private applyAxisCorrection(
     position: THREE.Vector3,
     previous: THREE.Vector3,
@@ -287,9 +432,11 @@ export class CapeContactSolver {
     this.worldContactEvents += 1;
   }
 
-  private registerPostCaveCollider(collider: WorldSphereCollider): void {
-    if (!this.postCaveWorldColliders.includes(collider)) {
-      this.postCaveWorldColliders.push(collider);
+  private registerPostCaveCollider(collider: WorldCollider): void {
+    if (isWorldRockCollider(collider)) {
+      if (!this.postCaveRocks.includes(collider)) this.postCaveRocks.push(collider);
+    } else if (!this.postCaveWorldSpheres.includes(collider)) {
+      this.postCaveWorldSpheres.push(collider);
     }
   }
 
@@ -318,7 +465,23 @@ export class CapeContactSolver {
     }
 
     this.activeWorldColliders.length = 0;
+    this.activeWorldSpheres.length = 0;
+    this.activeRocks.length = 0;
     for (const collider of this.nearbyWorldColliders) {
+      if (isWorldRockCollider(collider)) {
+        const clearance = CLOTH_ROCK_CLEARANCE + WORLD_BROADPHASE_SKIN;
+        if (
+          collider.bounds.max.x + clearance < this.boundsMinimum.x
+          || collider.bounds.min.x - clearance > this.boundsMaximum.x
+          || collider.bounds.max.y + clearance < this.boundsMinimum.y
+          || collider.bounds.min.y - clearance > this.boundsMaximum.y
+          || collider.bounds.max.z + clearance < this.boundsMinimum.z
+          || collider.bounds.min.z - clearance > this.boundsMaximum.z
+        ) continue;
+        this.activeWorldColliders.push(collider);
+        this.activeRocks.push(collider);
+        continue;
+      }
       const radius = collider.radius + getClothWorldClearance(collider) + WORLD_BROADPHASE_SKIN;
       if (
         collider.center.x + radius < this.boundsMinimum.x
@@ -329,6 +492,7 @@ export class CapeContactSolver {
         || collider.center.z - radius > this.boundsMaximum.z
       ) continue;
       this.activeWorldColliders.push(collider);
+      this.activeWorldSpheres.push(collider);
     }
   }
 }

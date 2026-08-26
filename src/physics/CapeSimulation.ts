@@ -3,9 +3,14 @@ import { CAMERA_NEAR_OPACITY, CAPE, PLAYER } from '../config';
 import { createCapeFabricTextures } from '../graphics/proceduralTextures';
 import type { CapeAnchors } from '../player/Character';
 import { caveGroundHeightAt } from '../world/caveProfile';
-import { CapeContactSolver, type WorldContactDiagnostics } from './CapeContactSolver';
+import {
+  CapeContactSolver,
+  type RockSurfaceContactDiagnostics,
+  type WorldContactDiagnostics,
+} from './CapeContactSolver';
+import { ClothFoldGuard } from './ClothFoldGuard';
 import { ClothSelfCollision } from './ClothSelfCollision';
-import type { CapsuleCollider, WorldSphereCollider } from './colliders';
+import type { CapsuleCollider, WorldCollider } from './colliders';
 
 interface DistanceConstraint {
   readonly first: number;
@@ -34,6 +39,7 @@ export class CapeSimulation {
   private readonly constraints: DistanceConstraint[] = [];
   private readonly positionAttribute: THREE.BufferAttribute;
   private readonly selfCollision: ClothSelfCollision;
+  private readonly foldGuard: ClothFoldGuard;
   private readonly contactSolver: CapeContactSolver;
   private readonly velocity = new THREE.Vector3();
   private readonly airflow = new THREE.Vector3();
@@ -57,6 +63,7 @@ export class CapeSimulation {
     const particleCount = CAPE.columns * CAPE.rows;
     this.inverseMass = new Float32Array(particleCount);
     this.selfCollision = new ClothSelfCollision(particleCount, CAPE.columns);
+    this.foldGuard = new ClothFoldGuard(CAPE.columns, CAPE.rows);
     this.contactSolver = new CapeContactSolver(this.positions, this.previous, this.inverseMass);
     this.initializeParticles(initialAnchors);
     this.positions.forEach((position) => this.stepStart.push(position.clone()));
@@ -106,7 +113,7 @@ export class CapeSimulation {
     deltaTime: number,
     anchors: CapeAnchors,
     bodyColliders: readonly CapsuleCollider[],
-    worldColliders: readonly WorldSphereCollider[],
+    worldColliders: readonly WorldCollider[],
     characterVelocity: THREE.Vector3,
     time: number,
   ): void {
@@ -162,6 +169,7 @@ export class CapeSimulation {
     for (let iteration = 0; iteration < CAPE.solverIterations; iteration += 1) {
       for (const constraint of this.constraints) this.solveConstraint(constraint);
       this.selfCollision.solve(this.positions, this.previous, this.inverseMass);
+      this.foldGuard.solve(this.positions, this.previous, this.inverseMass);
       if (
         iteration === 0
         && characterSpeed <= WAKE_SPEED
@@ -269,16 +277,20 @@ export class CapeSimulation {
     return this.contactSolver.getMaximumBodyPenetration(bodyColliders, back);
   }
 
-  public getMaximumEnvironmentPenetration(worldColliders: readonly WorldSphereCollider[]): number {
+  public getMaximumEnvironmentPenetration(worldColliders: readonly WorldCollider[]): number {
     return this.contactSolver.getMaximumEnvironmentPenetration(worldColliders);
   }
 
-  public getMaximumEnvironmentFacePenetration(worldColliders: readonly WorldSphereCollider[]): number {
+  public getMaximumEnvironmentFacePenetration(worldColliders: readonly WorldCollider[]): number {
     return this.contactSolver.getMaximumEnvironmentFacePenetration(worldColliders);
   }
 
   public getMinimumSelfSeparation(): number {
     return this.selfCollision.getMinimumSeparation(this.positions);
+  }
+
+  public getMaximumUpwardFold(): number {
+    return this.foldGuard.getMaximumUpwardFold(this.positions);
   }
 
   public getHemDrop(): number {
@@ -346,6 +358,10 @@ export class CapeSimulation {
     return this.contactSolver.getDiagnostics();
   }
 
+  public getClosestActiveRockSurfaceContact(): RockSurfaceContactDiagnostics | null {
+    return this.contactSolver.getClosestActiveRockSurfaceContact();
+  }
+
   private initializeParticles(anchors: CapeAnchors): void {
     this.anchorCenter.copy(anchors.left).add(anchors.right).multiplyScalar(0.5);
     const anchorWidth = anchors.right.distanceTo(anchors.left);
@@ -382,9 +398,9 @@ export class CapeSimulation {
           this.addConstraint(column + 1, row, column, row + 1, 0.8, false);
         }
         if (column + 2 < CAPE.columns) this.addConstraint(column, row, column + 2, row, 0.58, false);
-        if (row + 2 < CAPE.rows) this.addConstraint(column, row, column, row + 2, 0.64, false);
+        if (row + 2 < CAPE.rows) this.addConstraint(column, row, column, row + 2, 0.82, false);
         if (column + 3 < CAPE.columns) this.addConstraint(column, row, column + 3, row, 0.16, false);
-        if (row + 3 < CAPE.rows) this.addConstraint(column, row, column, row + 3, 0.24, false);
+        if (row + 3 < CAPE.rows) this.addConstraint(column, row, column, row + 3, 0.38, false);
       }
     }
   }

@@ -75,11 +75,14 @@ interface CapeDemoDiagnostics {
     readonly maximumParticleMotion: number;
     readonly sleeping: boolean;
     readonly minimumSelfSeparation: number;
+    readonly maximumUpwardFold: number;
     readonly hemDrop: number;
     readonly minimumLowerCapeDrop: number;
     readonly maximumLowerCapeLateralOffset: number;
     readonly hemBackOffset: number;
     readonly minimumHemGroundClearance: number;
+    readonly minimumActiveRockSurfaceDistance: number | null;
+    readonly closestActiveRockCenter: readonly [number, number, number] | null;
     readonly hemCenter: number[];
     readonly worldColliders: number;
     readonly worldContacts: {
@@ -114,6 +117,14 @@ interface CapeDemoDiagnostics {
       readonly lights: number;
       readonly visibleLights: number;
       readonly activeLights: number;
+    };
+    readonly shadow: {
+      readonly activeTorch: number;
+      readonly enabled: boolean;
+      readonly intensity: number;
+      readonly position: readonly [number, number, number];
+      readonly target: readonly [number, number, number];
+      readonly mapSize: readonly [number, number];
     };
   };
 }

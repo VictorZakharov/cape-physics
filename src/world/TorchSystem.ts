@@ -11,6 +11,15 @@ interface Torch extends LocalLightSource {
   readonly phase: number;
 }
 
+export interface TorchShadowDiagnostics {
+  readonly activeTorch: number;
+  readonly enabled: boolean;
+  readonly intensity: number;
+  readonly position: readonly [number, number, number];
+  readonly target: readonly [number, number, number];
+  readonly mapSize: readonly [number, number];
+}
+
 const flameVertexShader = /* glsl */ `
   uniform float uTime;
   uniform float uPhase;
@@ -93,6 +102,19 @@ export class TorchSystem {
 
   public getLightDiagnostics() {
     return this.lightPool.getDiagnostics();
+  }
+
+  public getShadowDiagnostics(): TorchShadowDiagnostics {
+    const position = this.shadowLight.position;
+    const target = this.shadowLight.target.position;
+    return {
+      activeTorch: this.activeShadowTorch,
+      enabled: this.shadowLight.castShadow && this.shadowLight.intensity > 0,
+      intensity: this.shadowLight.intensity,
+      position: [position.x, position.y, position.z],
+      target: [target.x, target.y, target.z],
+      mapSize: [this.shadowLight.shadow.mapSize.x, this.shadowLight.shadow.mapSize.y],
+    };
   }
 
   private createTorch(z: number, side: -1 | 1, random: SeededRandom): void {

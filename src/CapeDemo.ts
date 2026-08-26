@@ -15,7 +15,7 @@ import { configureTextureFiltering, createRockTextures } from './graphics/proced
 import { InputController } from './input/InputController';
 import { CinematicLighting } from './lighting/CinematicLighting';
 import { CapeSimulation } from './physics/CapeSimulation';
-import type { WorldSphereCollider } from './physics/colliders';
+import type { WorldCollider } from './physics/colliders';
 import { Character } from './player/Character';
 import { CharacterController } from './player/CharacterController';
 import { runDepthOcclusionProbe } from './testing/DepthOcclusionProbe';
@@ -62,7 +62,7 @@ export class CapeDemo {
   private atmosphere!: CaveAtmosphere;
   private lighting!: CinematicLighting;
   private worldCollision!: WorldCollisionResolver;
-  private worldColliders: readonly WorldSphereCollider[] = [];
+  private worldColliders: readonly WorldCollider[] = [];
   private fixedTime = 0;
   private harnessAccumulator = 0;
   private ready = false;
@@ -331,6 +331,7 @@ export class CapeDemo {
   private getDiagnostics() {
     const capeAnchors = this.character.getCapeAnchors();
     const capeColliders = this.character.getCapeColliders();
+    const closestRockSurfaceContact = this.cape.getClosestActiveRockSurfaceContact();
     const bodyPenetrationByCollider = Object.fromEntries(
       capeColliders.map((collider) => [
         collider.name,
@@ -394,11 +395,14 @@ export class CapeDemo {
         maximumParticleMotion: this.cape.getMaximumParticleMotion(),
         sleeping: this.cape.isSleeping(),
         minimumSelfSeparation: this.cape.getMinimumSelfSeparation(),
+        maximumUpwardFold: this.cape.getMaximumUpwardFold(),
         hemDrop: this.cape.getHemDrop(),
         minimumLowerCapeDrop: this.cape.getMinimumLowerCapeDrop(),
         maximumLowerCapeLateralOffset: this.cape.getMaximumLowerCapeLateralOffset(capeAnchors),
         hemBackOffset: this.cape.getHemBackOffset(capeAnchors),
         minimumHemGroundClearance: this.cape.getMinimumHemGroundClearance(),
+        minimumActiveRockSurfaceDistance: closestRockSurfaceContact?.distance ?? null,
+        closestActiveRockCenter: closestRockSurfaceContact?.center ?? null,
         hemCenter: this.cape.getParticlePosition(6, 17).toArray(),
         worldColliders: this.worldColliders.length,
         worldContacts: this.cape.getWorldContactDiagnostics(),
@@ -410,6 +414,7 @@ export class CapeDemo {
       },
       torches: {
         lights: this.torches.getLightDiagnostics(),
+        shadow: this.torches.getShadowDiagnostics(),
       },
     };
   }

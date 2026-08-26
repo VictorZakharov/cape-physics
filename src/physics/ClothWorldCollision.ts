@@ -1,11 +1,11 @@
 import * as THREE from 'three';
-import type { WorldSphereCollider } from './colliders';
+import type { WorldCollider, WorldSphereCollider } from './colliders';
 import { constrainSphereContactToFloor } from './floorConstrainedContact';
 
-export const CLOTH_WORLD_CLEARANCE = 0.034;
-export const CLOTH_ROCK_CLEARANCE = 0.014;
+export const CLOTH_WORLD_CLEARANCE = 0.004;
+export const CLOTH_ROCK_CLEARANCE = 0.003;
 
-export function getClothWorldClearance(collider: WorldSphereCollider): number {
+export function getClothWorldClearance(collider: WorldCollider): number {
   return collider.kind === 'rock' ? CLOTH_ROCK_CLEARANCE : CLOTH_WORLD_CLEARANCE;
 }
 
