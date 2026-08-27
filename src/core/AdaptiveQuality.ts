@@ -24,8 +24,17 @@ export class AdaptiveQuality {
       this.stableSince = 0;
       if (this.scale <= 0.66 || time - this.lastResize < 12) return;
       const severity = performance.averageFps / Math.max(1, target);
-      const reduction = severity < 0.52 ? 0.18 : 0.1;
-      this.scale = Math.max(0.66, this.scale - reduction);
+      // Pixel fill grows approximately with scale squared. Estimate the scale
+      // that would recover the target, but cap a single change at 20% so one
+      // transient report cannot collapse image quality.
+      const estimatedScale = this.scale * Math.sqrt(severity / 0.96);
+      const maximumReduction = severity < 0.72 ? 0.2 : 0.1;
+      this.scale = Math.max(
+        0.66,
+        Math.round(
+          Math.max(this.scale - maximumReduction, estimatedScale) * 100,
+        ) / 100,
+      );
       this.lastResize = time;
       this.emit();
       return;

@@ -33,7 +33,36 @@ describe('performance report', () => {
         cssWidth: 1600,
         cssHeight: 900,
       },
-      quality: { label: 'ADAPTIVE ULTRA', scale: 1 },
+      quality: { label: 'ADAPTIVE ULTRA', scale: 1, targetResizes: 2 },
+      workload: {
+        averageMainThreadMilliseconds: 5.4,
+        p95MainThreadMilliseconds: 8.2,
+        averagePhysicsMilliseconds: 2.7,
+        averageSceneMilliseconds: 0.4,
+        averageRenderMilliseconds: 2.3,
+        averagePhysicsSteps: 1.98,
+        maximumPhysicsSteps: 3,
+        sampleCount: 900,
+      },
+      capeSolver: {
+        sampleIntervalSteps: 32,
+        totalSteps: 3_840,
+        activeSteps: 3_600,
+        sampledActiveSteps: 113,
+        averageStepMilliseconds: 1.35,
+        phases: {
+          prediction: 0.08,
+          constraints: 0.4,
+          selfCollision: 0.31,
+          foldGuard: 0.02,
+          bodyCollision: 0.19,
+          worldCollision: 0.22,
+          caveCollision: 0.06,
+          reconciliation: 0.04,
+          anchors: 0.01,
+          finalization: 0.02,
+        },
+      },
       scene: {
         simulationSeconds: 32.5,
         capeSleeping: false,
@@ -59,6 +88,10 @@ describe('performance report', () => {
     expect(report).toContain('Renderer: WebGL 2.0 | Example Vendor | Example GPU');
     expect(report).toContain('138498 triangles');
     expect(report).toContain('2260 cape colliders');
+    expect(report).toContain('Main thread: 5.40 ms average | p95 8.20 ms');
+    expect(report).toContain('sequential PBD Gauss-Seidel at 120 Hz');
+    expect(report).toContain('sampled 1/32 active steps (113 samples)');
+    expect(report).toContain('render submission is main-thread time');
     expect(report).toContain('physical panel measurements');
     expect(report).not.toContain('undefined');
   });

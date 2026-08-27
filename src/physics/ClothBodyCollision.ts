@@ -24,6 +24,8 @@ export class ClothBodyCollision {
   private readonly delta = new THREE.Vector3();
   private readonly boundsMinimum = new THREE.Vector3();
   private readonly boundsMaximum = new THREE.Vector3();
+  private readonly rowMinimumY: Float32Array;
+  private readonly rowMaximumY: Float32Array;
 
   public constructor(
     private readonly positions: readonly THREE.Vector3[],
@@ -31,14 +33,17 @@ export class ClothBodyCollision {
     private readonly inverseMass: Float32Array,
     private readonly columns: number,
     private readonly rows: number,
-  ) {}
+  ) {
+    this.rowMinimumY = new Float32Array(rows);
+    this.rowMaximumY = new Float32Array(rows);
+  }
 
   public solve(colliders: readonly CapsuleCollider[], back: THREE.Vector3): void {
     this.updateBounds();
     this.forEachCapsuleSample(colliders, (center, lateralRadius, depthRadius) => {
       const boundsRadius = Math.max(lateralRadius, depthRadius);
       if (!this.intersectsBounds(center, boundsRadius)) return;
-      this.forEachTriangle((first, second, third) => {
+      this.forEachTriangle(center.y, boundsRadius, (first, second, third) => {
         this.solveTriangle(first, second, third, center, lateralRadius, depthRadius, back);
       });
     });
@@ -53,7 +58,7 @@ export class ClothBodyCollision {
     this.forEachCapsuleSample(colliders, (center, lateralRadius, depthRadius) => {
       const boundsRadius = Math.max(lateralRadius, depthRadius);
       if (!this.intersectsBounds(center, boundsRadius)) return;
-      this.forEachTriangle((first, second, third) => {
+      this.forEachTriangle(center.y, boundsRadius, (first, second, third) => {
         maximum = Math.max(
           maximum,
           this.getTrianglePenetration(
@@ -185,8 +190,15 @@ export class ClothBodyCollision {
     }
   }
 
-  private forEachTriangle(visit: (first: number, second: number, third: number) => void): void {
+  private forEachTriangle(
+    centerY: number,
+    radius: number,
+    visit: (first: number, second: number, third: number) => void,
+  ): void {
     for (let row = 0; row < this.rows - 1; row += 1) {
+      const minimumY = Math.min(this.rowMinimumY[row]!, this.rowMinimumY[row + 1]!);
+      const maximumY = Math.max(this.rowMaximumY[row]!, this.rowMaximumY[row + 1]!);
+      if (centerY + radius < minimumY || centerY - radius > maximumY) continue;
       for (let column = 0; column < this.columns - 1; column += 1) {
         const topLeft = this.index(column, row);
         const bottomLeft = this.index(column, row + 1);
@@ -205,9 +217,16 @@ export class ClothBodyCollision {
   private updateBounds(): void {
     this.boundsMinimum.set(Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY);
     this.boundsMaximum.set(Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY);
-    for (const position of this.positions) {
+    this.rowMinimumY.fill(Number.POSITIVE_INFINITY);
+    this.rowMaximumY.fill(Number.NEGATIVE_INFINITY);
+    for (let index = 0; index < this.positions.length; index += 1) {
+      const position = this.positions[index];
+      if (!position) continue;
       this.boundsMinimum.min(position);
       this.boundsMaximum.max(position);
+      const row = Math.floor(index / this.columns);
+      this.rowMinimumY[row] = Math.min(this.rowMinimumY[row]!, position.y);
+      this.rowMaximumY[row] = Math.max(this.rowMaximumY[row]!, position.y);
     }
   }
 

@@ -30,4 +30,22 @@ describe('AdaptiveQuality', () => {
     expect((changes[1]?.time ?? 0) - (changes[0]?.time ?? 0)).toBeGreaterThanOrEqual(12);
     expect(quality.getState().scale).toBe(0.66);
   });
+
+  test('responds materially to sustained fill-rate pressure without resize thrashing', () => {
+    const changes: QualityState[] = [];
+    const quality = new AdaptiveQuality((state) => changes.push(state));
+    const appleReport = {
+      ...overloaded,
+      averageFps: 35.16,
+      averageFrameTime: 28.44,
+      p95FrameTime: 50.1,
+    };
+
+    for (let time = 4; time <= 15; time += 0.5) {
+      quality.observe(time, appleReport);
+    }
+
+    expect(changes).toHaveLength(1);
+    expect(quality.getState().scale).toBe(0.82);
+  });
 });

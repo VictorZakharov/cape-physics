@@ -140,7 +140,13 @@ try {
   );
   assert(copiedPerformanceReport.includes('Cape Physics performance report'), 'FPS panel copied no diagnostic report');
   assert(copiedPerformanceReport.includes('Renderer:'), 'copied performance report omitted renderer data');
+  assert(copiedPerformanceReport.includes('Main thread:'), 'copied performance report omitted workload phases');
+  assert(copiedPerformanceReport.includes('Cape solver:'), 'copied performance report omitted sampled cape phases');
   assert(copiedPerformanceReport.includes('Scene:'), 'copied performance report omitted scene data');
+  assert(
+    !copiedPerformanceReport.includes('| 1 draw calls | 1 triangles |'),
+    'copied performance report captured only the final fullscreen output pass',
+  );
   const copyFeedback = await evaluate(
     command,
     'document.querySelector("[data-performance-copy]")?.textContent?.trim()',
@@ -297,6 +303,14 @@ try {
 
   const initial = await diagnostics();
   assert(initial.ready, 'demo harness did not report ready');
+  assert(
+    initial.renderer.calls > 10,
+    `full-frame renderer counter captured only ${initial.renderer.calls} draw calls`,
+  );
+  assert(
+    initial.renderer.triangles > 1_000,
+    `full-frame renderer counter captured only ${initial.renderer.triangles} triangles`,
+  );
   assert(initial.renderer.depthComposite.layerDepthTexture, 'character layer has no resolved depth texture');
   assert(
     initial.renderer.depthComposite.renderMode === 'direct-opaque',

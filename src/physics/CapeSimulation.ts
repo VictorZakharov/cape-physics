@@ -8,6 +8,10 @@ import {
   type RockSurfaceContactDiagnostics,
   type WorldContactDiagnostics,
 } from './CapeContactSolver';
+import {
+  CapePerformanceProfiler,
+  type CapePerformanceDiagnostics,
+} from './CapePerformanceProfiler';
 import { getCapeRestBackOffset, getCapeRestWidth } from './CapeRestShape';
 import { ClothFoldGuard } from './ClothFoldGuard';
 import { ClothSelfCollision } from './ClothSelfCollision';
@@ -42,6 +46,7 @@ export class CapeSimulation {
   private readonly selfCollision: ClothSelfCollision;
   private readonly foldGuard: ClothFoldGuard;
   private readonly contactSolver: CapeContactSolver;
+  private readonly profiler = new CapePerformanceProfiler();
   private readonly velocity = new THREE.Vector3();
   private readonly airflow = new THREE.Vector3();
   private readonly normal = new THREE.Vector3();
@@ -119,17 +124,32 @@ export class CapeSimulation {
     characterVelocity: THREE.Vector3,
     time: number,
   ): void {
-    this.captureStepStart();
     const characterSpeed = characterVelocity.length();
+    const profileActive = this.profiler.beginStep(
+      !this.sleeping || characterSpeed > WAKE_SPEED,
+    );
+    const profileStepStart = profileActive ? performance.now() : 0;
+    let profilePhaseStart = profileStepStart;
+    this.captureStepStart();
     const planarSpeed = Math.hypot(characterVelocity.x, characterVelocity.z);
     if (characterSpeed > WAKE_SPEED) {
       this.settledSeconds = 0;
       this.sleeping = false;
     }
     this.pinAnchors(anchors);
-    this.contactSolver.beginStep(this.anchorCenter, worldColliders);
+    this.contactSolver.beginStep(
+      this.anchorCenter,
+      worldColliders,
+      bodyColliders,
+      anchors.back,
+    );
     if (this.sleeping) {
       this.measureStepMotion();
+      if (profileActive) {
+        const profileEnd = performance.now();
+        this.profiler.record('prediction', profileEnd - profilePhaseStart);
+        this.profiler.endStep(profileEnd - profileStepStart);
+      }
       return;
     }
     const movementBlend = THREE.MathUtils.smoothstep(characterSpeed, WAKE_SPEED, 2.4);
@@ -167,11 +187,31 @@ export class CapeSimulation {
         position.addScaledVector(this.airflow, (0.048 + turbulence * 0.011) * deltaSquared);
       }
     }
+    if (profileActive) {
+      const profileNow = performance.now();
+      this.profiler.record('prediction', profileNow - profilePhaseStart);
+      profilePhaseStart = profileNow;
+    }
 
     for (let iteration = 0; iteration < CAPE.solverIterations; iteration += 1) {
       for (const constraint of this.constraints) this.solveConstraint(constraint);
+      if (profileActive) {
+        const profileNow = performance.now();
+        this.profiler.record('constraints', profileNow - profilePhaseStart);
+        profilePhaseStart = profileNow;
+      }
       this.selfCollision.solve(this.positions, this.previous, this.inverseMass);
+      if (profileActive) {
+        const profileNow = performance.now();
+        this.profiler.record('selfCollision', profileNow - profilePhaseStart);
+        profilePhaseStart = profileNow;
+      }
       this.foldGuard.solve(this.positions, this.previous, this.inverseMass);
+      if (profileActive) {
+        const profileNow = performance.now();
+        this.profiler.record('foldGuard', profileNow - profilePhaseStart);
+        profilePhaseStart = profileNow;
+      }
       if (
         iteration === 0
         && characterSpeed <= WAKE_SPEED
@@ -180,8 +220,23 @@ export class CapeSimulation {
         this.solveIdleDrapeRecovery(anchors);
       }
       this.contactSolver.solveBody(bodyColliders, anchors.back);
+      if (profileActive) {
+        const profileNow = performance.now();
+        this.profiler.record('bodyCollision', profileNow - profilePhaseStart);
+        profilePhaseStart = profileNow;
+      }
       this.contactSolver.solveWorld();
+      if (profileActive) {
+        const profileNow = performance.now();
+        this.profiler.record('worldCollision', profileNow - profilePhaseStart);
+        profilePhaseStart = profileNow;
+      }
       this.contactSolver.solveCave();
+      if (profileActive) {
+        const profileNow = performance.now();
+        this.profiler.record('caveCollision', profileNow - profilePhaseStart);
+        profilePhaseStart = profileNow;
+      }
       if (iteration === CAPE.solverIterations - 1) {
         // Cave-floor projection can re-enter the face of a floor-seated rock.
         // Recheck triangles only against colliders that actually touched this
@@ -199,7 +254,17 @@ export class CapeSimulation {
           this.contactSolver.solvePostCaveWorldFaces();
         }
       }
+      if (profileActive) {
+        const profileNow = performance.now();
+        this.profiler.record('reconciliation', profileNow - profilePhaseStart);
+        profilePhaseStart = profileNow;
+      }
       this.pinAnchors(anchors);
+      if (profileActive) {
+        const profileNow = performance.now();
+        this.profiler.record('anchors', profileNow - profilePhaseStart);
+        profilePhaseStart = profileNow;
+      }
     }
 
     this.measureStepMotion();
@@ -225,6 +290,11 @@ export class CapeSimulation {
       this.positions.forEach((position, index) => this.previous[index]?.copy(position));
     }
     this.guardAgainstInvalidState(anchors);
+    if (profileActive) {
+      const profileEnd = performance.now();
+      this.profiler.record('finalization', profileEnd - profilePhaseStart);
+      this.profiler.endStep(profileEnd - profileStepStart);
+    }
   }
 
   public syncGeometry(): void {
@@ -370,6 +440,10 @@ export class CapeSimulation {
 
   public getWorldContactDiagnostics(): WorldContactDiagnostics {
     return this.contactSolver.getDiagnostics();
+  }
+
+  public getPerformanceDiagnostics(): CapePerformanceDiagnostics {
+    return this.profiler.getDiagnostics();
   }
 
   public getClosestActiveRockSurfaceContact(): RockSurfaceContactDiagnostics | null {
