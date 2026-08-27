@@ -19,6 +19,14 @@ describe('renderer preference', () => {
     })).toBe('webgl');
   });
 
+  test('remembers a renderer explicitly selected under the current preference version', () => {
+    expect(resolveRendererPreference({
+      search: '',
+      storedPreference: 'webgpu',
+      webGPUAvailable: true,
+    })).toBe('webgpu');
+  });
+
   test('the query string overrides storage and preserves an explicit fallback request', () => {
     expect(resolveRendererPreference({
       search: '?renderer=webgl',

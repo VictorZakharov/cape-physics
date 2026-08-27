@@ -1,7 +1,9 @@
 export type RendererPreference = 'webgpu' | 'webgl';
 
 export const RENDERER_QUERY_PARAMETER = 'renderer';
-export const RENDERER_STORAGE_KEY = 'cape-physics.renderer';
+// Reset preferences written while WebGPU was the automatic default. New explicit
+// selections remain persistent under this versioned key.
+export const RENDERER_STORAGE_KEY = 'cape-physics.renderer.v2';
 
 export interface RendererPreferenceEnvironment {
   readonly search: string;
