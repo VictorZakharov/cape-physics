@@ -46,6 +46,26 @@ function getUpperBackClearance(cape: CapeSimulation): number {
   return minimum;
 }
 
+function getSettledBackContactRange(cape: CapeSimulation): {
+  readonly minimum: number;
+  readonly maximum: number;
+} {
+  const centerColumn = Math.floor(CAPE.columns / 2);
+  let minimum = Number.POSITIVE_INFINITY;
+  let maximum = Number.NEGATIVE_INFINITY;
+
+  for (let row = 1; row <= 5; row += 1) {
+    const point = cape.getParticlePosition(centerColumn, row);
+    const rearSurface = getTorsoRearSurfaceZ(point.x, point.y);
+    expect(rearSurface).not.toBeNull();
+    const clearance = point.z - rearSurface!;
+    minimum = Math.min(minimum, clearance);
+    maximum = Math.max(maximum, clearance);
+  }
+
+  return { minimum, maximum };
+}
+
 describe('procedural cape attachment', () => {
   test('pins the simulated cloth itself around the neck before widening over the shoulders', () => {
     const character = new Character();
@@ -123,5 +143,8 @@ describe('procedural cape attachment', () => {
       );
     }
     expect(getUpperBackClearance(cape)).toBeGreaterThan(0.004);
+    const settledContact = getSettledBackContactRange(cape);
+    expect(settledContact.minimum).toBeGreaterThan(0.004);
+    expect(settledContact.maximum).toBeLessThan(0.03);
   });
 });

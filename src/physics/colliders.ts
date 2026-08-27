@@ -4,7 +4,10 @@ export interface CapsuleCollider {
   readonly start: THREE.Vector3;
   readonly end: THREE.Vector3;
   readonly radius: number;
+  readonly depthRadius?: number;
   readonly name: string;
+  readonly clearance?: number;
+  readonly faceSampleSpacing?: number;
 }
 
 export type WorldColliderKind = 'formation' | 'rock' | 'torch' | 'mineral';

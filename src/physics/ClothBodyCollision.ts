@@ -3,6 +3,14 @@ import type { CapsuleCollider } from './colliders';
 
 export const CLOTH_BODY_CLEARANCE = 0.026;
 
+export function getClothBodyClearance(collider: CapsuleCollider): number {
+  return collider.clearance ?? CLOTH_BODY_CLEARANCE;
+}
+
+export function getClothBodyDepthRadius(collider: CapsuleCollider): number {
+  return (collider.depthRadius ?? collider.radius) + getClothBodyClearance(collider);
+}
+
 /**
  * Resolves one-sided character contact against cloth triangle faces. Vertex-only
  * capsules can otherwise pass through the middle of a coarse cloth triangle.
@@ -27,10 +35,11 @@ export class ClothBodyCollision {
 
   public solve(colliders: readonly CapsuleCollider[], back: THREE.Vector3): void {
     this.updateBounds();
-    this.forEachCapsuleSample(colliders, (center, radius) => {
-      if (!this.intersectsBounds(center, radius)) return;
+    this.forEachCapsuleSample(colliders, (center, lateralRadius, depthRadius) => {
+      const boundsRadius = Math.max(lateralRadius, depthRadius);
+      if (!this.intersectsBounds(center, boundsRadius)) return;
       this.forEachTriangle((first, second, third) => {
-        this.solveTriangle(first, second, third, center, radius, back);
+        this.solveTriangle(first, second, third, center, lateralRadius, depthRadius, back);
       });
     });
   }
@@ -41,12 +50,21 @@ export class ClothBodyCollision {
   ): number {
     this.updateBounds();
     let maximum = 0;
-    this.forEachCapsuleSample(colliders, (center, radius) => {
-      if (!this.intersectsBounds(center, radius)) return;
+    this.forEachCapsuleSample(colliders, (center, lateralRadius, depthRadius) => {
+      const boundsRadius = Math.max(lateralRadius, depthRadius);
+      if (!this.intersectsBounds(center, boundsRadius)) return;
       this.forEachTriangle((first, second, third) => {
         maximum = Math.max(
           maximum,
-          this.getTrianglePenetration(first, second, third, center, radius, back),
+          this.getTrianglePenetration(
+            first,
+            second,
+            third,
+            center,
+            lateralRadius,
+            depthRadius,
+            back,
+          ),
         );
       });
     });
@@ -58,18 +76,26 @@ export class ClothBodyCollision {
     secondIndex: number,
     thirdIndex: number,
     center: THREE.Vector3,
-    radius: number,
+    lateralRadius: number,
+    depthRadius: number,
     back: THREE.Vector3,
   ): void {
     const first = this.positions[firstIndex];
     const second = this.positions[secondIndex];
     const third = this.positions[thirdIndex];
     if (!first || !second || !third) return;
-    if (!this.intersectsTriangleBounds(first, second, third, center, radius)) return;
+    const boundsRadius = Math.max(lateralRadius, depthRadius);
+    if (!this.intersectsTriangleBounds(first, second, third, center, boundsRadius)) return;
 
     this.triangle.set(first, second, third);
     this.triangle.closestPointToPoint(center, this.closestPoint);
-    const penetration = this.oneSidedPenetration(this.closestPoint, center, radius, back);
+    const penetration = this.oneSidedPenetration(
+      this.closestPoint,
+      center,
+      lateralRadius,
+      depthRadius,
+      back,
+    );
     if (penetration <= 0) return;
     if (this.triangle.getBarycoord(this.closestPoint, this.barycentric) === null) return;
 
@@ -92,49 +118,69 @@ export class ClothBodyCollision {
     secondIndex: number,
     thirdIndex: number,
     center: THREE.Vector3,
-    radius: number,
+    lateralRadius: number,
+    depthRadius: number,
     back: THREE.Vector3,
   ): number {
     const first = this.positions[firstIndex];
     const second = this.positions[secondIndex];
     const third = this.positions[thirdIndex];
     if (!first || !second || !third) return 0;
-    if (!this.intersectsTriangleBounds(first, second, third, center, radius)) return 0;
+    const boundsRadius = Math.max(lateralRadius, depthRadius);
+    if (!this.intersectsTriangleBounds(first, second, third, center, boundsRadius)) return 0;
     this.triangle.set(first, second, third);
     this.triangle.closestPointToPoint(center, this.closestPoint);
-    return this.oneSidedPenetration(this.closestPoint, center, radius, back);
+    return this.oneSidedPenetration(
+      this.closestPoint,
+      center,
+      lateralRadius,
+      depthRadius,
+      back,
+    );
   }
 
   private oneSidedPenetration(
     point: THREE.Vector3,
     center: THREE.Vector3,
-    radius: number,
+    lateralRadius: number,
+    depthRadius: number,
     back: THREE.Vector3,
   ): number {
     this.delta.copy(point).sub(center);
     const depth = this.delta.dot(back);
     const lateralSquared = Math.max(0, this.delta.lengthSq() - depth * depth);
-    if (lateralSquared >= radius * radius) return 0;
-    return Math.max(0, Math.sqrt(radius * radius - lateralSquared) - depth);
+    if (lateralSquared >= lateralRadius * lateralRadius) return 0;
+    const normalizedLateralSquared = lateralSquared / (lateralRadius * lateralRadius);
+    const surfaceDepth = depthRadius * Math.sqrt(1 - normalizedLateralSquared);
+    return Math.max(0, surfaceDepth - depth);
   }
 
   private forEachCapsuleSample(
     colliders: readonly CapsuleCollider[],
-    visit: (center: THREE.Vector3, radius: number) => void,
+    visit: (
+      center: THREE.Vector3,
+      lateralRadius: number,
+      depthRadius: number,
+    ) => void,
   ): void {
     for (const collider of colliders) {
       this.capsuleAxis.copy(collider.end).sub(collider.start);
       const length = this.capsuleAxis.length();
-      const radius = collider.radius + CLOTH_BODY_CLEARANCE;
+      const clearance = getClothBodyClearance(collider);
+      const lateralRadius = collider.radius + clearance;
+      const depthRadius = getClothBodyDepthRadius(collider);
+      const sampleSpacing = collider.faceSampleSpacing
+        ?? Math.max(0.04, lateralRadius * 0.82);
       const segments = length < 0.000_001
         ? 0
-        : Math.max(1, Math.ceil(length / Math.max(0.04, radius * 0.82)));
+        : Math.max(1, Math.ceil(length / sampleSpacing));
       const stepLength = segments > 0 ? length / segments : 0;
-      const sampleRadius = Math.hypot(radius, stepLength * 0.5);
+      const sampleLateralRadius = Math.hypot(lateralRadius, stepLength * 0.5);
+      const sampleDepthRadius = depthRadius * sampleLateralRadius / lateralRadius;
       for (let sample = 0; sample <= segments; sample += 1) {
         const progress = segments > 0 ? sample / segments : 0;
         this.sampleCenter.lerpVectors(collider.start, collider.end, progress);
-        visit(this.sampleCenter, sampleRadius);
+        visit(this.sampleCenter, sampleLateralRadius, sampleDepthRadius);
       }
     }
   }
