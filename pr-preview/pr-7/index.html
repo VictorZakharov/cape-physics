@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="A procedural Three.js cape-physics demo inside a torchlit, water-carved cave."
+    />
+    <meta name="theme-color" content="#05080a" />
+    <title>Cape Physics — The Veiled Deep</title>
+    <script type="module" crossorigin src="/cape-physics/pr-preview/pr-7/assets/index-BZRX7YTK.js"></script>
+    <link rel="stylesheet" crossorigin href="/cape-physics/pr-preview/pr-7/assets/index-CTwVvkUn.css">
+  </head>
+  <body>
+    <main class="app" data-app>
+      <canvas
+        id="scene-canvas"
+        aria-label="Interactive third-person cape physics demonstration in a cave"
+      ></canvas>
+
+      <div class="vignette" aria-hidden="true"></div>
+      <div class="film-grain" aria-hidden="true"></div>
+
+      <button
+        class="performance-panel"
+        type="button"
+        data-performance-panel
+        title="Click to copy a 15-second performance report"
+        aria-label="Rendering diagnostics. Click to copy the last 15 seconds of performance data."
+      >
+        <strong><b data-fps>--</b><i> FPS</i></strong>
+        <span>RENDER FPS / LAST 15S</span>
+        <svg
+          class="performance-panel__history"
+          data-fps-history
+          viewBox="0 0 154 32"
+          preserveAspectRatio="none"
+          role="img"
+          aria-label="Frame-rate history"
+        >
+          <line x1="0" y1="1" x2="154" y2="1"></line>
+          <line x1="0" y1="16" x2="154" y2="16"></line>
+          <path data-fps-history-line d=""></path>
+        </svg>
+        <small><b data-frame-time>--</b> MS / <b data-fps-low>--</b> 1% LOW</small>
+        <span class="performance-panel__copy" data-performance-copy aria-live="polite">
+          CLICK TO COPY 15S REPORT
+        </span>
+      </button>
+
+      <header class="title-card" aria-label="Demo title">
+        <span>PROCEDURAL PHYSICS STUDY 01</span>
+        <h1>THE VEILED DEEP</h1>
+        <p>Realtime cloth · reactive water · living stone</p>
+      </header>
+
+      <section class="controls" aria-label="Controls">
+        <div class="controls__eyebrow">TRAVERSE</div>
+        <div class="controls__row">
+          <span class="key-cluster" aria-label="W A S D keys">
+            <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd>
+          </span>
+          <span>Move</span>
+          <kbd class="key-wide">SHIFT</kbd>
+          <span>Run</span>
+          <kbd class="key-wide">SPACE</kbd>
+          <span>Jump</span>
+        </div>
+        <div class="controls__row">
+          <span class="mouse-icon" aria-hidden="true"><i></i></span>
+          <span>LMB / RMB drag to orbit · wheel to zoom</span>
+        </div>
+      </section>
+
+      <div class="quality-badge" data-quality-badge>
+        <span class="quality-badge__pulse"></span>
+        <span data-quality-label>ADAPTIVE ULTRA</span>
+      </div>
+
+      <div class="onboarding" data-onboarding role="status">
+        <span>Hold either mouse button</span>
+        <strong>DRAG TO LOOK AROUND</strong>
+      </div>
+
+      <section class="loading" data-loading role="status" aria-live="polite">
+        <div class="loading__mark" aria-hidden="true">
+          <span></span><span></span><span></span>
+        </div>
+        <p>DESCENDING INTO THE VEILED DEEP</p>
+        <div class="loading__track"><i data-loading-bar></i></div>
+        <small data-loading-status>Shaping stone</small>
+      </section>
+
+      <noscript>This demonstration requires JavaScript and WebGL 2.</noscript>
+    </main>
+  </body>
+</html>
