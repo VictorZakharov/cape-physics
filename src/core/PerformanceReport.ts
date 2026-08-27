@@ -77,10 +77,15 @@ export function formatPerformanceReport(input: PerformanceReportInput): string {
       ? 'single screen reported'
       : 'screen count unavailable';
   const capeSolverLines = capeSolver
-    ? [
-      `Cape solver: sequential PBD Gauss-Seidel at ${Math.round(1 / PHYSICS_STEP)} Hz | ${CAPE.solverIterations} projection passes | sampled 1/${capeSolver.sampleIntervalSteps} active steps (${capeSolver.sampledActiveSteps} samples)`,
-      `Cape step sampled average: ${metric(capeSolver.averageStepMilliseconds)} ms | prediction ${metric(capeSolver.phases.prediction)} | constraints ${metric(capeSolver.phases.constraints)} | self ${metric(capeSolver.phases.selfCollision)} | fold ${metric(capeSolver.phases.foldGuard)} | body ${metric(capeSolver.phases.bodyCollision)} | world ${metric(capeSolver.phases.worldCollision)} | cave ${metric(capeSolver.phases.caveCollision)} | reconcile ${metric(capeSolver.phases.reconciliation)}`,
-    ]
+    ? capeSolver.implementation === 'webgpu-compute'
+      ? [
+        `Cape solver: WebGPU compute PBD at ${Math.round(1 / PHYSICS_STEP)} Hz | ${CAPE.columns * CAPE.rows} GPU-resident particles | ${CAPE.solverIterations} Jacobi projection passes | 2 compute submissions/step`,
+        'Cape timing: no animation-loop particle readback or GPU fence; main-thread physics above measures command preparation/submission, not GPU completion',
+      ]
+      : [
+        `Cape solver: sequential CPU PBD Gauss-Seidel at ${Math.round(1 / PHYSICS_STEP)} Hz | ${CAPE.solverIterations} projection passes | sampled 1/${capeSolver.sampleIntervalSteps} active steps (${capeSolver.sampledActiveSteps} samples)`,
+        `Cape step sampled average: ${metric(capeSolver.averageStepMilliseconds)} ms | prediction ${metric(capeSolver.phases.prediction)} | constraints ${metric(capeSolver.phases.constraints)} | self ${metric(capeSolver.phases.selfCollision)} | fold ${metric(capeSolver.phases.foldGuard)} | body ${metric(capeSolver.phases.bodyCollision)} | world ${metric(capeSolver.phases.worldCollision)} | cave ${metric(capeSolver.phases.caveCollision)} | reconcile ${metric(capeSolver.phases.reconciliation)}`,
+      ]
     : [];
 
   return [

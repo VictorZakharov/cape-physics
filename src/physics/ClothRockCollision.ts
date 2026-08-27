@@ -19,6 +19,14 @@ export interface ClothRockSurfaceContact {
   readonly collider: WorldRockCollider;
 }
 
+export interface ClothRockPenetrationDiagnostics {
+  readonly maximum: number;
+  readonly triangle: readonly [number, number, number] | null;
+  readonly positions: readonly [number, number, number][] | null;
+  readonly previous: readonly [number, number, number][] | null;
+  readonly rockCenter: readonly [number, number, number] | null;
+}
+
 /**
  * Resolves convex-rock surface intersections against cloth triangle faces.
  * Vertex contacts are handled separately; this closes the complementary case
@@ -91,33 +99,74 @@ export class ClothRockCollision {
   }
 
   public getMaximumPenetration(colliders: readonly WorldRockCollider[]): number {
+    return this.getMaximumPenetrationDiagnostics(colliders).maximum;
+  }
+
+  public getMaximumPenetrationDiagnostics(
+    colliders: readonly WorldRockCollider[],
+  ): ClothRockPenetrationDiagnostics {
     this.updateBounds();
     let maximum = 0;
+    let triangle: readonly [number, number, number] | null = null;
+    let positions: readonly [number, number, number][] | null = null;
+    let previous: readonly [number, number, number][] | null = null;
+    let rockCenter: readonly [number, number, number] | null = null;
     for (const collider of colliders) {
       if (!this.intersectsColliderBounds(collider)) continue;
       this.forEachTriangle((first, second, third) => {
-        maximum = Math.max(
-          maximum,
-          this.getTrianglePenetration(first, second, third, collider),
-        );
+        const penetration = this.getTrianglePenetration(first, second, third, collider);
+        if (penetration <= maximum) return;
+        maximum = penetration;
+        triangle = [first, second, third];
+        positions = [first, second, third].map((index) => {
+          const point = this.positions[index] ?? new THREE.Vector3();
+          return [point.x, point.y, point.z] as const;
+        });
+        previous = [first, second, third].map((index) => {
+          const point = this.previous[index] ?? new THREE.Vector3();
+          return [point.x, point.y, point.z] as const;
+        });
+        rockCenter = [collider.center.x, collider.center.y, collider.center.z];
       });
     }
-    return maximum;
+    return { maximum, triangle, positions, previous, rockCenter };
   }
 
   public getClosestSurfaceContact(
     colliders: readonly WorldRockCollider[],
   ): ClothRockSurfaceContact | null {
+    this.updateBounds();
+    const candidates = colliders.map((collider) => ({
+      collider,
+      lowerBoundSquared: this.getBoundsDistanceSquared(
+        this.boundsMinimum,
+        this.boundsMaximum,
+        collider.bounds.min,
+        collider.bounds.max,
+      ),
+    })).sort((first, second) => first.lowerBoundSquared - second.lowerBoundSquared);
     let minimumDistanceSquared = Number.POSITIVE_INFINITY;
     let closestCollider: WorldRockCollider | undefined;
-    for (const collider of colliders) {
+    for (const candidate of candidates) {
+      if (candidate.lowerBoundSquared > minimumDistanceSquared) break;
+      const { collider } = candidate;
       this.forEachTriangle((firstIndex, secondIndex, thirdIndex) => {
         const first = this.positions[firstIndex];
         const second = this.positions[secondIndex];
         const third = this.positions[thirdIndex];
         if (!first || !second || !third) return;
         this.clothTriangle.set(first, second, third);
+        this.clothBounds.makeEmpty();
+        this.clothBounds.expandByPoint(first);
+        this.clothBounds.expandByPoint(second);
+        this.clothBounds.expandByPoint(third);
         for (const face of collider.faces) {
+          if (this.getBoundsDistanceSquared(
+            this.clothBounds.min,
+            this.clothBounds.max,
+            face.bounds.min,
+            face.bounds.max,
+          ) > minimumDistanceSquared) continue;
           const distanceSquared = this.triangleQuery.closestPoints(
             this.clothTriangle,
             face.triangle,
@@ -133,6 +182,18 @@ export class ClothRockCollision {
     return closestCollider && Number.isFinite(minimumDistanceSquared)
       ? { distance: Math.sqrt(minimumDistanceSquared), collider: closestCollider }
       : null;
+  }
+
+  private getBoundsDistanceSquared(
+    firstMinimum: THREE.Vector3,
+    firstMaximum: THREE.Vector3,
+    secondMinimum: THREE.Vector3,
+    secondMaximum: THREE.Vector3,
+  ): number {
+    const x = Math.max(0, secondMinimum.x - firstMaximum.x, firstMinimum.x - secondMaximum.x);
+    const y = Math.max(0, secondMinimum.y - firstMaximum.y, firstMinimum.y - secondMaximum.y);
+    const z = Math.max(0, secondMinimum.z - firstMaximum.z, firstMinimum.z - secondMaximum.z);
+    return x * x + y * y + z * z;
   }
 
   private solveTriangle(

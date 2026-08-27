@@ -25,6 +25,7 @@ import type { RendererPreference } from './RendererPreference';
 interface BackendShape {
   readonly isWebGPUBackend?: boolean;
   readonly isWebGLBackend?: boolean;
+  readonly trackTimestamp?: boolean;
   readonly device?: {
     readonly adapterInfo?: AdapterInfoShape;
     readonly queue?: {
@@ -48,6 +49,12 @@ export interface RendererBackendDiagnostics {
   readonly vendor: string;
   readonly device: string;
   readonly fallback: boolean;
+}
+
+export interface GpuFrameTime {
+  readonly renderMilliseconds: number;
+  readonly computeMilliseconds: number;
+  readonly totalMilliseconds: number;
 }
 
 export class RenderPipeline {
@@ -75,6 +82,7 @@ export class RenderPipeline {
     scene: THREE.Scene,
     camera: THREE.Camera,
     private readonly preference: RendererPreference,
+    trackTimestamps = false,
   ) {
     this.renderer = new THREE.WebGPURenderer({
       canvas,
@@ -84,6 +92,13 @@ export class RenderPipeline {
       forceWebGL: preference === 'webgl',
       stencil: false,
       depth: true,
+      trackTimestamp: trackTimestamps,
+      requiredLimits: preference === 'webgpu'
+        ? {
+            maxStorageBuffersInVertexStage: 1,
+            maxStorageBuffersPerShaderStage: 8,
+          }
+        : undefined,
     });
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.AgXToneMapping;
@@ -295,22 +310,41 @@ export class RenderPipeline {
     backend.getContext?.().finish();
   }
 
-  public async compile(scene: THREE.Scene, camera: THREE.Camera): Promise<void> {
+  public async resolveGpuFrameTimeForLocalProfile(): Promise<GpuFrameTime | null> {
+    const backend = this.renderer.backend as BackendShape;
+    if (backend.trackTimestamp !== true) return null;
+    const [renderResult, computeResult] = await Promise.all([
+      this.renderer.resolveTimestampsAsync(THREE.TimestampQuery.RENDER),
+      this.renderer.resolveTimestampsAsync(THREE.TimestampQuery.COMPUTE),
+    ]);
+    const renderMilliseconds = typeof renderResult === 'number' && Number.isFinite(renderResult)
+      ? renderResult
+      : null;
+    const computeMilliseconds = typeof computeResult === 'number' && Number.isFinite(computeResult)
+      ? computeResult
+      : null;
+    if (renderMilliseconds === null && computeMilliseconds === null) return null;
+
+    const measuredRenderMilliseconds = renderMilliseconds ?? 0;
+    const measuredComputeMilliseconds = computeMilliseconds ?? 0;
+    return {
+      renderMilliseconds: measuredRenderMilliseconds,
+      computeMilliseconds: measuredComputeMilliseconds,
+      totalMilliseconds: measuredRenderMilliseconds + measuredComputeMilliseconds,
+    };
+  }
+
+  public async compile(_scene: THREE.Scene, camera: THREE.Camera): Promise<void> {
     const previousLayerMask = camera.layers.mask;
-    const previousMode = this.activeMode;
     try {
       camera.layers.enable(CHARACTER_RENDER_LAYER);
-      await this.renderer.compileAsync(scene, camera);
+      // PassNode.compileAsync() already traverses and compiles the scene for
+      // this render target. Compiling the renderer directly first repeated the
+      // same traversal, while eagerly compiling both close-camera passes made
+      // startup pay for a mode most frames never use.
       await this.directPass.compileAsync(this.renderer);
-      await this.worldPass.compileAsync(this.renderer);
-      await this.characterPass.compileAsync(this.renderer);
-      this.activateMode('isolated-fade');
-      this.renderPipeline.render();
-      this.activateMode('direct-opaque');
-      this.renderPipeline.render();
     } finally {
       camera.layers.mask = previousLayerMask;
-      this.activateMode(previousMode);
     }
   }
 

@@ -69,9 +69,13 @@ jobs:
         run: bun run check:pages
 
   render-audit:
-    name: Dynamic multi-angle render audit
+    name: Dynamic multi-angle render audit (${{ matrix.renderer }})
     if: github.event_name == 'pull_request'
     runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        renderer: [webgl, webgpu]
     # This only stops a hung browser; render duration is not a performance gate.
     timeout-minutes: 15
     steps:
@@ -92,12 +96,13 @@ jobs:
         run: bun run audit:visual
         env:
           CAPE_AUDIT_PERFORMANCE_PROFILE: 'false'
+          CAPE_AUDIT_RENDERER: ${{ matrix.renderer }}
 
       - name: Upload rendered evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: cape-physics-visual-audit
+          name: cape-physics-visual-audit-${{ matrix.renderer }}
           path: artifacts/visual-audit/
           if-no-files-found: warn
           retention-days: 7

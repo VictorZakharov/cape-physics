@@ -25,6 +25,14 @@ const rendererPreference = (process.env.CAPE_PROFILE_RENDERER ?? 'webgl').trim()
 if (rendererPreference !== 'webgl' && rendererPreference !== 'webgpu') {
   throw new Error('CAPE_PROFILE_RENDERER must be webgl or webgpu.');
 }
+const synchronizationInterval = Number.parseInt(
+  process.env.CAPE_PROFILE_SYNC_INTERVAL ?? '12',
+  10,
+);
+if (!Number.isInteger(synchronizationInterval) || synchronizationInterval < 1 || synchronizationInterval > 120) {
+  throw new Error('CAPE_PROFILE_SYNC_INTERVAL must be an integer from 1 to 120.');
+}
+const gpuTimestamps = (process.env.CAPE_PROFILE_GPU_TIMESTAMPS ?? 'false').trim().toLowerCase() === 'true';
 if (!existsSync(join(distRoot, 'index.html'))) {
   throw new Error(`Production build missing at ${distRoot}.`);
 }
@@ -51,7 +59,8 @@ const server = createStaticServer(distRoot);
 const temporaryRoot = mkdtempSync(join(tmpdir(), 'cape-physics-profile-'));
 const staticPort = await listen(server);
 const debugPort = await reservePort();
-const pageUrl = `http://127.0.0.1:${staticPort}/?harness=1&renderer=${rendererPreference}`;
+const pageUrl = `http://127.0.0.1:${staticPort}/?harness=1&renderer=${rendererPreference}`
+  + (gpuTimestamps ? '&gpuTimestamps=1' : '');
 const browser = spawn(browserExecutable, [
   '--headless=new',
   '--no-first-run',
@@ -94,6 +103,17 @@ try {
   ]);
   await waitForExpression(command, 'window.__CAPE_DEMO__?.ready === true', 60_000);
 
+  const startup = await evaluate(command, `(() => {
+    const resources = performance.getEntriesByType('resource');
+    const scripts = resources.filter((entry) => entry.initiatorType === 'script');
+    return {
+      readyMilliseconds: performance.now(),
+      scriptTransferBytes: scripts.reduce((sum, entry) => sum + entry.transferSize, 0),
+      scriptDecodedBytes: scripts.reduce((sum, entry) => sum + entry.decodedBodySize, 0),
+      scriptResourceMilliseconds: scripts.reduce((sum, entry) => sum + entry.duration, 0),
+    };
+  })()`);
+
   const initial = await evaluate(command, 'window.__CAPE_DEMO__.getDiagnostics()');
   const activeRenderer = initial.renderer.actual ?? 'webgl';
   if (activeRenderer !== rendererPreference) {
@@ -117,7 +137,11 @@ try {
   await evaluate(command, 'window.__CAPE_DEMO__.advance({ duration: 0.85, frameStep: 1 / 120 })');
   const profile = await evaluate(
     command,
-    `window.__CAPE_DEMO__.profile(${JSON.stringify({ duration: durationSeconds, frameStep })})`,
+    `window.__CAPE_DEMO__.profile(${JSON.stringify({
+      duration: durationSeconds,
+      frameStep,
+      synchronizationInterval,
+    })})`,
   );
   await evaluate(command, 'window.__CAPE_DEMO__.clearMovement()');
   await evaluate(command, 'window.__CAPE_DEMO__.setRunning(false)');
@@ -145,6 +169,7 @@ try {
       device: initial.renderer.device ?? 'Unavailable in legacy diagnostics',
       fallback: initial.renderer.fallback ?? false,
     },
+    startup,
     workload: {
       route: 'warmed running traversal',
       viewport: '1600x900',
@@ -154,14 +179,29 @@ try {
       simulatedSeconds: durationSeconds,
       frames: profile.frames,
       frameStepSeconds: frameStep,
-      synchronization: activeRenderer === 'webgpu'
-        ? 'GPUQueue.onSubmittedWorkDone after every frame'
-        : 'WebGL finish after every frame',
+      synchronizationInterval,
+      synchronization: gpuTimestamps
+        ? `render + compute timestamp-query resolution every ${synchronizationInterval} frames`
+        : activeRenderer === 'webgpu'
+          ? `GPUQueue.onSubmittedWorkDone every ${synchronizationInterval} frames`
+          : `WebGL finish every ${synchronizationInterval} frames`,
     },
     timing: {
       averageFrameMilliseconds: profile.averageFrameMilliseconds,
       p95FrameMilliseconds: profile.p95FrameMilliseconds,
       maximumFrameMilliseconds: profile.maximumFrameMilliseconds,
+      averagePhysicsMilliseconds: profile.averagePhysicsMilliseconds,
+      averageSceneMilliseconds: profile.averageSceneMilliseconds,
+      averageSubmissionMilliseconds: profile.averageSubmissionMilliseconds,
+      p95SubmissionMilliseconds: profile.p95SubmissionMilliseconds,
+      maximumSubmissionMilliseconds: profile.maximumSubmissionMilliseconds,
+      averageGpuRenderMilliseconds: profile.averageGpuRenderMilliseconds,
+      p95GpuRenderMilliseconds: profile.p95GpuRenderMilliseconds,
+      averageGpuComputeMilliseconds: profile.averageGpuComputeMilliseconds,
+      p95GpuComputeMilliseconds: profile.p95GpuComputeMilliseconds,
+      averageGpuTotalMilliseconds: profile.averageGpuTotalMilliseconds,
+      p95GpuTotalMilliseconds: profile.p95GpuTotalMilliseconds,
+      gpuTimestampSamples: profile.gpuTimestampSamples,
       synchronizedFramesPerSecond: 1_000 / profile.averageFrameMilliseconds,
     },
     rendererCounters: {

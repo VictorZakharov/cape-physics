@@ -24,6 +24,7 @@ import { InputController } from './input/InputController';
 import { MobileControls } from './input/MobileControls';
 import { CinematicLighting } from './lighting/CinematicLighting';
 import { CapeSimulation } from './physics/CapeSimulation';
+import { GpuCapeSimulation } from './physics/GpuCapeSimulation';
 import type { WorldCollider } from './physics/colliders';
 import { Character } from './player/Character';
 import { CharacterController } from './player/CharacterController';
@@ -32,6 +33,7 @@ import { runShadowLayerProbe } from './testing/ShadowLayerProbe';
 import { LoadingScreen } from './ui/LoadingScreen';
 import { RendererSwitch } from './ui/RendererSwitch';
 import { invariant } from './utils/assert';
+import { percentile } from './utils/math';
 import { CaveAtmosphere } from './world/CaveAtmosphere';
 import { CaveWorld } from './world/CaveWorld';
 import { caveCenterX, caveGroundHeightAt } from './world/caveProfile';
@@ -39,6 +41,15 @@ import { MineralVeins } from './world/MineralVeins';
 import { TorchSystem } from './world/TorchSystem';
 import { WaterSystem } from './world/WaterSystem';
 import { WorldCollisionResolver } from './world/WorldCollisionResolver';
+
+function averageOrNull(values: readonly number[]): number | null {
+  if (values.length === 0) return null;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function percentileOrNull(values: readonly number[], ratio: number): number | null {
+  return values.length > 0 ? percentile(values, ratio) : null;
+}
 
 export class CapeDemo {
   private readonly canvas: HTMLCanvasElement;
@@ -63,13 +74,15 @@ export class CapeDemo {
   private readonly clock = new FixedStepClock();
   private readonly quality: AdaptiveQuality;
   private readonly qualityLabel: HTMLElement;
-  private readonly harnessMode = new URLSearchParams(window.location.search).get('harness') === '1';
+  private readonly urlParameters = new URLSearchParams(window.location.search);
+  private readonly harnessMode = this.urlParameters.get('harness') === '1';
+  private readonly gpuTimestampProfile = this.urlParameters.get('gpuTimestamps') === '1';
   private input!: InputController;
   private mobileControls!: MobileControls;
   private character!: Character;
   private characterController!: CharacterController;
   private thirdPersonCamera!: ThirdPersonCamera;
-  private cape!: CapeSimulation;
+  private cape!: CapeSimulation | GpuCapeSimulation;
   private cave!: CaveWorld;
   private water!: WaterSystem;
   private torches!: TorchSystem;
@@ -103,6 +116,7 @@ export class CapeDemo {
       this.scene,
       this.camera,
       this.rendererPreference,
+      this.gpuTimestampProfile,
     );
     this.rendererSwitch = new RendererSwitch(
       this.rendererPreference,
@@ -157,7 +171,9 @@ export class CapeDemo {
     this.character.root.position.set(startX, this.worldCollision.getPlayerRootHeight(startX, startZ), startZ);
     this.character.root.updateMatrixWorld(true);
     this.scene.add(this.character.root);
-    this.cape = new CapeSimulation(this.character.getCapeAnchors());
+    this.cape = this.pipeline.getActualBackend() === 'webgpu'
+      ? new GpuCapeSimulation(this.pipeline.renderer, this.character.getCapeAnchors())
+      : new CapeSimulation(this.character.getCapeAnchors());
     this.scene.add(this.cape.mesh);
     this.character.root.traverse((object) => {
       object.layers.set(CHARACTER_RENDER_LAYER);
@@ -284,23 +300,23 @@ export class CapeDemo {
   private installHarness(): void {
     window.__CAPE_DEMO__ = {
       ready: false,
-      getDiagnostics: () => this.getDiagnostics(),
-      setView: ({ yaw, pitch, distance }) => {
+      getDiagnostics: () => this.getDiagnosticsAfterReadback(),
+      setView: async ({ yaw, pitch, distance }) => {
         this.thirdPersonCamera.setOrbit(yaw, pitch, distance, this.character.root.position);
         this.updateScene(0);
         this.pipeline.renderManual(0);
-        return this.getDiagnostics();
+        return this.getDiagnosticsAfterReadback();
       },
-      setCameraPose: ({ position, target }) => {
+      setCameraPose: async ({ position, target }) => {
         this.thirdPersonCamera.setPose(
           new THREE.Vector3().fromArray(position),
           new THREE.Vector3().fromArray(target),
         );
         this.updateCameraFade();
         this.pipeline.renderManual(0);
-        return this.getDiagnostics();
+        return this.getDiagnosticsAfterReadback();
       },
-      setPlayerPose: ({ position, yaw = this.character.root.rotation.y }) => {
+      setPlayerPose: async ({ position, yaw = this.character.root.rotation.y }) => {
         this.character.root.position.fromArray(position);
         this.worldCollision.resolvePlayer(this.character.root.position);
         this.character.root.rotation.y = yaw;
@@ -312,7 +328,7 @@ export class CapeDemo {
         this.thirdPersonCamera.snapTo(this.character.root.position);
         this.updateCameraFade();
         this.pipeline.renderManual(0);
-        return this.getDiagnostics();
+        return this.getDiagnosticsAfterReadback();
       },
       setMovement: (horizontal, forward) => {
         this.input.setVirtualMovement(horizontal, forward);
@@ -327,7 +343,9 @@ export class CapeDemo {
         this.input.queueVirtualJump();
       },
       advance: ({ duration, frameStep = 1 / 60 }) => this.advanceHarness(duration, frameStep),
-      profile: ({ duration, frameStep = 1 / 60 }) => this.profileHarness(duration, frameStep),
+      profile: ({ duration, frameStep = 1 / 60, synchronizationInterval = 1 }) => (
+        this.profileHarness(duration, frameStep, synchronizationInterval)
+      ),
       runDepthOcclusionProbe: () => runDepthOcclusionProbe(
         this.scene,
         this.camera,
@@ -337,7 +355,10 @@ export class CapeDemo {
     };
   }
 
-  private advanceHarness(duration: number, requestedFrameStep: number): ReturnType<CapeDemo['getDiagnostics']> {
+  private async advanceHarness(
+    duration: number,
+    requestedFrameStep: number,
+  ): Promise<ReturnType<CapeDemo['getDiagnostics']>> {
     const frameStep = THREE.MathUtils.clamp(requestedFrameStep, 1 / 144, 1 / 30);
     let remaining = THREE.MathUtils.clamp(duration, 0, 30);
     let lastDelta = 0;
@@ -348,43 +369,100 @@ export class CapeDemo {
       this.advanceHarnessFrame(delta);
     }
     this.pipeline.renderManual(lastDelta);
-    return this.getDiagnostics();
+    return this.getDiagnosticsAfterReadback();
   }
 
-  private async profileHarness(duration: number, requestedFrameStep: number) {
+  private async profileHarness(
+    duration: number,
+    requestedFrameStep: number,
+    requestedSynchronizationInterval: number,
+  ) {
     const frameStep = THREE.MathUtils.clamp(requestedFrameStep, 1 / 144, 1 / 30);
     let remaining = THREE.MathUtils.clamp(duration, 0, 12);
-    const frameDurations: number[] = [];
+    const synchronizationInterval = THREE.MathUtils.clamp(
+      Math.round(requestedSynchronizationInterval),
+      1,
+      120,
+    );
+    const amortizedBatchFrameDurations: number[] = [];
+    const physicsDurations: number[] = [];
+    const sceneDurations: number[] = [];
+    const submissionDurations: number[] = [];
+    const gpuRenderDurations: number[] = [];
+    const gpuComputeDurations: number[] = [];
+    const gpuTotalDurations: number[] = [];
     const programsBefore = this.pipeline.getProgramCount();
+    const profileStart = performance.now();
+    let batchStart = profileStart;
+    let batchFrames = 0;
+    let frames = 0;
 
     while (remaining > 0.000_001) {
       const delta = Math.min(frameStep, remaining);
       remaining -= delta;
-      const frameStart = performance.now();
-      this.advanceHarnessFrame(delta);
+      const framePhases = this.advanceHarnessFrame(delta);
+      physicsDurations.push(framePhases.physicsMilliseconds);
+      sceneDurations.push(framePhases.sceneMilliseconds);
+      const renderStart = performance.now();
       this.pipeline.renderManual(delta);
-      await this.pipeline.synchronizeForLocalProfile();
-      frameDurations.push(performance.now() - frameStart);
+      submissionDurations.push(performance.now() - renderStart);
+      frames += 1;
+      batchFrames += 1;
+
+      if (batchFrames >= synchronizationInterval || remaining <= 0.000_001) {
+        const gpuFrameTime = await this.pipeline.resolveGpuFrameTimeForLocalProfile();
+        if (gpuFrameTime === null) {
+          await this.pipeline.synchronizeForLocalProfile();
+        } else {
+          gpuRenderDurations.push(gpuFrameTime.renderMilliseconds);
+          gpuComputeDurations.push(gpuFrameTime.computeMilliseconds);
+          gpuTotalDurations.push(gpuFrameTime.totalMilliseconds);
+        }
+        const batchEnd = performance.now();
+        amortizedBatchFrameDurations.push((batchEnd - batchStart) / batchFrames);
+        batchStart = batchEnd;
+        batchFrames = 0;
+      }
     }
 
-    frameDurations.sort((first, second) => first - second);
-    const total = frameDurations.reduce((sum, value) => sum + value, 0);
-    const p95Index = Math.min(
-      frameDurations.length - 1,
-      Math.floor(frameDurations.length * 0.95),
-    );
+    const totalMilliseconds = performance.now() - profileStart;
+    const physicsTotal = physicsDurations.reduce((sum, value) => sum + value, 0);
+    const sceneTotal = sceneDurations.reduce((sum, value) => sum + value, 0);
+    const submissionTotal = submissionDurations.reduce((sum, value) => sum + value, 0);
     return {
-      frames: frameDurations.length,
-      averageFrameMilliseconds: frameDurations.length > 0 ? total / frameDurations.length : 0,
-      p95FrameMilliseconds: frameDurations[p95Index] ?? 0,
-      maximumFrameMilliseconds: frameDurations.at(-1) ?? 0,
+      frames,
+      synchronizationInterval,
+      averageFrameMilliseconds: frames > 0 ? totalMilliseconds / frames : 0,
+      p95FrameMilliseconds: percentile(amortizedBatchFrameDurations, 0.95),
+      maximumFrameMilliseconds: Math.max(0, ...amortizedBatchFrameDurations),
+      averagePhysicsMilliseconds: frames > 0 ? physicsTotal / frames : 0,
+      averageSceneMilliseconds: frames > 0 ? sceneTotal / frames : 0,
+      averageSubmissionMilliseconds: frames > 0 ? submissionTotal / frames : 0,
+      p95SubmissionMilliseconds: percentile(submissionDurations, 0.95),
+      maximumSubmissionMilliseconds: Math.max(0, ...submissionDurations),
+      averageGpuRenderMilliseconds: averageOrNull(gpuRenderDurations),
+      p95GpuRenderMilliseconds: percentileOrNull(gpuRenderDurations, 0.95),
+      averageGpuComputeMilliseconds: averageOrNull(gpuComputeDurations),
+      p95GpuComputeMilliseconds: percentileOrNull(gpuComputeDurations, 0.95),
+      averageGpuTotalMilliseconds: averageOrNull(gpuTotalDurations),
+      p95GpuTotalMilliseconds: percentileOrNull(gpuTotalDurations, 0.95),
+      gpuTimestampSamples: gpuTotalDurations.length,
       programsBefore,
       programsAfter: this.pipeline.getProgramCount(),
-      diagnostics: this.getDiagnostics(),
+      diagnostics: await this.getDiagnosticsAfterReadback(),
     };
   }
 
-  private advanceHarnessFrame(delta: number): void {
+  private async getDiagnosticsAfterReadback(): Promise<ReturnType<CapeDemo['getDiagnostics']>> {
+    await this.cape.refreshDiagnostics();
+    return this.getDiagnostics();
+  }
+
+  private advanceHarnessFrame(delta: number): {
+    readonly physicsMilliseconds: number;
+    readonly sceneMilliseconds: number;
+  } {
+    const physicsStart = performance.now();
     this.harnessAccumulator += delta;
     let simulated = false;
     while (this.harnessAccumulator + 0.000_000_1 >= PHYSICS_STEP) {
@@ -393,13 +471,20 @@ export class CapeDemo {
       simulated = true;
     }
     if (simulated) this.cape.syncGeometry();
+    const sceneStart = performance.now();
     this.updateScene(delta);
+    return {
+      physicsMilliseconds: sceneStart - physicsStart,
+      sceneMilliseconds: performance.now() - sceneStart,
+    };
   }
 
   private getDiagnostics() {
     const capeAnchors = this.character.getCapeAnchors();
     const capeColliders = this.character.getCapeColliders();
-    const closestRockSurfaceContact = this.cape.getClosestActiveRockSurfaceContact();
+    const closestRockSurfaceContact = this.cape.getClosestActiveRockSurfaceContact(
+      this.worldColliders,
+    );
     const bodyPenetrationByCollider = Object.fromEntries(
       capeColliders.map((collider) => [
         collider.name,
@@ -460,8 +545,15 @@ export class CapeDemo {
           capeColliders,
           capeAnchors.back,
         ),
+        bodyPenetrationByKind: this.cape.getBodyPenetrationDiagnostics(
+          capeColliders,
+          capeAnchors.back,
+        ),
         bodyPenetrationByCollider,
         maximumEnvironmentPenetration: this.cape.getMaximumEnvironmentPenetration(this.worldColliders),
+        environmentPenetrationByKind: this.cape.getEnvironmentPenetrationDiagnostics(
+          this.worldColliders,
+        ),
         maximumEnvironmentFacePenetration: this.cape.getMaximumEnvironmentFacePenetration(this.worldColliders),
         maximumParticleMotion: this.cape.getMaximumParticleMotion(),
         maximumParticleVerticalMotion: this.cape.getMaximumParticleVerticalMotion(),

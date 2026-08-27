@@ -107,3 +107,7 @@ export function caveInteriorBoundsAtHeight(
   }
   return target;
 }
+
+export function getCaveShellSampleData() {
+  return caveShellSampler.getSampleData();
+}

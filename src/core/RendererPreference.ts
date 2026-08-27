@@ -22,7 +22,8 @@ export function resolveRendererPreference(
   const storedPreference = parseRendererPreference(environment.storedPreference);
   const requested = queryPreference ?? storedPreference;
 
-  if (requested !== undefined && requested !== null) return requested;
+  if (requested !== null) return requested;
+
   return environment.webGPUAvailable ? 'webgpu' : 'webgl';
 }
 

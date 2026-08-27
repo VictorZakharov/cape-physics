@@ -76,8 +76,31 @@ interface CapeDemoDiagnostics {
   readonly cape: {
     readonly maximumStructuralError: number;
     readonly maximumBodyPenetration: number;
+    readonly bodyPenetrationByKind: {
+      readonly point: number;
+      readonly face: number;
+      readonly maximum: number;
+    };
     readonly bodyPenetrationByCollider: Readonly<Record<string, number>>;
     readonly maximumEnvironmentPenetration: number;
+    readonly environmentPenetrationByKind: {
+      readonly sphere: number;
+      readonly rock: number;
+      readonly floor: number;
+      readonly wall: number;
+      readonly sphereFace: number;
+      readonly rockFace: number;
+      readonly maximum: number;
+      readonly floorParticleIndex: number | null;
+      readonly floorPosition: readonly [number, number, number] | null;
+      readonly floorHeight: number | null;
+      readonly rockFaceDetail: {
+        readonly triangle: readonly [number, number, number] | null;
+        readonly positions: readonly [number, number, number][] | null;
+        readonly previous: readonly [number, number, number][] | null;
+        readonly rockCenter: readonly [number, number, number] | null;
+      };
+    };
     readonly maximumEnvironmentFacePenetration: number;
     readonly maximumParticleMotion: number;
     readonly maximumParticleVerticalMotion: number;
@@ -141,20 +164,37 @@ declare global {
   interface Window {
     __CAPE_DEMO__?: {
       ready: boolean;
-      getDiagnostics: () => CapeDemoDiagnostics;
-      setView: (view: { yaw: number; pitch: number; distance: number }) => CapeDemoDiagnostics;
-      setCameraPose: (pose: { position: number[]; target: number[] }) => CapeDemoDiagnostics;
-      setPlayerPose: (pose: { position: number[]; yaw?: number }) => CapeDemoDiagnostics;
+      getDiagnostics: () => Promise<CapeDemoDiagnostics>;
+      setView: (view: { yaw: number; pitch: number; distance: number }) => Promise<CapeDemoDiagnostics>;
+      setCameraPose: (pose: { position: number[]; target: number[] }) => Promise<CapeDemoDiagnostics>;
+      setPlayerPose: (pose: { position: number[]; yaw?: number }) => Promise<CapeDemoDiagnostics>;
       setMovement: (horizontal: number, forward: number) => void;
       clearMovement: () => void;
       setRunning: (running: boolean) => void;
       jump: () => void;
-      advance: (options: { duration: number; frameStep?: number }) => CapeDemoDiagnostics;
-      profile: (options: { duration: number; frameStep?: number }) => Promise<{
+      advance: (options: { duration: number; frameStep?: number }) => Promise<CapeDemoDiagnostics>;
+      profile: (options: {
+        duration: number;
+        frameStep?: number;
+        synchronizationInterval?: number;
+      }) => Promise<{
         readonly frames: number;
+        readonly synchronizationInterval: number;
         readonly averageFrameMilliseconds: number;
         readonly p95FrameMilliseconds: number;
         readonly maximumFrameMilliseconds: number;
+        readonly averagePhysicsMilliseconds: number;
+        readonly averageSceneMilliseconds: number;
+        readonly averageSubmissionMilliseconds: number;
+        readonly p95SubmissionMilliseconds: number;
+        readonly maximumSubmissionMilliseconds: number;
+        readonly averageGpuRenderMilliseconds: number | null;
+        readonly p95GpuRenderMilliseconds: number | null;
+        readonly averageGpuComputeMilliseconds: number | null;
+        readonly p95GpuComputeMilliseconds: number | null;
+        readonly averageGpuTotalMilliseconds: number | null;
+        readonly p95GpuTotalMilliseconds: number | null;
+        readonly gpuTimestampSamples: number;
         readonly programsBefore: number;
         readonly programsAfter: number;
         readonly diagnostics: CapeDemoDiagnostics;

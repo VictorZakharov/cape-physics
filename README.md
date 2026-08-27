@@ -42,61 +42,66 @@ Everything is generated at runtime. There are no downloaded models, textures, or
 
 ## Rendering backends
 
-The demo uses Three.js's universal `WebGPURenderer` and TSL material graphs. It selects WebGPU on first launch when the browser exposes it, and otherwise uses the WebGL 2 backend. The switch in the lower-right corner lets you compare or override that choice at any time. Reports show both the requested and active backend, so a fallback cannot be mistaken for a WebGPU result.
+The demo selects WebGPU when the browser supports it and otherwise uses WebGL 2. The `WEBGPU` / `WEBGL` switch in the lower-right corner reloads the selected backend and remembers the choice. Performance reports show both the requested and active backend, so a browser fallback is never mislabeled.
 
-WebGPU performance is browser- and GPU-dependent; Three.js also notes that its WebGPU renderer remains experimental and can be slower in some cases. The renderer choice therefore stays visible instead of assuming one backend is universally faster. See the [Three.js WebGPU renderer guide](https://threejs.org/manual/en/webgpurenderer).
-
-This migration covers rendering and post-processing. The cape solver remains on the CPU because its current sequential constraints and collision recovery need a separate compute-oriented redesign rather than a mechanical shader port.
+WebGPU handles both rendering and cape simulation. WebGL keeps the same visual behavior through the CPU cloth solver, making it a compatibility path as well as a useful comparison. Three.js still describes `WebGPURenderer` as experimental, so results can vary by browser and driver; see the [Three.js WebGPU renderer guide](https://threejs.org/manual/en/webgpurenderer).
 
 ## How the cape simulation works
 
-The cape uses **position-based dynamics (PBD)** at a fixed 120 Hz. PBD works well for interactive cloth because it corrects particle positions directly, keeping distance and collision constraints stable without an expensive general-purpose rigid-body solver.
-
-The current cape is a 13 × 18 grid: 234 simulated particles connected by structural, shear, bending, and long-range anti-fold constraints. Its 13-particle top row is pinned to an animated arc around the neck. The remaining rows start from a tailored rest shape over the shoulders and are free to move.
+The cape is a 13 × 18 grid—234 particles—simulated with position-based dynamics (PBD) at a fixed 120 Hz. Its top row follows an animated arc around the neck, while structural, shear, bending, and anti-fold constraints shape the free rows.
 
 ```text
 animated neckline
        ↓
-predict motion from inertia, gravity, and airflow
+predict inertia, gravity, and airflow
        ↓
-project cloth-shape constraints (10 solver passes)
+project cloth and point-contact constraints (10 passes)
        ↓
-resolve self, body, rock, and cave contacts
+resolve cloth-face contact in race-free triangle colors
        ↓
-rebuild the render mesh and smooth normals
+render positions and normals directly from GPU storage
 ```
 
-The collision system is deliberately hybrid:
+The WebGPU path keeps current positions, previous positions, topology, anchors, and collider data in persistent storage buffers. Each fixed step submits one prediction dispatch and one fused solver dispatch; normal gameplay performs no particle readback. Shape constraints use position-owned Jacobi projection from a compact snapshot. Body-face and rock-face constraints update three vertices at once, so the grid triangles are processed in eight non-overlapping colors with a storage barrier between colors. That preserves coherent corrections without float atomics or write races.
 
-- **Character:** shallow elliptical capsules and fitted analytic proxies follow the animated torso, shoulders, limbs, boots, neck armor, hips, and waist strap. One-sided back projection lets the cloth rest close to the body without being pushed toward the character's front.
-- **Rocks:** authored contact rocks use their exact transformed triangle surfaces. Swept particle tests catch fast motion, while sphere-to-cloth-triangle checks catch thin geometry passing through the middle of a cloth face.
-- **Cave:** the displaced floor, banks, walls, and ceiling are queried directly; compact geometry-derived proxies cover formations and fixtures.
-- **Cape itself:** an allocation-free spatial hash enforces cloth thickness without comparing every particle with every other particle.
-- **Recovery:** bounded corrections, coupled body/world passes, fold guards, damping, and last-known-safe contact states prevent tunnelling, explosive spikes, and perpetual jitter.
+Collision is intentionally hybrid:
 
-This is **not a global signed-distance-field simulation**. A static SDF can make broad environmental queries inexpensive, but it would not replace the tight moving-body fit or the exact edge and face contact needed for the irregular test rocks. The hybrid approach keeps common character contacts cheap while retaining precise geometry where visible errors matter most.
+- Animated body parts use fitted elliptical capsules, including complementary capsule-point/cloth-face contact so a limb cannot pass through the middle of a coarse triangle.
+- The cave floor, banks, walls, and ceiling use direct procedural surface queries.
+- Contact rocks use exact convex triangle geometry, continuous particle sweeps, and last-known-safe triangle recovery for thin edge/face crossings.
+- Self-contact, fold limits, bounded corrections, and coupled body/world reconciliation prevent tunnelling, spikes, and contact jitter.
 
-The current solver predicts motion once and then applies ten sequential Gauss-Seidel projection passes; it is not a “small steps” solver. Local phase profiling showed that repeated body and cave queries—not the shape projections—were the dominant CPU cost. The optimized path prepares animated body-collider coordinates once per physics step, culls cloth-face work by cape row, and reuses static cave samples away from contact while refreshing boundary particles every pass. This keeps the same ten-pass cloth behavior and exact final contacts with substantially less repeated work.
+This is not a global signed-distance-field simulation. Analytic moving-body queries are cheaper and fit the character more closely, while exact convex rock faces preserve the visible contact boundary. It is also not the Macklin “small steps” variant: motion is predicted once per 120 Hz step and the tuned shape is projected ten times. Changing that integration scheme would be a separate numerical and visual change, not a mechanical performance port.
 
-The solver follows the approach introduced in [Position Based Dynamics by Müller et al.](https://matthias-research.github.io/pages/publications/posBasedDyn.pdf). Its swept fail-safe and interference-recovery strategy is informed by [Robust Treatment of Collisions, Contact and Friction for Cloth Animation by Bridson, Fedkiw, and Anderson](https://graphics.stanford.edu/papers/cloth-sig02/).
+The CPU fallback applies the same PBD and collision model sequentially, then uploads the updated mesh. The WebGPU implementation instead exposes its storage buffer directly to the cape material, including dynamically reconstructed normals.
+
+The implementation builds on [Position Based Dynamics by Müller et al.](https://matthias-research.github.io/pages/publications/posBasedDyn.pdf) and the continuous-contact ideas in [Robust Treatment of Collisions, Contact and Friction for Cloth Animation](https://graphics.stanford.edu/papers/cloth-sig02/). GPU buffer ownership and compute/render handoff were cross-checked against [WebGPU Cloth](https://github.com/blazecus/WebGPU_Cloth), [Jack Blazes' WebGPU cloth port notes](https://jackblazes.net/posts/2024-10-09-clothsim_ported.html), and [Junyi Choi's WebGPU mass-spring project](https://junyic.blogspot.com/2024/05/06-webgpu-cloth-simulation-project-mass.html); the cape's solver and collision model remain project-specific.
 
 ## Performance
 
-Reference measurements below were captured on August 27, 2026 using Edge 151, Windows, an AMD Ryzen 9 5900X, and an NVIDIA GeForce RTX 4070 Ti. Each renderer result is the median of three independent runs over the same warmed running route at 1600 × 900, DPR 1, and `ADAPTIVE ULTRA`. Every run rendered 1,728 frames and waited for backend completion after each frame; these are throughput diagnostics, not display-refresh measurements.
+Reference measurements were captured on August 27, 2026 with Edge 151, Windows, an AMD Ryzen 9 5900X, and an NVIDIA GeForce RTX 4070 Ti. Each backend value is the median of three independent warmed runs at 1600 × 900, DPR 1, and `ADAPTIVE ULTRA`: 1,728 frames over the same 12-second running route, with backend completion amortized every 12 frames.
 
-| Benchmark | Median result | Workload |
-| --- | ---: | --- |
-| Main baseline, legacy WebGL renderer | **3.07 ms average**, 4.60 ms p95, 8.30 ms maximum | Commit `572630f`, before the universal renderer migration |
-| Migrated pipeline, forced WebGL 2 | **4.21 ms average**, 6.30 ms p95, 9.80 ms maximum | Same route through the universal renderer's WebGL backend |
-| Migrated pipeline, native WebGPU | **12.06 ms average**, 18.10 ms p95, 30.10 ms maximum | Same route through WebGPU; no fallback was active |
-| Shader stability | **110 → 110 programs** | No runtime shader-program growth in either migrated backend |
-| Renderer-free full-scene simulation | **2.21–2.28 ms per 120 Hz step**, down 52–53% from 4.703 ms | Two consecutive 1,440-step runs; 12 simulated seconds completed in 3.18–3.28 seconds (~3.66–3.78× real time) |
-| Full-frame renderer counters | **74 draw calls, 67,577 triangles** while running | Same scene complexity in WebGL and WebGPU |
-| Simulation integrity | **0 mm world penetration**, 0.014 mm maximum body penetration | Dynamic jump, landing, rock contact, water, and full-scene traversal |
+| Metric | WebGPU + GPU cape | WebGL 2 + CPU cape | Result |
+| --- | ---: | ---: | ---: |
+| Synchronized frame | **3.48 ms** average / 3.99 ms p95 / 6.16 ms max | 5.30 ms / 6.59 ms / 8.70 ms | **1.52× faster** average |
+| Main-thread cape physics | **0.213 ms/frame** | 2.793 ms/frame | **13.1× less CPU time** |
+| Ready time | **7.26 s** | 18.06 s | **2.49× faster** |
+| GPU timestamp queries | render 0.301 ms + cape compute 0.975 ms = **1.277 ms average** / 1.442 ms p95 total | Not available | 144 samples/run |
+| Shader stability | 87 → 87 programs | 85 → 85 programs | No warm-route growth |
+| Scene complexity | 74 draw calls / 67,577 triangles | 74 / 67,577 | Matched |
 
-These are reference-machine measurements, not universal guarantees. On this host, WebGPU was slower than both WebGL paths, which is why the backend toggle and truthful backend telemetry are part of the demo. A browser's per-frame WebGPU queue completion also has different synchronization overhead from WebGL's `finish`; normal gameplay pipelines work across animation frames instead of deliberately waiting after every submission. Measure on the hardware you care about before drawing a platform-wide conclusion. The adaptive renderer can reduce internal resolution under sustained load and rate-limits target resizing to avoid quality oscillation.
+Against the recorded WebGPU renderer baseline before GPU cape compute, synchronized frame time fell from 5.23 ms to 3.48 ms (**1.51× faster**) and main-thread cape physics fell from 3.085 ms to 0.213 ms (**14.5× less CPU time**). Rendering and browser submission now dominate the frame, so the whole application does not scale by the full physics-only factor.
 
-Reproduce the focused render profile with `bun run profile:render`; set `CAPE_PROFILE_RENDERER` to `webgpu` or `webgl` first. The command only reports measurements and never enforces a performance threshold. For a telemetry-only physics run, set `CAPE_ENFORCE_PERFORMANCE_BUDGET=false` before `bun run harness`; without that override, the command also applies the optional local timing budget. The in-demo FPS panel provides the most relevant result for your own hardware—click it to copy the full rolling report, including callback pacing, main-thread physics/scene/render-submission phases, truthful full-frame renderer counters, and a low-frequency cape-solver phase sample. Renderer submission is CPU time and is explicitly not presented as GPU completion time.
+These are throughput diagnostics, not display-refresh measurements or universal guarantees. GPU, browser, driver, thermal state, and scene visibility all matter. The in-game FPS graph is the best measurement on your hardware; click it to copy a rolling report with callback pacing, physics, scene, submission, renderer counters, and cape state.
+
+Reproduce the local, non-gating profile with:
+
+```powershell
+$env:CAPE_PROFILE_RENDERER = "webgpu" # or "webgl"
+bun run profile:render
+```
+
+Timing budgets are never CI merge gates. The visual audit and automated tests enforce deterministic correctness instead.
 
 ## Run locally
 

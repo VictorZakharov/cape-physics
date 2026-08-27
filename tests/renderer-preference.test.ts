@@ -6,7 +6,7 @@ import {
 } from '../src/core/RendererPreference';
 
 describe('renderer preference', () => {
-  test('defaults to WebGPU only when the browser exposes it', () => {
+  test('defaults to WebGPU when supported and WebGL otherwise', () => {
     expect(resolveRendererPreference({
       search: '',
       storedPreference: null,

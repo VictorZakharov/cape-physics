@@ -16,6 +16,12 @@ export interface CaveHorizontalBounds {
   maximum: number;
 }
 
+export interface CaveShellSampleData {
+  readonly x: Float32Array;
+  readonly y: Float32Array;
+  readonly samplesPerSection: number;
+}
+
 export class CaveShellSampler {
   private readonly xSamples = new Float32Array((CAVE.segments + 1) * FULL_SAMPLE_COUNT);
   private readonly ySamples = new Float32Array((CAVE.segments + 1) * FULL_SAMPLE_COUNT);
@@ -87,6 +93,15 @@ export class CaveShellSampler {
     if (!Number.isFinite(target.minimum)) target.minimum = center - this.profile.halfWidth(z);
     if (!Number.isFinite(target.maximum)) target.maximum = center + this.profile.halfWidth(z);
     return target;
+  }
+
+  /** Static shell samples shared with the WebGPU collision lookup buffer. */
+  public getSampleData(): CaveShellSampleData {
+    return {
+      x: this.xSamples,
+      y: this.ySamples,
+      samplesPerSection: FULL_SAMPLE_COUNT,
+    };
   }
 
   private build(): void {

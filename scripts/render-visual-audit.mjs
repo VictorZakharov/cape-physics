@@ -104,6 +104,7 @@ let browserLog = '';
 browser.stdout.on('data', (chunk) => { browserLog += chunk; });
 browser.stderr.on('data', (chunk) => { browserLog += chunk; });
 let debuggerConnection;
+let debuggerEvents = [];
 
 try {
   const targets = await fetchJsonWithRetry(`http://127.0.0.1:${debugPort}/json/list`, 40_000);
@@ -111,6 +112,7 @@ try {
   if (!page?.webSocketDebuggerUrl) throw new Error('Headless browser did not expose the audit page.');
   debuggerConnection = await connectDebugger(page.webSocketDebuggerUrl);
   const { command, events } = debuggerConnection;
+  debuggerEvents = events;
   await Promise.all([
     command('Runtime.enable'),
     command('Log.enable'),
@@ -149,6 +151,12 @@ try {
   assert(copiedPerformanceReport.includes('Renderer:'), 'copied performance report omitted renderer data');
   assert(copiedPerformanceReport.includes('Main thread:'), 'copied performance report omitted workload phases');
   assert(copiedPerformanceReport.includes('Cape solver:'), 'copied performance report omitted sampled cape phases');
+  assert(
+    copiedPerformanceReport.includes(
+      rendererPreference === 'webgpu' ? 'WebGPU compute PBD' : 'sequential CPU PBD',
+    ),
+    'copied performance report mislabeled the active cape solver',
+  );
   assert(copiedPerformanceReport.includes('Scene:'), 'copied performance report omitted scene data');
   assert(
     !copiedPerformanceReport.includes('| 1 draw calls | 1 triangles |'),
@@ -252,6 +260,7 @@ try {
         + `contacts=${state.cape.worldContacts.total - contactsBefore}, `
         + `body=${state.cape.maximumBodyPenetration} m, `
         + `environment=${state.cape.maximumEnvironmentPenetration} m, `
+        + `environmentByKind=${JSON.stringify(state.cape.environmentPenetrationByKind)}, `
         + `face=${state.cape.maximumEnvironmentFacePenetration} m, `
         + `fold=${state.cape.maximumUpwardFold} m, `
         + `strain=${state.cape.maximumStructuralError} m, `
@@ -583,9 +592,18 @@ try {
   assert(afterWalk.player.position[2] < beforeWalk.player.position[2] - 4, 'W movement did not traverse the cave');
   assert(afterWalk.player.inWater, 'visual traversal did not stop inside the first puddle');
   assert(afterWalk.water.footstepRipples >= 2, 'walking did not emit footstep ripples');
-  assert(afterWalk.cape.maximumStructuralError < 0.04, 'cape constraints drifted during visual traversal');
-  assert(afterWalk.cape.maximumBodyPenetration < 0.002, 'cape penetrated the animated character');
-  assert(afterWalk.cape.maximumEnvironmentPenetration < 0.002, 'cape penetrated the cave during visual traversal');
+  assert(
+    afterWalk.cape.maximumStructuralError < 0.04,
+    `cape constraints drifted during visual traversal (${afterWalk.cape.maximumStructuralError} m; ${JSON.stringify({ beforeHem: beforeWalk.cape.hemCenter, afterHem: afterWalk.cape.hemCenter, player: afterWalk.player.position, body: afterWalk.cape.maximumBodyPenetration, environment: afterWalk.cape.environmentPenetrationByKind })})`,
+  );
+  assert(
+    afterWalk.cape.maximumBodyPenetration < 0.002,
+    `cape penetrated the animated character (${afterWalk.cape.maximumBodyPenetration} m; ${JSON.stringify({ kind: afterWalk.cape.bodyPenetrationByKind, collider: afterWalk.cape.bodyPenetrationByCollider })})`,
+  );
+  assert(
+    afterWalk.cape.maximumEnvironmentPenetration < 0.002,
+    `cape penetrated the cave during visual traversal (${afterWalk.cape.maximumEnvironmentPenetration} m; ${JSON.stringify({ penetration: afterWalk.cape.environmentPenetrationByKind, beforeHem: beforeWalk.cape.hemCenter, afterHem: afterWalk.cape.hemCenter, beforePlayer: beforeWalk.player.position, afterPlayer: afterWalk.player.position })})`,
+  );
   assert(afterWalk.cape.maximumEnvironmentFacePenetration < 0.002, 'a cave object pierced a cape triangle during visual traversal');
   assert(afterWalk.cape.hemBackOffset < 0.75, 'walking pulled the cape into a running-length trail');
   assert(
@@ -692,7 +710,12 @@ try {
   await advance(0.9, 1 / 120);
   await setMovement(0, 0);
   const wrapState = await advance(0.12, 1 / 120);
-  assert(wrapState.cape.maximumBodyPenetration < 0.002, 'cape penetrated the body during visual reversal');
+  assert(
+    wrapState.cape.maximumBodyPenetration < 0.002,
+    `cape penetrated the body during visual reversal `
+      + `(${JSON.stringify(wrapState.cape.bodyPenetrationByKind)}; `
+      + `${JSON.stringify(wrapState.cape.bodyPenetrationByCollider)})`,
+  );
   await capture('cape-wrap-reversal');
 
   await setPlayerPose([-2.38, 0, -15], 0);
@@ -943,6 +966,15 @@ try {
     maximumBodyPenetration: 0,
     maximumEnvironmentPenetration: 0,
     maximumEnvironmentFacePenetration: 0,
+    maximumEnvironmentDetail: null,
+    maximumEnvironmentByKind: {
+      sphere: 0,
+      rock: 0,
+      floor: 0,
+      wall: 0,
+      sphereFace: 0,
+      rockFace: 0,
+    },
   };
   let smallRockContact = null;
   let minimumSmallRockGap = Number.POSITIVE_INFINITY;
@@ -963,6 +995,13 @@ try {
       smallRockTraversal.maximumCapeVerticalStep,
       state.cape.maximumParticleVerticalMotion,
     );
+    if (
+      state.cape.maximumEnvironmentPenetration
+      > smallRockTraversal.maximumEnvironmentPenetration
+    ) {
+      smallRockTraversal.maximumEnvironmentDetail =
+        state.cape.environmentPenetrationByKind.rockFaceDetail;
+    }
     for (const metric of [
       'maximumUpwardFold',
       'maximumStructuralError',
@@ -973,6 +1012,12 @@ try {
       smallRockTraversal[metric] = Math.max(
         smallRockTraversal[metric],
         state.cape[metric],
+      );
+    }
+    for (const kind of Object.keys(smallRockTraversal.maximumEnvironmentByKind)) {
+      smallRockTraversal.maximumEnvironmentByKind[kind] = Math.max(
+        smallRockTraversal.maximumEnvironmentByKind[kind],
+        state.cape.environmentPenetrationByKind[kind],
       );
     }
     const closestCenter = state.cape.closestActiveRockCenter;
@@ -1080,7 +1125,9 @@ try {
     smallRockTraversal.maximumEnvironmentPenetration < 0.002,
     `small-stone traversal penetrated world geometry `
       + `(${smallRockTraversal.maximumEnvironmentPenetration.toFixed(4)} m, `
-      + `face=${smallRockTraversal.maximumEnvironmentFacePenetration.toFixed(4)} m)`,
+      + `face=${smallRockTraversal.maximumEnvironmentFacePenetration.toFixed(4)} m, `
+      + `byKind=${JSON.stringify(smallRockTraversal.maximumEnvironmentByKind)}, `
+      + `detail=${JSON.stringify(smallRockTraversal.maximumEnvironmentDetail)})`,
   );
   assert(
     smallRockTraversal.maximumEnvironmentFacePenetration < 0.002,
@@ -1107,6 +1154,8 @@ try {
     maximumBodyPenetration: 0,
     maximumEnvironmentPenetration: 0,
     maximumEnvironmentFacePenetration: 0,
+    maximumEnvironmentDetail: null,
+    maximumEnvironmentByKind: null,
   };
   for (let frame = 0; frame < 180; frame += 1) {
     const state = await advance(1 / 120, 1 / 120);
@@ -1118,6 +1167,13 @@ try {
       stressRockStability.maximumCapeVerticalStep,
       state.cape.maximumParticleVerticalMotion,
     );
+    if (
+      state.cape.maximumEnvironmentPenetration
+      > stressRockStability.maximumEnvironmentPenetration
+    ) {
+      stressRockStability.maximumEnvironmentDetail = state.cape.environmentPenetrationByKind;
+      stressRockStability.maximumEnvironmentByKind = state.cape.environmentPenetrationByKind;
+    }
     for (const metric of [
       'maximumUpwardFold',
       'maximumStructuralError',
@@ -1136,7 +1192,10 @@ try {
   assert(stressRockStability.maximumUpwardFold < 0.035, 'sustained boulder contact folded the cape upward');
   assert(stressRockStability.maximumStructuralError < 0.055, 'sustained boulder contact overstretched the cape');
   assert(stressRockStability.maximumBodyPenetration < 0.002, 'sustained boulder contact pushed cape through the body');
-  assert(stressRockStability.maximumEnvironmentPenetration < 0.002, 'sustained boulder contact penetrated world geometry');
+  assert(
+    stressRockStability.maximumEnvironmentPenetration < 0.002,
+    `sustained boulder contact penetrated world geometry (${JSON.stringify(stressRockStability)})`,
+  );
   assert(stressRockStability.maximumEnvironmentFacePenetration < 0.002, 'sustained boulder contact pierced a cape face');
   const stressRockSettled = await diagnostics();
   await setCameraPose(
@@ -1342,7 +1401,26 @@ try {
   console.log(`Ripple emissions: ${initial.water.rippleEmissions} -> ${final.water.rippleEmissions}`);
   console.log(`Output: ${outputRoot}`);
 } catch (error) {
-  throw new Error(`${error.message}\nHeadless browser log:\n${browserLog}`);
+  const relevantDebuggerEvents = [...new Set(debuggerEvents.flatMap(({ method, params }) => {
+    if (method === 'Runtime.consoleAPICalled') {
+      const message = params.args?.map((argument) => (
+        argument.value ?? argument.description ?? argument.type
+      )).join(' ');
+      return [`console ${params.type}: ${message}`];
+    }
+    if (method === 'Runtime.exceptionThrown') {
+      return [`exception: ${params.exceptionDetails?.exception?.description
+        ?? params.exceptionDetails?.text}`];
+    }
+    if (method === 'Log.entryAdded') {
+      return [`${params.entry?.source} ${params.entry?.level}: ${params.entry?.text}`];
+    }
+    return [];
+  }))].slice(0, 20).map((message) => message.slice(0, 4_000));
+  throw new Error(
+    `${error.message}\nHeadless browser log:\n${browserLog}`
+      + `\nPage diagnostics:\n${relevantDebuggerEvents.join('\n')}`,
+  );
 } finally {
   if (debuggerConnection) {
     await Promise.race([
