@@ -35,6 +35,7 @@ export interface TechDemoHarnessReport {
   readonly capeHemBackOffset: number;
   readonly capeMinimumHemGroundClearance: number;
   readonly capeStateFinite: boolean;
+  readonly capePerformance: ReturnType<CapeSimulation['getPerformanceDiagnostics']>;
   readonly jump: {
     readonly maximumGroundClearance: number;
     readonly maximumCapeHemRise: number;
@@ -330,6 +331,7 @@ export function runTechDemoHarness(simulatedSeconds = 12): TechDemoHarnessReport
     capeHemBackOffset,
     capeMinimumHemGroundClearance,
     capeStateFinite,
+    capePerformance: cape.getPerformanceDiagnostics(),
     jump: {
       maximumGroundClearance: jumpMaximumGroundClearance,
       maximumCapeHemRise: jumpMaximumCapeHemRise,

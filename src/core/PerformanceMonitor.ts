@@ -22,6 +22,35 @@ export interface PerformanceSnapshot {
   readonly windowElapsedMilliseconds: number;
 }
 
+export interface FrameWorkloadSample {
+  readonly physicsMilliseconds: number;
+  readonly sceneMilliseconds: number;
+  readonly renderMilliseconds: number;
+  readonly physicsSteps: number;
+}
+
+export interface WorkloadSnapshot {
+  readonly averageMainThreadMilliseconds: number;
+  readonly p95MainThreadMilliseconds: number;
+  readonly averagePhysicsMilliseconds: number;
+  readonly averageSceneMilliseconds: number;
+  readonly averageRenderMilliseconds: number;
+  readonly averagePhysicsSteps: number;
+  readonly maximumPhysicsSteps: number;
+  readonly sampleCount: number;
+}
+
+export const EMPTY_WORKLOAD_SNAPSHOT: WorkloadSnapshot = Object.freeze({
+  averageMainThreadMilliseconds: 0,
+  p95MainThreadMilliseconds: 0,
+  averagePhysicsMilliseconds: 0,
+  averageSceneMilliseconds: 0,
+  averageRenderMilliseconds: 0,
+  averagePhysicsSteps: 0,
+  maximumPhysicsSteps: 0,
+  sampleCount: 0,
+});
+
 export class PerformanceMonitor {
   private readonly panel: HTMLElement;
   private readonly fpsLabel: HTMLElement;
@@ -32,10 +61,18 @@ export class PerformanceMonitor {
   private readonly copyLabel: HTMLElement;
   private readonly sampleTimestamps = new Float64Array(MAXIMUM_FRAME_SAMPLES);
   private readonly sampleDurations = new Float64Array(MAXIMUM_FRAME_SAMPLES);
+  private readonly workloadTimestamps = new Float64Array(MAXIMUM_FRAME_SAMPLES);
+  private readonly physicsDurations = new Float64Array(MAXIMUM_FRAME_SAMPLES);
+  private readonly sceneDurations = new Float64Array(MAXIMUM_FRAME_SAMPLES);
+  private readonly renderDurations = new Float64Array(MAXIMUM_FRAME_SAMPLES);
+  private readonly physicsStepCounts = new Uint8Array(MAXIMUM_FRAME_SAMPLES);
   private readonly durationScratch: number[] = [];
+  private readonly workloadScratch: number[] = [];
   private readonly history: number[] = [];
   private sampleStart = 0;
   private sampleCount = 0;
+  private workloadStart = 0;
+  private workloadCount = 0;
   private lastTimestamp: number | null = null;
   private lastPaint = 0;
   private copyFeedbackTimer: number | null = null;
@@ -52,6 +89,7 @@ export class PerformanceMonitor {
     sampleCount: 0,
     windowElapsedMilliseconds: 0,
   };
+  private workloadSnapshot: WorkloadSnapshot = EMPTY_WORKLOAD_SNAPSHOT;
 
   public constructor(
     private readonly getReportDetails: () => PerformanceReportDetails,
@@ -101,6 +139,28 @@ export class PerformanceMonitor {
     return this.snapshot;
   }
 
+  public recordWorkload(timestamp: number, sample: FrameWorkloadSample): void {
+    const writeIndex = (this.workloadStart + this.workloadCount) % MAXIMUM_FRAME_SAMPLES;
+    this.workloadTimestamps[writeIndex] = timestamp;
+    this.physicsDurations[writeIndex] = Math.max(0, sample.physicsMilliseconds);
+    this.sceneDurations[writeIndex] = Math.max(0, sample.sceneMilliseconds);
+    this.renderDurations[writeIndex] = Math.max(0, sample.renderMilliseconds);
+    this.physicsStepCounts[writeIndex] = Math.max(
+      0,
+      Math.min(255, Math.floor(sample.physicsSteps)),
+    );
+    if (this.workloadCount < MAXIMUM_FRAME_SAMPLES) {
+      this.workloadCount += 1;
+    } else {
+      this.workloadStart = (this.workloadStart + 1) % MAXIMUM_FRAME_SAMPLES;
+    }
+    this.trimWorkload(timestamp - PERFORMANCE_WINDOW_MS);
+  }
+
+  public getWorkloadSnapshot(): WorkloadSnapshot {
+    return this.workloadSnapshot;
+  }
+
   public resume(timestamp: number): void {
     this.lastTimestamp = timestamp;
   }
@@ -108,6 +168,9 @@ export class PerformanceMonitor {
   public readonly reset = (): void => {
     this.sampleStart = 0;
     this.sampleCount = 0;
+    this.workloadStart = 0;
+    this.workloadCount = 0;
+    this.workloadSnapshot = EMPTY_WORKLOAD_SNAPSHOT;
     this.history.length = 0;
     this.lastTimestamp = null;
     this.historyPath.setAttribute('d', '');
@@ -169,8 +232,58 @@ export class PerformanceMonitor {
       sampleCount: this.sampleCount,
       windowElapsedMilliseconds,
     };
+    this.recalculateWorkload();
     this.history.push(averageFps);
     if (this.history.length > 78) this.history.shift();
+  }
+
+  private recalculateWorkload(): void {
+    this.workloadScratch.length = this.workloadCount;
+    let physicsTotal = 0;
+    let sceneTotal = 0;
+    let renderTotal = 0;
+    let stepTotal = 0;
+    let maximumPhysicsSteps = 0;
+    for (let index = 0; index < this.workloadCount; index += 1) {
+      const sampleIndex = (this.workloadStart + index) % MAXIMUM_FRAME_SAMPLES;
+      const physics = this.physicsDurations[sampleIndex] ?? 0;
+      const scene = this.sceneDurations[sampleIndex] ?? 0;
+      const render = this.renderDurations[sampleIndex] ?? 0;
+      const physicsSteps = this.physicsStepCounts[sampleIndex] ?? 0;
+      physicsTotal += physics;
+      sceneTotal += scene;
+      renderTotal += render;
+      stepTotal += physicsSteps;
+      maximumPhysicsSteps = Math.max(maximumPhysicsSteps, physicsSteps);
+      this.workloadScratch[index] = physics + scene + render;
+    }
+    this.workloadScratch.sort((first, second) => first - second);
+    const count = this.workloadCount;
+    const total = physicsTotal + sceneTotal + renderTotal;
+    const p95Index = Math.min(
+      Math.max(0, count - 1),
+      Math.floor(count * 0.95),
+    );
+    this.workloadSnapshot = {
+      averageMainThreadMilliseconds: count > 0 ? total / count : 0,
+      p95MainThreadMilliseconds: count > 0 ? this.workloadScratch[p95Index] ?? 0 : 0,
+      averagePhysicsMilliseconds: count > 0 ? physicsTotal / count : 0,
+      averageSceneMilliseconds: count > 0 ? sceneTotal / count : 0,
+      averageRenderMilliseconds: count > 0 ? renderTotal / count : 0,
+      averagePhysicsSteps: count > 0 ? stepTotal / count : 0,
+      maximumPhysicsSteps,
+      sampleCount: count,
+    };
+  }
+
+  private trimWorkload(cutoff: number): void {
+    while (
+      this.workloadCount > 0
+      && this.workloadTimestamps[this.workloadStart]! < cutoff
+    ) {
+      this.workloadStart = (this.workloadStart + 1) % MAXIMUM_FRAME_SAMPLES;
+      this.workloadCount -= 1;
+    }
   }
 
   private sortedPercentile(ratio: number): number {

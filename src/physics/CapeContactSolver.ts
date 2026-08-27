@@ -33,6 +33,7 @@ import {
 
 const WORLD_QUERY_RADIUS = CAPE.length + 2.2;
 const WORLD_BROADPHASE_SKIN = 0.08;
+const CAVE_PROFILE_REFRESH_MARGIN = 0.16;
 const BODY_FACE_SOLVER_PASSES = 3;
 // Discrete overlap recovery must not move one cloth particle by a sizeable
 // fraction of a segment in one 120 Hz step. Continuous sweeps remain
@@ -41,6 +42,23 @@ const BODY_FACE_SOLVER_PASSES = 3;
 const MAXIMUM_DISCRETE_ROCK_CORRECTION = 0.015;
 const MAXIMUM_BLOCKING_ROCK_CORRECTION = 0.03;
 const MAXIMUM_CONTINUOUS_ROCK_SWEEP = 0.08;
+
+interface PreparedBodyCollider {
+  startX: number;
+  startY: number;
+  startZ: number;
+  axisX: number;
+  axisY: number;
+  axisZ: number;
+  lateralAxisX: number;
+  lateralAxisY: number;
+  lateralAxisZ: number;
+  lateralLengthSquared: number;
+  lateralRadius: number;
+  depthRadius: number;
+  minimumY: number;
+  maximumY: number;
+}
 
 export interface WorldContactDiagnostics {
   readonly lastStep: number;
@@ -58,11 +76,8 @@ export class CapeContactSolver {
   private readonly activeWorldSpheres: WorldSphereCollider[] = [];
   private readonly activeRocks: WorldRockCollider[] = [];
   private readonly postCaveWorldSpheres: WorldSphereCollider[] = [];
+  private readonly preparedBodyColliders: PreparedBodyCollider[] = [];
   private readonly delta = new THREE.Vector3();
-  private readonly capsuleAxis = new THREE.Vector3();
-  private readonly lateralAxis = new THREE.Vector3();
-  private readonly particleLateral = new THREE.Vector3();
-  private readonly closestPoint = new THREE.Vector3();
   private readonly sweep = new THREE.Vector3();
   private readonly sweepStart = new THREE.Vector3();
   private readonly hitPoint = new THREE.Vector3();
@@ -74,12 +89,18 @@ export class CapeContactSolver {
   private worldContactsLastStep = 0;
   private worldContactEvents = 0;
   private bodySolvePass = 0;
+  private caveSolvePass = 0;
   private readonly bodyFaceCollision: ClothBodyCollision;
   private readonly faceCollision: ClothWorldCollision;
   private readonly rockFaceCollision: ClothRockCollision;
   private readonly rockQuery = new RockColliderQuery();
   private readonly rockCorrectionUsed: Float32Array;
   private readonly rockSweepResolved: Uint8Array;
+  private readonly caveFloor: Float64Array;
+  private readonly caveCeilingHeight: Float64Array;
+  private readonly caveMinimumX: Float64Array;
+  private readonly caveMaximumX: Float64Array;
+  private readonly caveNearBoundary: Uint8Array;
 
   public constructor(
     private readonly positions: readonly THREE.Vector3[],
@@ -102,6 +123,11 @@ export class CapeContactSolver {
     );
     this.rockCorrectionUsed = new Float32Array(inverseMass.length);
     this.rockSweepResolved = new Uint8Array(inverseMass.length);
+    this.caveFloor = new Float64Array(inverseMass.length);
+    this.caveCeilingHeight = new Float64Array(inverseMass.length);
+    this.caveMinimumX = new Float64Array(inverseMass.length);
+    this.caveMaximumX = new Float64Array(inverseMass.length);
+    this.caveNearBoundary = new Uint8Array(inverseMass.length);
     this.rockFaceCollision = new ClothRockCollision(
       positions,
       previous,
@@ -114,9 +140,16 @@ export class CapeContactSolver {
     );
   }
 
-  public beginStep(anchorCenter: THREE.Vector3, colliders: readonly WorldCollider[]): void {
+  public beginStep(
+    anchorCenter: THREE.Vector3,
+    colliders: readonly WorldCollider[],
+    bodyColliders: readonly CapsuleCollider[],
+    back: THREE.Vector3,
+  ): void {
     this.worldContactsLastStep = 0;
     this.bodySolvePass = 0;
+    this.caveSolvePass = 0;
+    this.prepareBodyColliders(bodyColliders, back);
     this.rockCorrectionUsed.fill(0);
     this.rockSweepResolved.fill(0);
     this.rockFaceCollision.beginStep();
@@ -134,7 +167,7 @@ export class CapeContactSolver {
       const position = this.positions[index];
       const previous = this.previous[index];
       if (!position || !previous) continue;
-      for (const collider of colliders) {
+      for (const collider of this.preparedBodyColliders) {
         const penetration = this.getCapsulePenetration(position, collider, back);
         if (penetration <= 0) continue;
         position.addScaledVector(back, penetration);
@@ -191,32 +224,59 @@ export class CapeContactSolver {
   }
 
   public solveCave(): void {
+    this.caveSolvePass += 1;
+    // Constraint projection moves particles only a few centimetres per pass.
+    // Reuse the static cave samples between the first and final pass, while
+    // still applying their bounds every pass. Particles close to the floor,
+    // wall, or ceiling resample every pass, and the final refresh preserves
+    // exact contact after all intervening body and cloth corrections.
+    const refreshAllProfiles = this.caveSolvePass === 1
+      || this.caveSolvePass >= CAPE.solverIterations;
     for (let index = CAPE.columns; index < this.positions.length; index += 1) {
       const position = this.positions[index];
       const previous = this.previous[index];
       if (!position || !previous) continue;
+      const refreshProfile = refreshAllProfiles || this.caveNearBoundary[index] === 1;
 
       const clampedZ = THREE.MathUtils.clamp(position.z, CAVE.endZ + 0.08, CAVE.startZ - 0.08);
       if (clampedZ !== position.z) this.applyAxisCorrection(position, previous, 'z', clampedZ - position.z);
 
-      const floor = caveGroundHeightAt(position.x, position.z) + CLOTH_WORLD_CLEARANCE;
+      const floor = refreshProfile
+        ? caveGroundHeightAt(position.x, position.z) + CLOTH_WORLD_CLEARANCE
+        : this.caveFloor[index] ?? 0;
+      if (refreshProfile) this.caveFloor[index] = floor;
       if (position.y < floor) this.applyAxisCorrection(position, previous, 'y', floor - position.y);
 
-      const ceiling = caveCeiling(position.z) + 0.12 - CLOTH_WORLD_CLEARANCE;
+      const ceiling = refreshProfile
+        ? caveCeiling(position.z) + 0.12 - CLOTH_WORLD_CLEARANCE
+        : this.caveCeilingHeight[index] ?? 0;
+      if (refreshProfile) this.caveCeilingHeight[index] = ceiling;
       if (position.y > ceiling) this.applyAxisCorrection(position, previous, 'y', ceiling - position.y);
 
-      caveInteriorBoundsAtHeight(
-        position.y,
-        position.z,
-        CLOTH_WORLD_CLEARANCE,
-        this.caveBounds,
-      );
+      if (refreshProfile) {
+        caveInteriorBoundsAtHeight(
+          position.y,
+          position.z,
+          CLOTH_WORLD_CLEARANCE,
+          this.caveBounds,
+        );
+        this.caveMinimumX[index] = this.caveBounds.minimum;
+        this.caveMaximumX[index] = this.caveBounds.maximum;
+      }
       const clampedX = THREE.MathUtils.clamp(
         position.x,
-        this.caveBounds.minimum,
-        this.caveBounds.maximum,
+        this.caveMinimumX[index] ?? 0,
+        this.caveMaximumX[index] ?? 0,
       );
       if (clampedX !== position.x) this.applyAxisCorrection(position, previous, 'x', clampedX - position.x);
+      if (refreshProfile) {
+        this.caveNearBoundary[index] = (
+          position.y - floor < CAVE_PROFILE_REFRESH_MARGIN
+          || ceiling - position.y < CAVE_PROFILE_REFRESH_MARGIN
+          || position.x - this.caveMinimumX[index]! < CAVE_PROFILE_REFRESH_MARGIN
+          || this.caveMaximumX[index]! - position.x < CAVE_PROFILE_REFRESH_MARGIN
+        ) ? 1 : 0;
+      }
     }
   }
 
@@ -224,11 +284,12 @@ export class CapeContactSolver {
     colliders: readonly CapsuleCollider[],
     back: THREE.Vector3,
   ): number {
+    this.prepareBodyColliders(colliders, back);
     let maximum = 0;
     for (let index = 0; index < this.positions.length; index += 1) {
       const position = this.positions[index];
       if (!position) continue;
-      for (const collider of colliders) {
+      for (const collider of this.preparedBodyColliders) {
         maximum = Math.max(maximum, this.getCapsulePenetration(position, collider, back));
       }
     }
@@ -298,29 +359,106 @@ export class CapeContactSolver {
 
   private getCapsulePenetration(
     position: THREE.Vector3,
-    collider: CapsuleCollider,
+    prepared: PreparedBodyCollider,
     back: THREE.Vector3,
   ): number {
-    this.capsuleAxis.copy(collider.end).sub(collider.start);
-    const axisDepth = this.capsuleAxis.dot(back);
-    this.lateralAxis.copy(this.capsuleAxis).addScaledVector(back, -axisDepth);
-    this.delta.copy(position).sub(collider.start);
-    const particleDepth = this.delta.dot(back);
-    this.particleLateral.copy(this.delta).addScaledVector(back, -particleDepth);
-    const lateralLengthSquared = this.lateralAxis.lengthSq();
-    const progress = lateralLengthSquared > 0.000_001
-      ? THREE.MathUtils.clamp(this.particleLateral.dot(this.lateralAxis) / lateralLengthSquared, 0, 1)
+    if (position.y < prepared.minimumY || position.y > prepared.maximumY) return 0;
+    const fromStartX = position.x - prepared.startX;
+    const fromStartY = position.y - prepared.startY;
+    const fromStartZ = position.z - prepared.startZ;
+    const particleDepth = fromStartX * back.x
+      + fromStartY * back.y
+      + fromStartZ * back.z;
+    const particleLateralX = fromStartX - back.x * particleDepth;
+    const particleLateralY = fromStartY - back.y * particleDepth;
+    const particleLateralZ = fromStartZ - back.z * particleDepth;
+    const progress = prepared.lateralLengthSquared > 0.000_001
+      ? THREE.MathUtils.clamp(
+        (
+          particleLateralX * prepared.lateralAxisX
+          + particleLateralY * prepared.lateralAxisY
+          + particleLateralZ * prepared.lateralAxisZ
+        ) / prepared.lateralLengthSquared,
+        0,
+        1,
+      )
       : 0;
-    this.closestPoint.copy(collider.start).addScaledVector(this.capsuleAxis, progress);
-    this.delta.copy(position).sub(this.closestPoint);
-    const depth = this.delta.dot(back);
-    const lateralSquared = Math.max(0, this.delta.lengthSq() - depth * depth);
-    const lateralRadius = collider.radius + getClothBodyClearance(collider);
-    if (lateralSquared >= lateralRadius * lateralRadius) return 0;
-    const normalizedLateralSquared = lateralSquared / (lateralRadius * lateralRadius);
-    const surfaceDepth = getClothBodyDepthRadius(collider)
+    const closestX = prepared.startX + prepared.axisX * progress;
+    const closestY = prepared.startY + prepared.axisY * progress;
+    const closestZ = prepared.startZ + prepared.axisZ * progress;
+    const deltaX = position.x - closestX;
+    const deltaY = position.y - closestY;
+    const deltaZ = position.z - closestZ;
+    const depth = deltaX * back.x + deltaY * back.y + deltaZ * back.z;
+    const lateralSquared = Math.max(
+      0,
+      deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ - depth * depth,
+    );
+    if (lateralSquared >= prepared.lateralRadius * prepared.lateralRadius) return 0;
+    const normalizedLateralSquared = lateralSquared
+      / (prepared.lateralRadius * prepared.lateralRadius);
+    const surfaceDepth = prepared.depthRadius
       * Math.sqrt(1 - normalizedLateralSquared);
     return Math.max(0, surfaceDepth - depth);
+  }
+
+  private prepareBodyColliders(
+    colliders: readonly CapsuleCollider[],
+    back: THREE.Vector3,
+  ): void {
+    this.preparedBodyColliders.length = colliders.length;
+    for (let index = 0; index < colliders.length; index += 1) {
+      const collider = colliders[index];
+      if (!collider) continue;
+      const prepared = this.preparedBodyColliders[index] ?? {
+        startX: 0,
+        startY: 0,
+        startZ: 0,
+        axisX: 0,
+        axisY: 0,
+        axisZ: 0,
+        lateralAxisX: 0,
+        lateralAxisY: 0,
+        lateralAxisZ: 0,
+        lateralLengthSquared: 0,
+        lateralRadius: 0,
+        depthRadius: 0,
+        minimumY: 0,
+        maximumY: 0,
+      };
+      const axisX = collider.end.x - collider.start.x;
+      const axisY = collider.end.y - collider.start.y;
+      const axisZ = collider.end.z - collider.start.z;
+      const axisDepth = axisX * back.x + axisY * back.y + axisZ * back.z;
+      const lateralAxisX = axisX - back.x * axisDepth;
+      const lateralAxisY = axisY - back.y * axisDepth;
+      const lateralAxisZ = axisZ - back.z * axisDepth;
+      const lateralRadius = collider.radius + getClothBodyClearance(collider);
+      const depthRadius = getClothBodyDepthRadius(collider);
+      const verticalRadius = Math.max(lateralRadius, depthRadius);
+      prepared.startX = collider.start.x;
+      prepared.startY = collider.start.y;
+      prepared.startZ = collider.start.z;
+      prepared.axisX = axisX;
+      prepared.axisY = axisY;
+      prepared.axisZ = axisZ;
+      prepared.lateralAxisX = lateralAxisX;
+      prepared.lateralAxisY = lateralAxisY;
+      prepared.lateralAxisZ = lateralAxisZ;
+      prepared.lateralLengthSquared = lateralAxisX * lateralAxisX
+        + lateralAxisY * lateralAxisY
+        + lateralAxisZ * lateralAxisZ;
+      prepared.lateralRadius = lateralRadius;
+      prepared.depthRadius = depthRadius;
+      if (Math.abs(back.y) < 0.000_1) {
+        prepared.minimumY = Math.min(collider.start.y, collider.end.y) - verticalRadius;
+        prepared.maximumY = Math.max(collider.start.y, collider.end.y) + verticalRadius;
+      } else {
+        prepared.minimumY = Number.NEGATIVE_INFINITY;
+        prepared.maximumY = Number.POSITIVE_INFINITY;
+      }
+      this.preparedBodyColliders[index] = prepared;
+    }
   }
 
   private solveWorldSphere(

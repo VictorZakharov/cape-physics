@@ -6,6 +6,11 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { selectCharacterRenderMode } from './characterRenderMode';
 import { calculateRenderSizing, type RenderSizing } from './renderSizing';
 import { createResolvedDepthTexture } from './depthComposite';
+import {
+  captureFrameRenderStats,
+  EMPTY_FRAME_RENDER_STATS,
+  type FrameRenderStats,
+} from './frameRenderStats';
 import { CHARACTER_RENDER_LAYER, WORLD_RENDER_LAYER } from './renderLayers';
 import { SceneLayerCompositePass } from './SceneLayerCompositePass';
 
@@ -18,6 +23,7 @@ export class RenderPipeline {
   private resolutionScale = 1;
   private sizing: RenderSizing | null = null;
   private targetResizeCount = 0;
+  private lastFrameRenderStats: FrameRenderStats = EMPTY_FRAME_RENDER_STATS;
 
   public constructor(
     canvas: HTMLCanvasElement,
@@ -38,7 +44,10 @@ export class RenderPipeline {
     this.renderer.toneMappingExposure = 1.24;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    this.renderer.info.autoReset = true;
+    // EffectComposer invokes WebGLRenderer several times. Automatic resets
+    // leave only the final fullscreen output pass in renderer.info, which made
+    // real scenes look like one draw call and one triangle in reports.
+    this.renderer.info.autoReset = false;
     camera.layers.set(WORLD_RENDER_LAYER);
 
     const renderTarget = new THREE.WebGLRenderTarget(1, 1, {
@@ -59,6 +68,7 @@ export class RenderPipeline {
   }
 
   public render(delta: number): void {
+    this.renderer.info.reset();
     const renderMode = selectCharacterRenderMode(this.characterComposite.getOpacity());
     this.camera.layers.set(WORLD_RENDER_LAYER);
     this.characterComposite.enabled = renderMode === 'isolated-fade';
@@ -69,6 +79,11 @@ export class RenderPipeline {
       this.camera.layers.enable(CHARACTER_RENDER_LAYER);
     }
     this.composer.render(delta);
+    this.lastFrameRenderStats = captureFrameRenderStats(this.renderer.info.render);
+  }
+
+  public getLastFrameRenderStats(): FrameRenderStats {
+    return this.lastFrameRenderStats;
   }
 
   public resize(): void {

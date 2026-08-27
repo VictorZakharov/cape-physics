@@ -161,11 +161,21 @@ export class CapeDemo {
 
   private readonly frame = (timestamp: number): void => {
     this.performance.recordFrame(timestamp);
+    const physicsStart = performance.now();
     const timing = this.clock.advance(timestamp, this.simulateStep);
     if (timing.physicsSteps > 0) this.cape.syncGeometry();
+    const sceneStart = performance.now();
     this.updateScene(timing.delta);
     this.quality.observe(this.fixedTime, this.performance.getSnapshot());
+    const renderStart = performance.now();
     this.pipeline.render(timing.delta);
+    const frameEnd = performance.now();
+    this.performance.recordWorkload(timestamp, {
+      physicsMilliseconds: sceneStart - physicsStart,
+      sceneMilliseconds: renderStart - sceneStart,
+      renderMilliseconds: frameEnd - renderStart,
+      physicsSteps: timing.physicsSteps,
+    });
   };
 
   private readonly simulateStep = (step: number): void => {
@@ -353,14 +363,16 @@ export class CapeDemo {
         this.cape.getMaximumBodyPenetration([collider], capeAnchors.back),
       ]),
     );
+    const frameRenderStats = this.pipeline.getLastFrameRenderStats();
     return {
       ready: this.ready,
       simulationTime: this.fixedTime,
       fps: this.performance.getSnapshot(),
       quality: this.quality.getState(),
+      workload: this.performance.getWorkloadSnapshot(),
       renderer: {
-        calls: this.pipeline.renderer.info.render.calls,
-        triangles: this.pipeline.renderer.info.render.triangles,
+        calls: frameRenderStats.calls,
+        triangles: frameRenderStats.triangles,
         pixelRatio: this.pipeline.renderer.getPixelRatio(),
         programs: this.pipeline.renderer.info.programs?.length ?? 0,
         sizing: this.pipeline.getSizingDiagnostics(),
@@ -422,6 +434,7 @@ export class CapeDemo {
         hemCenter: this.cape.getParticlePosition(6, 17).toArray(),
         worldColliders: this.worldColliders.length,
         worldContacts: this.cape.getWorldContactDiagnostics(),
+        performance: this.cape.getPerformanceDiagnostics(),
       },
       water: this.water.getDiagnostics(),
       minerals: {
@@ -451,6 +464,7 @@ export class CapeDemo {
     const vendor = String(context.getParameter(debugInfo?.UNMASKED_VENDOR_WEBGL ?? context.VENDOR));
     const device = String(context.getParameter(debugInfo?.UNMASKED_RENDERER_WEBGL ?? context.RENDERER));
     const sizing = this.pipeline.getSizingDiagnostics();
+    const frameRenderStats = this.pipeline.getLastFrameRenderStats();
     const screenWithTopology = window.screen as Screen & { readonly isExtended?: boolean };
     const multipleScreens = typeof screenWithTopology.isExtended === 'boolean'
       ? screenWithTopology.isExtended
@@ -461,8 +475,8 @@ export class CapeDemo {
         backend: String(context.getParameter(context.VERSION)),
         vendor,
         device,
-        drawCalls: renderer.info.render.calls,
-        triangles: renderer.info.render.triangles,
+        drawCalls: frameRenderStats.calls,
+        triangles: frameRenderStats.triangles,
         programs: renderer.info.programs?.length ?? 0,
       },
       canvas: {
@@ -474,7 +488,10 @@ export class CapeDemo {
       quality: {
         label: this.quality.getState().label,
         scale: this.quality.getState().scale,
+        targetResizes: sizing.targetResizeCount,
       },
+      workload: this.performance.getWorkloadSnapshot(),
+      capeSolver: this.ready ? this.cape.getPerformanceDiagnostics() : null,
       scene: {
         simulationSeconds: this.fixedTime,
         capeSleeping: this.ready ? this.cape.isSleeping() : false,

@@ -31,7 +31,18 @@ const reportDetails: PerformanceReportDetails = {
     cssWidth: 1,
     cssHeight: 1,
   },
-  quality: { label: 'ADAPTIVE ULTRA', scale: 1 },
+  quality: { label: 'ADAPTIVE ULTRA', scale: 1, targetResizes: 2 },
+  workload: {
+    averageMainThreadMilliseconds: 0,
+    p95MainThreadMilliseconds: 0,
+    averagePhysicsMilliseconds: 0,
+    averageSceneMilliseconds: 0,
+    averageRenderMilliseconds: 0,
+    averagePhysicsSteps: 0,
+    maximumPhysicsSteps: 0,
+    sampleCount: 0,
+  },
+  capeSolver: null,
   scene: {
     simulationSeconds: 0,
     capeSleeping: false,
@@ -72,5 +83,30 @@ describe('PerformanceMonitor', () => {
     expect(snapshot.sampleCount).toBeLessThan(2_200);
     expect(snapshot.windowElapsedMilliseconds).toBeGreaterThan(14_900);
     expect(snapshot.windowElapsedMilliseconds).toBeLessThanOrEqual(15_000);
+  });
+
+  test('aggregates measured main-thread phases without treating them as FPS', () => {
+    const monitor = createMonitor();
+    monitor.recordFrame(0);
+    for (let frame = 1; frame <= 20; frame += 1) {
+      const timestamp = frame * 16;
+      monitor.recordFrame(timestamp);
+      monitor.recordWorkload(timestamp, {
+        physicsMilliseconds: 2,
+        sceneMilliseconds: 1,
+        renderMilliseconds: 3,
+        physicsSteps: 2,
+      });
+    }
+
+    expect(monitor.getWorkloadSnapshot()).toMatchObject({
+      averageMainThreadMilliseconds: 6,
+      p95MainThreadMilliseconds: 6,
+      averagePhysicsMilliseconds: 2,
+      averageSceneMilliseconds: 1,
+      averageRenderMilliseconds: 3,
+      averagePhysicsSteps: 2,
+      maximumPhysicsSteps: 2,
+    });
   });
 });
