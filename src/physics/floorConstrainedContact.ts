@@ -1,4 +1,4 @@
-import type { Vector3 } from 'three';
+import type { Vector3 } from 'three/webgpu';
 import { caveGroundHeightAt } from '../world/caveProfile';
 
 const FLOOR_CONTACT_HEIGHT_EPSILON = 0.045;

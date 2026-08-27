@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
 import { CAMERA_NEAR_OPACITY, PHYSICS_STEP, PLAYER } from './config';
 import { ThirdPersonCamera } from './camera/ThirdPersonCamera';
 import {
@@ -11,6 +11,13 @@ import { FixedStepClock } from './core/FixedStepClock';
 import { PerformanceMonitor } from './core/PerformanceMonitor';
 import type { PerformanceReportDetails } from './core/PerformanceReport';
 import { RenderPipeline } from './core/RenderPipeline';
+import {
+  browserSupportsWebGPU,
+  RENDERER_STORAGE_KEY,
+  rendererPreferenceUrl,
+  resolveRendererPreference,
+  type RendererPreference,
+} from './core/RendererPreference';
 import { CHARACTER_RENDER_LAYER } from './core/renderLayers';
 import { configureTextureFiltering, createRockTextures } from './graphics/proceduralTextures';
 import { InputController } from './input/InputController';
@@ -23,6 +30,7 @@ import { CharacterController } from './player/CharacterController';
 import { runDepthOcclusionProbe } from './testing/DepthOcclusionProbe';
 import { runShadowLayerProbe } from './testing/ShadowLayerProbe';
 import { LoadingScreen } from './ui/LoadingScreen';
+import { RendererSwitch } from './ui/RendererSwitch';
 import { invariant } from './utils/assert';
 import { CaveAtmosphere } from './world/CaveAtmosphere';
 import { CaveWorld } from './world/CaveWorld';
@@ -48,6 +56,9 @@ export class CapeDemo {
   private readonly initialProjectionAspect = this.camera.aspect;
   private readonly loading = new LoadingScreen();
   private readonly pipeline: RenderPipeline;
+  private readonly rendererPreference: RendererPreference;
+  private readonly rendererSwitch: RendererSwitch;
+  private readonly webGPUAvailable: boolean;
   private readonly performance: PerformanceMonitor;
   private readonly clock = new FixedStepClock();
   private readonly quality: AdaptiveQuality;
@@ -75,7 +86,28 @@ export class CapeDemo {
     this.canvas = invariant(document.querySelector<HTMLCanvasElement>('#scene-canvas'), 'Scene canvas is missing.');
     this.scene.background = new THREE.Color(0x050a0c);
     this.scene.fog = new THREE.FogExp2(0x071012, 0.034);
-    this.pipeline = new RenderPipeline(this.canvas, this.scene, this.camera);
+    this.webGPUAvailable = browserSupportsWebGPU();
+    let storedRendererPreference: string | null = null;
+    try {
+      storedRendererPreference = window.localStorage.getItem(RENDERER_STORAGE_KEY);
+    } catch {
+      // Storage can be disabled without preventing the demo from rendering.
+    }
+    this.rendererPreference = resolveRendererPreference({
+      search: window.location.search,
+      storedPreference: storedRendererPreference,
+      webGPUAvailable: this.webGPUAvailable,
+    });
+    this.pipeline = new RenderPipeline(
+      this.canvas,
+      this.scene,
+      this.camera,
+      this.rendererPreference,
+    );
+    this.rendererSwitch = new RendererSwitch(
+      this.rendererPreference,
+      this.webGPUAvailable,
+    );
     this.qualityLabel = invariant(document.querySelector<HTMLElement>('[data-quality-label]'), 'Quality label is missing.');
     this.quality = new AdaptiveQuality((state) => this.applyQuality(state));
     this.performance = new PerformanceMonitor(this.getPerformanceReportDetails);
@@ -83,11 +115,24 @@ export class CapeDemo {
   }
 
   public async start(): Promise<void> {
+    await this.loading.update(0.03, 'Selecting the graphics backend');
+    try {
+      await this.pipeline.init();
+    } catch (error) {
+      if (this.rendererPreference !== 'webgpu') throw error;
+      await this.loading.update(0.04, 'WebGPU unavailable; retrying with WebGL');
+      window.location.replace(rendererPreferenceUrl(window.location.href, 'webgl'));
+      return;
+    }
+    this.rendererSwitch.setActive(
+      this.pipeline.getActualBackend(),
+      this.rendererPreference,
+    );
     await this.loading.update(0.08, 'Shaping ancient stone');
     const rockTextures = createRockTextures(512);
     configureTextureFiltering(
       rockTextures,
-      Math.min(8, this.pipeline.renderer.capabilities.getMaxAnisotropy()),
+      Math.min(8, this.pipeline.renderer.getMaxAnisotropy()),
     );
     this.cave = new CaveWorld(rockTextures);
     this.scene.add(this.cave.group);
@@ -138,10 +183,9 @@ export class CapeDemo {
 
     await this.loading.update(0.76, 'Compiling cloth and water shaders');
     await this.pipeline.compile(this.scene, this.camera);
-    this.pipeline.render(0);
+    this.pipeline.renderManual(0);
     await this.loading.update(0.94, 'Warming the torchlight');
-    this.pipeline.renderer.shadowMap.needsUpdate = true;
-    this.pipeline.render(0);
+    this.pipeline.renderManual(0);
 
     window.addEventListener('resize', this.handleResize);
     document.addEventListener('visibilitychange', this.handleVisibilityChange);
@@ -153,9 +197,9 @@ export class CapeDemo {
     if (window.__CAPE_DEMO__) window.__CAPE_DEMO__.ready = true;
     if (this.harnessMode) {
       this.updateScene(0);
-      this.pipeline.render(0);
+      this.pipeline.renderManual(0);
     } else {
-      this.pipeline.renderer.setAnimationLoop(this.frame);
+      void this.pipeline.renderer.setAnimationLoop(this.frame);
     }
   }
 
@@ -244,7 +288,7 @@ export class CapeDemo {
       setView: ({ yaw, pitch, distance }) => {
         this.thirdPersonCamera.setOrbit(yaw, pitch, distance, this.character.root.position);
         this.updateScene(0);
-        this.pipeline.render(0);
+        this.pipeline.renderManual(0);
         return this.getDiagnostics();
       },
       setCameraPose: ({ position, target }) => {
@@ -253,7 +297,7 @@ export class CapeDemo {
           new THREE.Vector3().fromArray(target),
         );
         this.updateCameraFade();
-        this.pipeline.render(0);
+        this.pipeline.renderManual(0);
         return this.getDiagnostics();
       },
       setPlayerPose: ({ position, yaw = this.character.root.rotation.y }) => {
@@ -267,7 +311,7 @@ export class CapeDemo {
         this.cape.syncGeometry();
         this.thirdPersonCamera.snapTo(this.character.root.position);
         this.updateCameraFade();
-        this.pipeline.render(0);
+        this.pipeline.renderManual(0);
         return this.getDiagnostics();
       },
       setMovement: (horizontal, forward) => {
@@ -303,24 +347,23 @@ export class CapeDemo {
       remaining -= delta;
       this.advanceHarnessFrame(delta);
     }
-    this.pipeline.render(lastDelta);
+    this.pipeline.renderManual(lastDelta);
     return this.getDiagnostics();
   }
 
-  private profileHarness(duration: number, requestedFrameStep: number) {
+  private async profileHarness(duration: number, requestedFrameStep: number) {
     const frameStep = THREE.MathUtils.clamp(requestedFrameStep, 1 / 144, 1 / 30);
     let remaining = THREE.MathUtils.clamp(duration, 0, 12);
     const frameDurations: number[] = [];
-    const programsBefore = this.pipeline.renderer.info.programs?.length ?? 0;
-    const context = this.pipeline.renderer.getContext();
+    const programsBefore = this.pipeline.getProgramCount();
 
     while (remaining > 0.000_001) {
       const delta = Math.min(frameStep, remaining);
       remaining -= delta;
       const frameStart = performance.now();
       this.advanceHarnessFrame(delta);
-      this.pipeline.render(delta);
-      context.finish();
+      this.pipeline.renderManual(delta);
+      await this.pipeline.synchronizeForLocalProfile();
       frameDurations.push(performance.now() - frameStart);
     }
 
@@ -336,7 +379,7 @@ export class CapeDemo {
       p95FrameMilliseconds: frameDurations[p95Index] ?? 0,
       maximumFrameMilliseconds: frameDurations.at(-1) ?? 0,
       programsBefore,
-      programsAfter: this.pipeline.renderer.info.programs?.length ?? 0,
+      programsAfter: this.pipeline.getProgramCount(),
       diagnostics: this.getDiagnostics(),
     };
   }
@@ -371,10 +414,11 @@ export class CapeDemo {
       quality: this.quality.getState(),
       workload: this.performance.getWorkloadSnapshot(),
       renderer: {
+        ...this.pipeline.getBackendDiagnostics(),
         calls: frameRenderStats.calls,
         triangles: frameRenderStats.triangles,
         pixelRatio: this.pipeline.renderer.getPixelRatio(),
-        programs: this.pipeline.renderer.info.programs?.length ?? 0,
+        programs: this.pipeline.getProgramCount(),
         sizing: this.pipeline.getSizingDiagnostics(),
         depthComposite: this.pipeline.getDepthCompositeDiagnostics(),
       },
@@ -458,11 +502,7 @@ export class CapeDemo {
   }
 
   private readonly getPerformanceReportDetails = (): PerformanceReportDetails => {
-    const renderer = this.pipeline.renderer;
-    const context = renderer.getContext();
-    const debugInfo = context.getExtension('WEBGL_debug_renderer_info');
-    const vendor = String(context.getParameter(debugInfo?.UNMASKED_VENDOR_WEBGL ?? context.VENDOR));
-    const device = String(context.getParameter(debugInfo?.UNMASKED_RENDERER_WEBGL ?? context.RENDERER));
+    const backend = this.pipeline.getBackendDiagnostics();
     const sizing = this.pipeline.getSizingDiagnostics();
     const frameRenderStats = this.pipeline.getLastFrameRenderStats();
     const screenWithTopology = window.screen as Screen & { readonly isExtended?: boolean };
@@ -472,12 +512,15 @@ export class CapeDemo {
 
     return {
       renderer: {
-        backend: String(context.getParameter(context.VERSION)),
-        vendor,
-        device,
+        backend: backend.backend,
+        vendor: backend.vendor,
+        device: backend.device,
+        preference: backend.preference,
+        actual: backend.actual,
+        fallback: backend.fallback,
         drawCalls: frameRenderStats.calls,
         triangles: frameRenderStats.triangles,
-        programs: renderer.info.programs?.length ?? 0,
+        programs: this.pipeline.getProgramCount(),
       },
       canvas: {
         drawingBufferWidth: sizing.drawingBufferWidth,
@@ -527,7 +570,8 @@ export class CapeDemo {
   }
 
   private readonly dispose = (): void => {
-    this.pipeline.renderer.setAnimationLoop(null);
+    void this.pipeline.renderer.setAnimationLoop(null);
+    this.rendererSwitch.dispose();
     this.mobileControls?.dispose();
     this.input?.dispose();
     this.lighting?.dispose();

@@ -23,6 +23,9 @@ describe('performance report', () => {
         backend: 'WebGL 2.0',
         vendor: 'Example Vendor',
         device: 'Example GPU',
+        preference: 'webgpu',
+        actual: 'webgl',
+        fallback: true,
         drawCalls: 74,
         triangles: 138_498,
         programs: 40,
@@ -86,6 +89,7 @@ describe('performance report', () => {
     expect(report).toContain('Rendered FPS: 143.20 average | 118.40 1% low');
     expect(report).toContain('Frame interval: 6.98 ms average | p50 6.82 ms');
     expect(report).toContain('Renderer: WebGL 2.0 | Example Vendor | Example GPU');
+    expect(report).toContain('Renderer selection: requested WEBGPU | active WEBGL | fallback active');
     expect(report).toContain('138498 triangles');
     expect(report).toContain('2260 cape colliders');
     expect(report).toContain('Main thread: 5.40 ms average | p95 8.20 ms');

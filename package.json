@@ -14,7 +14,9 @@
   "keywords": [
     "threejs",
     "typescript",
+    "webgpu",
     "webgl",
+    "tsl",
     "cloth-simulation",
     "position-based-dynamics",
     "physics-simulation",
@@ -34,6 +36,7 @@
     "harness": "bun scripts/verify-tech-demo.ts",
     "stress:rocks": "bun scripts/run-rock-stress.ts",
     "audit:visual": "bun run build && bun scripts/render-visual-audit.mjs",
+    "profile:render": "bun run build && bun scripts/render-performance-profile.mjs",
     "verify": "bun run check && bun run build && bun run harness",
     "preview": "vite preview --host 0.0.0.0"
   },

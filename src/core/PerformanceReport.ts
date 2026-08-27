@@ -4,12 +4,16 @@ import type {
 } from './PerformanceMonitor';
 import type { CapePerformanceDiagnostics } from '../physics/CapePerformanceProfiler';
 import { CAPE, PHYSICS_STEP } from '../config';
+import type { RendererPreference } from './RendererPreference';
 
 export interface PerformanceReportDetails {
   readonly renderer: {
     readonly backend: string;
     readonly vendor: string;
     readonly device: string;
+    readonly preference: RendererPreference;
+    readonly actual: RendererPreference;
+    readonly fallback: boolean;
     readonly drawCalls: number;
     readonly triangles: number;
     readonly programs: number;
@@ -87,6 +91,7 @@ export function formatPerformanceReport(input: PerformanceReportInput): string {
     `Frame interval: ${metric(performance.averageFrameTime)} ms average | p50 ${metric(performance.medianFrameTime)} ms | p95 ${metric(performance.p95FrameTime)} ms | p99 ${metric(performance.p99FrameTime)} ms | worst ${metric(performance.longestFrameTime)} ms`,
     `Long frames: ${performance.longFrameCount} at or above 50 ms`,
     `Renderer: ${renderer.backend} | ${renderer.vendor} | ${renderer.device}`,
+    `Renderer selection: requested ${renderer.preference.toUpperCase()} | active ${renderer.actual.toUpperCase()} | ${renderer.fallback ? 'fallback active' : 'no fallback'}`,
     `Canvas: ${canvas.drawingBufferWidth}x${canvas.drawingBufferHeight} drawing buffer / ${canvas.cssWidth}x${canvas.cssHeight} CSS px`,
     `Quality: ${quality.label} | ${metric(quality.scale, 3)} resolution scale | ${quality.targetResizes} render-target resizes`,
     `Main thread: ${metric(workload.averageMainThreadMilliseconds)} ms average | p95 ${metric(workload.p95MainThreadMilliseconds)} ms | physics ${metric(workload.averagePhysicsMilliseconds)} ms | scene ${metric(workload.averageSceneMilliseconds)} ms | render submission ${metric(workload.averageRenderMilliseconds)} ms | ${metric(workload.averagePhysicsSteps)} physics steps/callback average, ${workload.maximumPhysicsSteps} maximum`,

@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
 import { PHYSICS_STEP, PLAYER } from '../config';
 import { createRockTextures } from '../graphics/proceduralTextures';
 import { CapeSimulation } from '../physics/CapeSimulation';
@@ -16,7 +16,7 @@ interface SceneBudget {
   readonly triangles: number;
   readonly lights: number;
   readonly shadowCastingLights: number;
-  readonly shaderMaterials: number;
+  readonly proceduralMaterials: number;
 }
 
 export interface TechDemoHarnessReport {
@@ -84,7 +84,7 @@ function analyzeScene(scene: THREE.Scene): SceneBudget {
   let triangles = 0;
   let lights = 0;
   let shadowCastingLights = 0;
-  let shaderMaterials = 0;
+  let proceduralMaterials = 0;
 
   scene.traverse((object) => {
     objects += 1;
@@ -92,16 +92,31 @@ function analyzeScene(scene: THREE.Scene): SceneBudget {
       lights += 1;
       if (object.castShadow) shadowCastingLights += 1;
     }
-    if (object instanceof THREE.Mesh || object instanceof THREE.Points) {
+    if (
+      object instanceof THREE.Mesh
+      || object instanceof THREE.Points
+      || object instanceof THREE.Sprite
+    ) {
       estimatedDrawCalls += 1;
-      validateGeometry(object.geometry, object.name || object.type);
-      const instanceCount = object instanceof THREE.InstancedMesh ? object.count : 1;
-      triangles += geometryTriangles(object.geometry) * instanceCount;
+      if (object instanceof THREE.Mesh || object instanceof THREE.Points) {
+        validateGeometry(object.geometry, object.name || object.type);
+        const instanceCount = object instanceof THREE.InstancedMesh ? object.count : 1;
+        triangles += geometryTriangles(object.geometry) * instanceCount;
+      }
       const materials = Array.isArray(object.material) ? object.material : [object.material];
-      shaderMaterials += materials.filter((material) => material instanceof THREE.ShaderMaterial).length;
+      proceduralMaterials += materials.filter(
+        (material) => 'isNodeMaterial' in material && material.isNodeMaterial === true,
+      ).length;
     }
   });
-  return { objects, estimatedDrawCalls, triangles, lights, shadowCastingLights, shaderMaterials };
+  return {
+    objects,
+    estimatedDrawCalls,
+    triangles,
+    lights,
+    shadowCastingLights,
+    proceduralMaterials,
+  };
 }
 
 function textureByteLength(texture: THREE.DataTexture): number {
@@ -312,7 +327,10 @@ export function runTechDemoHarness(simulatedSeconds = 12): TechDemoHarnessReport
   invariant(sceneBudget.shadowCastingLights === 1, 'the single-shadow-light performance contract changed');
   invariant(torchLights.visibleLights === torchLights.lights, 'torch pool changed the compiled light count');
   invariant(mineralLights.visibleLights === mineralLights.lights, 'mineral pool changed the compiled light count');
-  invariant(sceneBudget.shaderMaterials >= 3, 'procedural water, flame, or glow shaders are missing');
+  invariant(
+    sceneBudget.proceduralMaterials >= 3,
+    'procedural TSL water or flame materials are missing',
+  );
   invariant(sceneBudget.estimatedDrawCalls <= 85, `estimated draw calls ${sceneBudget.estimatedDrawCalls} exceeded budget`);
   invariant(sceneBudget.triangles <= 160_000, `triangle count ${sceneBudget.triangles} exceeded budget`);
   return {

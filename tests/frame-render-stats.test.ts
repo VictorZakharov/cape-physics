@@ -21,4 +21,18 @@ describe('frame render stats', () => {
       lines: 12,
     });
   });
+
+  test('reads draw calls from the universal WebGPU renderer stats shape', () => {
+    expect(captureFrameRenderStats({
+      drawCalls: 91,
+      triangles: 142_300,
+      points: 620,
+      lines: 0,
+    })).toEqual({
+      calls: 91,
+      triangles: 142_300,
+      points: 620,
+      lines: 0,
+    });
+  });
 });

@@ -9,6 +9,12 @@ interface CapeDemoDiagnostics {
   readonly fps: PerformanceSnapshot;
   readonly quality: QualityState;
   readonly renderer: {
+    readonly preference: 'webgpu' | 'webgl';
+    readonly actual: 'webgpu' | 'webgl';
+    readonly backend: string;
+    readonly vendor: string;
+    readonly device: string;
+    readonly fallback: boolean;
     readonly calls: number;
     readonly triangles: number;
     readonly pixelRatio: number;
@@ -144,7 +150,7 @@ declare global {
       setRunning: (running: boolean) => void;
       jump: () => void;
       advance: (options: { duration: number; frameStep?: number }) => CapeDemoDiagnostics;
-      profile: (options: { duration: number; frameStep?: number }) => {
+      profile: (options: { duration: number; frameStep?: number }) => Promise<{
         readonly frames: number;
         readonly averageFrameMilliseconds: number;
         readonly p95FrameMilliseconds: number;
@@ -152,9 +158,9 @@ declare global {
         readonly programsBefore: number;
         readonly programsAfter: number;
         readonly diagnostics: CapeDemoDiagnostics;
-      };
-      runDepthOcclusionProbe: () => DepthOcclusionProbeResult;
-      runShadowLayerProbe: () => ShadowLayerProbeResult;
+      }>;
+      runDepthOcclusionProbe: () => Promise<DepthOcclusionProbeResult>;
+      runShadowLayerProbe: () => Promise<ShadowLayerProbeResult>;
     };
   }
 }

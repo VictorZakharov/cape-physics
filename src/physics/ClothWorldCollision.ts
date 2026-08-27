@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
 import type { WorldCollider, WorldSphereCollider } from './colliders';
 import { constrainSphereContactToFloor } from './floorConstrainedContact';
 

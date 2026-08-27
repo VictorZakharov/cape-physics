@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
 import { ClothRockCollision } from '../src/physics/ClothRockCollision';
 import { CLOTH_ROCK_CLEARANCE } from '../src/physics/ClothWorldCollision';
 import { createWorldRockCollider } from '../src/physics/RockCollider';

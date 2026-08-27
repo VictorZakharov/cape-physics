@@ -19,7 +19,7 @@ Everything is generated at runtime. There are no downloaded models, textures, or
 - A procedural cave with wet rock materials, torch shadows, glowing mineral veins, fog, dust, and bloom
 - Clear walkable pools with footstep, landing, and ceiling-drop ripples
 - A collision-aware third-person camera with a close-range character fade
-- An adaptive-quality renderer and clickable performance HUD for displays up to 144 Hz and beyond
+- A WebGPU-first adaptive renderer with an in-game WebGL fallback and a clickable performance HUD
 
 ## Controls
 
@@ -37,7 +37,16 @@ Everything is generated at runtime. There are no downloaded models, textures, or
 | One-finger swipe | Orbit the camera on touch devices |
 | Two-finger pinch | Zoom on touch devices |
 | Click the FPS graph | Copy a rolling 15-second performance report |
+| `WEBGPU` / `WEBGL` | Reload with the selected renderer; the choice is remembered |
 | `Esc` | Release pointer interaction |
+
+## Rendering backends
+
+The demo uses Three.js's universal `WebGPURenderer` and TSL material graphs. It selects WebGPU on first launch when the browser exposes it, and otherwise uses the WebGL 2 backend. The switch in the lower-right corner lets you compare or override that choice at any time. Reports show both the requested and active backend, so a fallback cannot be mistaken for a WebGPU result.
+
+WebGPU performance is browser- and GPU-dependent; Three.js also notes that its WebGPU renderer remains experimental and can be slower in some cases. The renderer choice therefore stays visible instead of assuming one backend is universally faster. See the [Three.js WebGPU renderer guide](https://threejs.org/manual/en/webgpurenderer).
+
+This migration covers rendering and post-processing. The cape solver remains on the CPU because its current sequential constraints and collision recovery need a separate compute-oriented redesign rather than a mechanical shader port.
 
 ## How the cape simulation works
 
@@ -73,19 +82,21 @@ The solver follows the approach introduced in [Position Based Dynamics by Mülle
 
 ## Performance
 
-Reference measurements below were captured on August 27, 2026 using Edge, Windows, an AMD Ryzen 9 5900X, and an NVIDIA GeForce RTX 4070 Ti. The render profile used a 1600 × 900 viewport at native scale on `ADAPTIVE ULTRA`; the character was running through the live cave with cloth, water, lights, shadows, and post-processing active.
+Reference measurements below were captured on August 27, 2026 using Edge 151, Windows, an AMD Ryzen 9 5900X, and an NVIDIA GeForce RTX 4070 Ti. Each renderer result is the median of three independent runs over the same warmed running route at 1600 × 900, DPR 1, and `ADAPTIVE ULTRA`. Every run rendered 1,728 frames and waited for backend completion after each frame; these are throughput diagnostics, not display-refresh measurements.
 
-| Benchmark | Result | Workload |
+| Benchmark | Median result | Workload |
 | --- | ---: | --- |
-| 144 Hz production render profile | **4.03 ms average** (~248 FPS), 6.30 ms p95, 7.90 ms maximum | 1,728 consecutive frames over 12 seconds |
-| Shader stability | **42 → 42 programs** | No runtime shader-program growth during the render profile |
+| Main baseline, legacy WebGL renderer | **3.07 ms average**, 4.60 ms p95, 8.30 ms maximum | Commit `572630f`, before the universal renderer migration |
+| Migrated pipeline, forced WebGL 2 | **4.21 ms average**, 6.30 ms p95, 9.80 ms maximum | Same route through the universal renderer's WebGL backend |
+| Migrated pipeline, native WebGPU | **12.06 ms average**, 18.10 ms p95, 30.10 ms maximum | Same route through WebGPU; no fallback was active |
+| Shader stability | **110 → 110 programs** | No runtime shader-program growth in either migrated backend |
 | Renderer-free full-scene simulation | **2.21–2.28 ms per 120 Hz step**, down 52–53% from 4.703 ms | Two consecutive 1,440-step runs; 12 simulated seconds completed in 3.18–3.28 seconds (~3.66–3.78× real time) |
-| Full-frame renderer counters | **93 draw calls, 105,690 triangles** while running | Accumulated across the scene and post-processing; the warm frame reported 138 calls and 174,006 triangles |
+| Full-frame renderer counters | **74 draw calls, 67,577 triangles** while running | Same scene complexity in WebGL and WebGPU |
 | Simulation integrity | **0 mm world penetration**, 0.014 mm maximum body penetration | Dynamic jump, landing, rock contact, water, and full-scene traversal |
 
-These are reference-machine measurements, not universal guarantees. They show 144 Hz-class average frame pacing on the tested hardware; the renderer can reduce internal resolution on slower GPUs. Under sustained severe load it now estimates a proportional fill-rate reduction instead of stepping down only 10% at a time, while a 12-second resize cooldown and an 18-second recovery window prevent quality oscillation. Wall-clock figures are local telemetry and never CI acceptance criteria because shared-runner speed is not deterministic.
+These are reference-machine measurements, not universal guarantees. On this host, WebGPU was slower than both WebGL paths, which is why the backend toggle and truthful backend telemetry are part of the demo. A browser's per-frame WebGPU queue completion also has different synchronization overhead from WebGL's `finish`; normal gameplay pipelines work across animation frames instead of deliberately waiting after every submission. Measure on the hardware you care about before drawing a platform-wide conclusion. The adaptive renderer can reduce internal resolution under sustained load and rate-limits target resizing to avoid quality oscillation.
 
-You can reproduce the render profile with `bun run audit:visual`. For a telemetry-only physics run, set `CAPE_ENFORCE_PERFORMANCE_BUDGET=false` before `bun run harness`; without that override, the command also applies the optional local timing budget. The in-demo FPS panel provides the most relevant result for your own hardware—click it to copy the full rolling report, including callback pacing, main-thread physics/scene/render-submission phases, truthful full-frame renderer counters, and a low-frequency cape-solver phase sample. Renderer submission is CPU time and is explicitly not presented as GPU completion time.
+Reproduce the focused render profile with `bun run profile:render`; set `CAPE_PROFILE_RENDERER` to `webgpu` or `webgl` first. The command only reports measurements and never enforces a performance threshold. For a telemetry-only physics run, set `CAPE_ENFORCE_PERFORMANCE_BUDGET=false` before `bun run harness`; without that override, the command also applies the optional local timing budget. The in-demo FPS panel provides the most relevant result for your own hardware—click it to copy the full rolling report, including callback pacing, main-thread physics/scene/render-submission phases, truthful full-frame renderer counters, and a low-frequency cape-solver phase sample. Renderer submission is CPU time and is explicitly not presented as GPU completion time.
 
 ## Run locally
 
@@ -96,7 +107,7 @@ bun install
 bun run dev
 ```
 
-Open the printed URL in a WebGL 2 browser with hardware acceleration enabled.
+Open the printed URL in a WebGPU or WebGL 2 browser with hardware acceleration enabled.
 
 ## Verification
 
@@ -104,6 +115,7 @@ Open the printed URL in a WebGL 2 browser with hardware acceleration enabled.
 bun run check          # strict TypeScript and deterministic unit/integration tests
 bun run harness        # renderer-free traversal plus the optional local timing budget
 bun run audit:visual   # direct Edge/Chrome dynamic audit across 37 rendered views
+bun run profile:render # local-only, non-gating synchronized renderer profile
 bun run stress:rocks   # optional extended rock-contact stress matrix
 bun run build:pages    # production GitHub Pages build
 ```

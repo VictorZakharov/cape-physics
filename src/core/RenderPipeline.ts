@@ -1,41 +1,87 @@
-import * as THREE from 'three';
-import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
-import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
-import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
-import { selectCharacterRenderMode } from './characterRenderMode';
+import * as THREE from 'three/webgpu';
+import {
+  float,
+  oneMinus,
+  pass,
+  renderOutput,
+  uniform,
+  vec4,
+} from 'three/tsl';
+import { bloom } from 'three/addons/tsl/display/BloomNode.js';
+import { selectCharacterRenderMode, type CharacterRenderMode } from './characterRenderMode';
+import { LAYER_DEPTH_EPSILON } from './depthComposite';
 import { calculateRenderSizing, type RenderSizing } from './renderSizing';
-import { createResolvedDepthTexture } from './depthComposite';
 import {
   captureFrameRenderStats,
   EMPTY_FRAME_RENDER_STATS,
   type FrameRenderStats,
 } from './frameRenderStats';
-import { CHARACTER_RENDER_LAYER, WORLD_RENDER_LAYER } from './renderLayers';
-import { SceneLayerCompositePass } from './SceneLayerCompositePass';
+import {
+  CHARACTER_RENDER_LAYER,
+  WORLD_RENDER_LAYER,
+} from './renderLayers';
+import type { RendererPreference } from './RendererPreference';
+
+interface BackendShape {
+  readonly isWebGPUBackend?: boolean;
+  readonly isWebGLBackend?: boolean;
+  readonly device?: {
+    readonly adapterInfo?: AdapterInfoShape;
+    readonly queue?: {
+      onSubmittedWorkDone?: () => Promise<void>;
+    };
+  };
+  readonly getContext?: () => WebGL2RenderingContext;
+}
+
+interface AdapterInfoShape {
+  readonly vendor?: string;
+  readonly architecture?: string;
+  readonly device?: string;
+  readonly description?: string;
+}
+
+export interface RendererBackendDiagnostics {
+  readonly preference: RendererPreference;
+  readonly actual: RendererPreference;
+  readonly backend: string;
+  readonly vendor: string;
+  readonly device: string;
+  readonly fallback: boolean;
+}
 
 export class RenderPipeline {
-  public readonly renderer: THREE.WebGLRenderer;
-  private readonly composer: EffectComposer;
-  private readonly bloom: UnrealBloomPass;
-  private readonly characterComposite: SceneLayerCompositePass;
-  private readonly camera: THREE.Camera;
+  public readonly renderer: THREE.WebGPURenderer;
+  private readonly renderPipeline: THREE.RenderPipeline;
+  private readonly directPass: THREE.PassNode;
+  private readonly worldPass: THREE.PassNode;
+  private readonly characterPass: THREE.PassNode;
+  private readonly directOutput: THREE.Node;
+  private readonly isolatedOutput: THREE.Node;
+  private readonly opacityNode = uniform(1);
+  private readonly readbackTarget = new THREE.RenderTarget(1, 1, {
+    type: THREE.UnsignedByteType,
+    depthBuffer: false,
+    stencilBuffer: false,
+  });
   private resolutionScale = 1;
   private sizing: RenderSizing | null = null;
   private targetResizeCount = 0;
+  private activeMode: CharacterRenderMode = 'direct-opaque';
   private lastFrameRenderStats: FrameRenderStats = EMPTY_FRAME_RENDER_STATS;
 
   public constructor(
     canvas: HTMLCanvasElement,
     scene: THREE.Scene,
     camera: THREE.Camera,
+    private readonly preference: RendererPreference,
   ) {
-    this.camera = camera;
-    this.renderer = new THREE.WebGLRenderer({
+    this.renderer = new THREE.WebGPURenderer({
       canvas,
       antialias: false,
       alpha: false,
       powerPreference: 'high-performance',
+      forceWebGL: preference === 'webgl',
       stencil: false,
       depth: true,
     });
@@ -44,42 +90,69 @@ export class RenderPipeline {
     this.renderer.toneMappingExposure = 1.24;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    // EffectComposer invokes WebGLRenderer several times. Automatic resets
-    // leave only the final fullscreen output pass in renderer.info, which made
-    // real scenes look like one draw call and one triangle in reports.
     this.renderer.info.autoReset = false;
-    camera.layers.set(WORLD_RENDER_LAYER);
 
-    const renderTarget = new THREE.WebGLRenderTarget(1, 1, {
-      type: THREE.HalfFloatType,
+    const directLayers = new THREE.Layers();
+    directLayers.set(WORLD_RENDER_LAYER);
+    directLayers.enable(CHARACTER_RENDER_LAYER);
+    const worldLayers = new THREE.Layers();
+    worldLayers.set(WORLD_RENDER_LAYER);
+    const characterLayers = new THREE.Layers();
+    characterLayers.set(CHARACTER_RENDER_LAYER);
+
+    this.directPass = pass(scene, camera, {
       depthBuffer: true,
-      depthTexture: createResolvedDepthTexture('World scene depth'),
-      stencilBuffer: false,
-    });
-    renderTarget.samples = 2;
-    this.composer = new EffectComposer(this.renderer, renderTarget);
-    this.composer.addPass(new RenderPass(scene, camera));
-    this.characterComposite = new SceneLayerCompositePass(scene, camera, CHARACTER_RENDER_LAYER);
-    this.composer.addPass(this.characterComposite);
-    this.bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.42, 0.48, 0.88);
-    this.composer.addPass(this.bloom);
-    this.composer.addPass(new OutputPass());
+      samples: 2,
+    }).setLayers(directLayers);
+    this.worldPass = pass(scene, camera, {
+      depthBuffer: true,
+      samples: 2,
+    }).setLayers(worldLayers);
+    this.characterPass = pass(scene, camera, {
+      depthBuffer: true,
+      samples: 2,
+    }).setLayers(characterLayers);
+
+    const directColor = this.directPass.getTextureNode();
+    const worldColor = this.worldPass.getTextureNode();
+    const characterColor = this.characterPass.getTextureNode();
+    const worldDepth = this.worldPass.getLinearDepthNode();
+    const characterDepth = this.characterPass.getLinearDepthNode();
+    const depthVisible = float(
+      characterDepth.lessThanEqual(worldDepth.add(LAYER_DEPTH_EPSILON))
+        .and(characterDepth.lessThan(0.999_999)),
+    );
+    const layerAlpha = characterColor.a.mul(this.opacityNode).mul(depthVisible);
+    const isolatedColor = vec4(
+      worldColor.rgb.mul(oneMinus(layerAlpha)).add(
+        characterColor.rgb.mul(this.opacityNode).mul(depthVisible),
+      ),
+      worldColor.a,
+    );
+
+    this.directOutput = this.createBloomOutput(directColor);
+    this.isolatedOutput = this.createBloomOutput(isolatedColor);
+    this.renderPipeline = new THREE.RenderPipeline(this.renderer, this.directOutput);
+    this.renderPipeline.outputColorTransform = false;
     this.resize();
   }
 
-  public render(delta: number): void {
+  public async init(): Promise<void> {
+    await this.renderer.init();
+  }
+
+  public render(_delta = 0): void {
     this.renderer.info.reset();
-    const renderMode = selectCharacterRenderMode(this.characterComposite.getOpacity());
-    this.camera.layers.set(WORLD_RENDER_LAYER);
-    this.characterComposite.enabled = renderMode === 'isolated-fade';
-    if (renderMode === 'direct-opaque') {
-      // Opaque world and character samples must share the same multisampled
-      // depth/color pass. Resolving their targets separately loses coverage at
-      // silhouettes and produces a one-pixel gap around foreground rocks.
-      this.camera.layers.enable(CHARACTER_RENDER_LAYER);
-    }
-    this.composer.render(delta);
+    this.activateMode(selectCharacterRenderMode(this.opacityNode.value));
+    this.renderPipeline.render();
     this.lastFrameRenderStats = captureFrameRenderStats(this.renderer.info.render);
+  }
+
+  /** Advances TSL FRAME nodes when rendering outside requestAnimationFrame. */
+  public renderManual(delta = 0): void {
+    const nodeFrame = this.renderer.inspector.nodeFrame;
+    nodeFrame.update();
+    this.render(delta);
   }
 
   public getLastFrameRenderStats(): FrameRenderStats {
@@ -102,15 +175,13 @@ export class RenderPipeline {
 
     if (ratioChanged) {
       this.renderer.setPixelRatio(next.pixelRatio);
-      // EffectComposer.setPixelRatio already resizes every internal target.
-      this.composer.setPixelRatio(next.pixelRatio);
       this.targetResizeCount += 1;
     }
     if (sizeChanged) {
       this.renderer.setSize(next.width, next.height, false);
-      this.composer.setSize(next.width, next.height);
       this.targetResizeCount += 1;
     }
+    this.readbackTarget.setSize(next.drawingBufferWidth, next.drawingBufferHeight);
     this.sizing = next;
   }
 
@@ -121,35 +192,46 @@ export class RenderPipeline {
   }
 
   public setCharacterOpacity(opacity: number): void {
-    this.characterComposite.setOpacity(opacity);
+    this.opacityNode.value = THREE.MathUtils.clamp(opacity, 0, 1);
   }
 
   public getCharacterOpacity(): number {
-    return this.characterComposite.getOpacity();
+    return this.opacityNode.value;
   }
 
   public getDepthCompositeDiagnostics() {
     return {
-      ...this.characterComposite.getDepthDiagnostics(),
-      renderMode: selectCharacterRenderMode(this.characterComposite.getOpacity()),
+      layerDepthTexture: this.characterPass.renderTarget.depthTexture?.isDepthTexture === true,
+      worldDepthConnected: this.worldPass.renderTarget.depthTexture?.isDepthTexture === true,
+      renderMode: selectCharacterRenderMode(this.opacityNode.value),
     };
   }
 
-  public readScreenCenterPixel(): readonly [number, number, number, number] {
-    const context = this.renderer.getContext();
-    const size = this.renderer.getDrawingBufferSize(new THREE.Vector2());
-    const pixel = new Uint8Array(4);
-    context.finish();
-    context.readPixels(
-      Math.floor(size.x * 0.5),
-      Math.floor(size.y * 0.5),
+  public async readScreenCenterPixel(): Promise<readonly [number, number, number, number]> {
+    const previousTarget = this.renderer.getOutputRenderTarget();
+    try {
+      const nodeFrame = this.renderer.inspector.nodeFrame;
+      nodeFrame.update();
+      this.renderer.setOutputRenderTarget(this.readbackTarget);
+      this.renderPipeline.render();
+    } finally {
+      this.renderer.setOutputRenderTarget(previousTarget);
+    }
+    const width = this.readbackTarget.width;
+    const height = this.readbackTarget.height;
+    const pixel = await this.renderer.readRenderTargetPixelsAsync(
+      this.readbackTarget,
+      Math.floor(width * 0.5),
+      Math.floor(height * 0.5),
       1,
       1,
-      context.RGBA,
-      context.UNSIGNED_BYTE,
-      pixel,
     );
-    return [pixel[0]!, pixel[1]!, pixel[2]!, pixel[3]!];
+    return [
+      Number(pixel[0] ?? 0),
+      Number(pixel[1] ?? 0),
+      Number(pixel[2] ?? 0),
+      Number(pixel[3] ?? 0),
+    ];
   }
 
   public getSizingDiagnostics() {
@@ -160,19 +242,97 @@ export class RenderPipeline {
     };
   }
 
+  public getActualBackend(): RendererPreference {
+    const backend = this.renderer.backend as BackendShape;
+    return backend.isWebGPUBackend === true ? 'webgpu' : 'webgl';
+  }
+
+  public getBackendDiagnostics(): RendererBackendDiagnostics {
+    const actual = this.getActualBackend();
+    if (actual === 'webgpu') {
+      const adapter = (this.renderer.backend as BackendShape).device?.adapterInfo;
+      const device = [
+        adapter?.architecture,
+        adapter?.device,
+        adapter?.description,
+      ].filter((value): value is string => Boolean(value)).join(' | ');
+      return {
+        preference: this.preference,
+        actual,
+        backend: 'WebGPU',
+        vendor: adapter?.vendor || 'Browser-reported adapter',
+        device: device || 'Adapter details unavailable',
+        fallback: actual !== this.preference,
+      };
+    }
+
+    const context = (this.renderer.backend as BackendShape).getContext?.();
+    const debugInfo = context?.getExtension('WEBGL_debug_renderer_info');
+    return {
+      preference: this.preference,
+      actual,
+      backend: context ? String(context.getParameter(context.VERSION)) : 'WebGL 2',
+      vendor: context
+        ? String(context.getParameter(debugInfo?.UNMASKED_VENDOR_WEBGL ?? context.VENDOR))
+        : 'Unavailable',
+      device: context
+        ? String(context.getParameter(debugInfo?.UNMASKED_RENDERER_WEBGL ?? context.RENDERER))
+        : 'Unavailable',
+      fallback: actual !== this.preference,
+    };
+  }
+
+  public getProgramCount(): number {
+    return this.renderer.info.memory.programs;
+  }
+
+  public async synchronizeForLocalProfile(): Promise<void> {
+    const backend = this.renderer.backend as BackendShape;
+    if (backend.isWebGPUBackend === true) {
+      await backend.device?.queue?.onSubmittedWorkDone?.();
+      return;
+    }
+    backend.getContext?.().finish();
+  }
+
   public async compile(scene: THREE.Scene, camera: THREE.Camera): Promise<void> {
     const previousLayerMask = camera.layers.mask;
+    const previousMode = this.activeMode;
     try {
       camera.layers.enable(CHARACTER_RENDER_LAYER);
       await this.renderer.compileAsync(scene, camera);
+      await this.directPass.compileAsync(this.renderer);
+      await this.worldPass.compileAsync(this.renderer);
+      await this.characterPass.compileAsync(this.renderer);
+      this.activateMode('isolated-fade');
+      this.renderPipeline.render();
+      this.activateMode('direct-opaque');
+      this.renderPipeline.render();
     } finally {
       camera.layers.mask = previousLayerMask;
+      this.activateMode(previousMode);
     }
   }
 
   public dispose(): void {
-    this.composer.dispose();
-    this.characterComposite.dispose();
+    this.directPass.dispose();
+    this.worldPass.dispose();
+    this.characterPass.dispose();
+    this.renderPipeline.dispose();
+    this.readbackTarget.dispose();
     this.renderer.dispose();
+  }
+
+  private createBloomOutput(colorNode: THREE.Node<'vec4'>): THREE.Node<'vec4'> {
+    return renderOutput(colorNode.add(bloom(colorNode, 0.42, 0.48, 0.88)));
+  }
+
+  private activateMode(mode: CharacterRenderMode): void {
+    if (mode === this.activeMode && this.renderPipeline.outputNode) return;
+    this.activeMode = mode;
+    this.renderPipeline.outputNode = mode === 'direct-opaque'
+      ? this.directOutput
+      : this.isolatedOutput;
+    this.renderPipeline.needsUpdate = true;
   }
 }

@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { NearestPointLightPool, type LocalLightSource } from '../lighting/NearestPointLightPool';
 import type { WorldSphereCollider } from '../physics/colliders';

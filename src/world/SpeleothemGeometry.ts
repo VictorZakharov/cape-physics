@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
 import { SeededRandom } from '../utils/random';
 
 export const SPELEOTHEM_RINGS = 9;

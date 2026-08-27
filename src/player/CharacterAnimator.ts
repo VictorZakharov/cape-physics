@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
 import { PLAYER } from '../config';
 import { damp } from '../utils/math';
 

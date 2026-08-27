@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
 import { CAMERA_NEAR_OPACITY, CAPE, PLAYER } from '../config';
 import { createCapeFabricTextures } from '../graphics/proceduralTextures';
 import type { CapeAnchors } from '../player/Character';
@@ -97,17 +97,6 @@ export class CapeSimulation {
       transparent: false,
       depthWrite: true,
     });
-    material.onBeforeCompile = (shader) => {
-      shader.fragmentShader = shader.fragmentShader.replace(
-        '#include <map_fragment>',
-        `#include <map_fragment>
-        float capeSideTrim = 1.0 - smoothstep(0.018, 0.052, min(vMapUv.x, 1.0 - vMapUv.x));
-        float capeHemTrim = 1.0 - smoothstep(0.018, 0.052, vMapUv.y);
-        float capeTrim = max(capeSideTrim, capeHemTrim);
-        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.34, 0.12, 0.035), capeTrim * 0.72);`,
-      );
-    };
-    material.customProgramCacheKey = () => 'cape-fabric-trim-v2';
     material.name = 'Woven crimson cape';
     this.mesh = new THREE.Mesh(geometry, material);
     this.mesh.name = 'PBD cape';

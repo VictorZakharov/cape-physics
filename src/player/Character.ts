@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
 import { CAMERA_NEAR_OPACITY, CAPE } from '../config';
 import type { CapsuleCollider } from '../physics/colliders';
 import {

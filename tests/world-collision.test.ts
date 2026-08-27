@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
 import { CAVE, PLAYER } from '../src/config';
 import type { WorldSphereCollider } from '../src/physics/colliders';
 import { periodicFbm } from '../src/utils/random';

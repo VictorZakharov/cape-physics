@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
 
 const DISTANCE_EPSILON = 0.000_001;
 const INTERSECTION_EPSILON = 0.000_01;

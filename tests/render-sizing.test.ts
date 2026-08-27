@@ -7,7 +7,7 @@ import {
   calculateViewportAspect,
   synchronizePerspectiveCameraAspect,
 } from '../src/camera/viewportProjection';
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
 
 describe('render sizing', () => {
   test('caps a high-density 4K display before allocating post-processing targets', () => {

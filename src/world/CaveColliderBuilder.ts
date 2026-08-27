@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
 import { createWorldRockCollider } from '../physics/RockCollider';
 import type { WorldCollider, WorldSphereCollider } from '../physics/colliders';
 import { SPELEOTHEM_RINGS, SPELEOTHEM_SIDES } from './SpeleothemGeometry';

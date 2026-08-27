@@ -76,6 +76,17 @@
         <span data-quality-label>ADAPTIVE ULTRA</span>
       </div>
 
+      <div
+        class="renderer-switch"
+        data-renderer-switch
+        role="group"
+        aria-label="Graphics renderer. Changing renderer reloads the demo."
+      >
+        <span>RENDERER</span>
+        <button type="button" data-renderer-option="webgpu" aria-pressed="false">WEBGPU</button>
+        <button type="button" data-renderer-option="webgl" aria-pressed="false">WEBGL</button>
+      </div>
+
       <div class="onboarding" data-onboarding role="status">
         <span data-onboarding-prompt>Hold either mouse button</span>
         <strong data-onboarding-action>DRAG TO LOOK AROUND</strong>
@@ -134,7 +145,7 @@
         <small data-loading-status>Shaping stone</small>
       </section>
 
-      <noscript>This demonstration requires JavaScript and WebGL 2.</noscript>
+      <noscript>This demonstration requires JavaScript and a WebGPU or WebGL 2 browser.</noscript>
     </main>
     <script type="module" src="/src/main.ts"></script>
   </body>

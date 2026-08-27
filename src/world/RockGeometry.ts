@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
 
 const ROCK_SIDES = 10;
 const BASE_HEIGHT = -0.2;

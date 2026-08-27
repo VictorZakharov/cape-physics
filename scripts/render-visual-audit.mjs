@@ -57,6 +57,13 @@ function booleanSetting(name, fallback) {
   throw new Error(`${name} must be true or false.`);
 }
 
+function rendererSetting() {
+  const value = (process.env.CAPE_AUDIT_RENDERER ?? 'webgl').trim().toLowerCase();
+  if (value === 'webgl' || value === 'webgpu') return value;
+  throw new Error('CAPE_AUDIT_RENDERER must be webgl or webgpu.');
+}
+
+const rendererPreference = rendererSetting();
 const performanceProfileEnabled = booleanSetting('CAPE_AUDIT_PERFORMANCE_PROFILE', true);
 const profileDurationSeconds = performanceProfileEnabled
   ? numericSetting('CAPE_AUDIT_PROFILE_SECONDS', 12, 2, 12)
@@ -73,7 +80,7 @@ const temporaryRoot = mkdtempSync(join(tmpdir(), 'cape-physics-audit-'));
 const staticPort = await listen(server);
 const debugPort = await reservePort();
 const profile = join(temporaryRoot, 'browser-profile');
-const pageUrl = `http://127.0.0.1:${staticPort}/?harness=1`;
+const pageUrl = `http://127.0.0.1:${staticPort}/?harness=1&renderer=${rendererPreference}`;
 const browser = spawn(browserExecutable, [
   '--headless=new',
   '--no-first-run',
@@ -303,6 +310,11 @@ try {
 
   const initial = await diagnostics();
   assert(initial.ready, 'demo harness did not report ready');
+  assert(
+    initial.renderer.actual === rendererPreference,
+    `${rendererPreference.toUpperCase()} was requested but ${initial.renderer.actual.toUpperCase()} is active`,
+  );
+  assert(!initial.renderer.fallback, 'visual audit silently activated a renderer fallback');
   assert(
     initial.renderer.calls > 10,
     `full-frame renderer counter captured only ${initial.renderer.calls} draw calls`,
@@ -1288,6 +1300,7 @@ try {
     runState,
     frameProfile,
     profileSettings: {
+      renderer: rendererPreference,
       enabled: performanceProfileEnabled,
       durationSeconds: profileDurationSeconds,
       expectedFrames: expectedProfileFrames,
