@@ -42,7 +42,7 @@ Everything is generated at runtime. There are no downloaded models, textures, or
 
 ## Rendering backends
 
-The demo selects WebGPU when the browser supports it and otherwise uses WebGL 2. The `WEBGPU` / `WEBGL` switch in the lower-right corner reloads the selected backend and remembers the choice. Performance reports show both the requested and active backend, so a browser fallback is never mislabeled.
+The demo selects WebGPU when the browser supports it and otherwise uses WebGL 2. The `WEBGPU` / `WEBGL` switch in the lower-right corner reloads the selected backend and remembers the choice. Performance reports show both the requested and active backend, so a browser fallback is never mislabeled. If a WebGPU device is lost or startup stops responding, the page restarts with WebGL instead of remaining behind the loading screen.
 
 WebGPU handles both rendering and cape simulation. WebGL keeps the same visual behavior through the CPU cloth solver, making it a compatibility path as well as a useful comparison. Three.js still describes `WebGPURenderer` as experimental, so results can vary by browser and driver; see the [Three.js WebGPU renderer guide](https://threejs.org/manual/en/webgpurenderer).
 
@@ -62,7 +62,7 @@ resolve cloth-face contact in race-free triangle colors
 render positions and normals directly from GPU storage
 ```
 
-The WebGPU path keeps current positions, previous positions, topology, anchors, and collider data in persistent storage buffers. Each fixed step submits one prediction dispatch and one fused solver dispatch; normal gameplay performs no particle readback. Shape constraints use position-owned Jacobi projection from a compact snapshot. Body-face and rock-face constraints update three vertices at once, so the grid triangles are processed in eight non-overlapping colors with a storage barrier between colors. That preserves coherent corrections without float atomics or write races.
+The WebGPU path keeps current positions, previous positions, topology, anchors, and collider data in persistent storage buffers. Each fixed step batches 25 short dispatches into one compute pass and one queue submission; normal gameplay performs no particle readback. Shape projection ping-pongs between two position buffers, so every particle reads an immutable preceding pass without a copy dispatch. Body-face and rock-face constraints update three vertices at once, so the grid triangles are processed in eight non-overlapping colors with a storage barrier between colors. This preserves coherent corrections without float atomics or write races while avoiding one oversized driver-sensitive shader.
 
 Collision is intentionally hybrid:
 
@@ -83,14 +83,14 @@ Reference measurements were captured on August 27, 2026 with Edge 151, Windows, 
 
 | Metric | WebGPU + GPU cape | WebGL 2 + CPU cape | Result |
 | --- | ---: | ---: | ---: |
-| Synchronized frame | **3.48 ms** average / 3.99 ms p95 / 6.16 ms max | 5.30 ms / 6.59 ms / 8.70 ms | **1.52× faster** average |
-| Main-thread cape physics | **0.213 ms/frame** | 2.793 ms/frame | **13.1× less CPU time** |
-| Ready time | **7.26 s** | 18.06 s | **2.49× faster** |
-| GPU timestamp queries | render 0.301 ms + cape compute 0.975 ms = **1.277 ms average** / 1.442 ms p95 total | Not available | 144 samples/run |
-| Shader stability | 87 → 87 programs | 85 → 85 programs | No warm-route growth |
+| Synchronized frame | **3.31 ms** average / 3.94 ms p95 / 4.29 ms max | 5.30 ms / 6.59 ms / 8.70 ms | **1.60× faster** average |
+| Main-thread cape physics | **0.223 ms/frame** | 2.793 ms/frame | **12.5× less CPU time** |
+| Ready time | **8.30 s** | 18.06 s | **2.18× faster** |
+| GPU timestamp queries | render 0.304 ms + cape compute 0.975 ms = **1.278 ms average** / 1.573 ms p95 total | Not available | 144 samples/run |
+| Shader stability | 94 → 94 programs | 85 → 85 programs | No warm-route growth |
 | Scene complexity | 74 draw calls / 67,577 triangles | 74 / 67,577 | Matched |
 
-Against the recorded WebGPU renderer baseline before GPU cape compute, synchronized frame time fell from 5.23 ms to 3.48 ms (**1.51× faster**) and main-thread cape physics fell from 3.085 ms to 0.213 ms (**14.5× less CPU time**). Rendering and browser submission now dominate the frame, so the whole application does not scale by the full physics-only factor.
+Against the recorded WebGPU renderer baseline before GPU cape compute, synchronized frame time fell from 5.23 ms to 3.31 ms (**1.58× faster**) and main-thread cape physics fell from 3.085 ms to 0.223 ms (**13.8× less CPU time**). Rendering and browser submission now dominate the frame, so the whole application does not scale by the full physics-only factor.
 
 These are throughput diagnostics, not display-refresh measurements or universal guarantees. GPU, browser, driver, thermal state, and scene visibility all matter. The in-game FPS graph is the best measurement on your hardware; click it to copy a rolling report with callback pacing, physics, scene, submission, renderer counters, and cape state.
 

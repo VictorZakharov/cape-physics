@@ -147,60 +147,80 @@ export class GpuCapeSimulation {
     this.updateAnchorBuffer(initialAnchors);
 
     this.computeSequence.push(this.createPredictionKernel());
-    const scratchToPosition = this.createProjectionFunction(
+    const scratchToPosition = this.createProjectionKernel(
       this.scratchBuffer,
       this.positionBuffer,
-      'ScratchToPosition',
+      false,
+      'Cape project scratch to position',
     );
-    const positionBodyFaceColorPass = this.createBodyFaceColorFunction(
+    const positionToScratch = this.createProjectionKernel(
       this.positionBuffer,
-      'Position',
+      this.scratchBuffer,
+      false,
+      'Cape project position to scratch',
     );
-    const positionRockFaceColorPass = this.createRockFaceColorFunction(
+    const hardScratchToPosition = this.createProjectionKernel(
+      this.scratchBuffer,
       this.positionBuffer,
-      'Position',
+      true,
+      'Cape reconcile scratch to position',
     );
-    this.computeSequence.push(Fn(() => {
-      const index = instanceIndex;
-      const passResult = float(0).toVar('passResult');
-      for (let iteration = 0; iteration < CAPE.solverIterations; iteration += 1) {
-        // Prediction already populated scratch for the first pass. Later
-        // Jacobi passes take a compact snapshot instead of generating a
-        // second copy of the full projection shader with reversed bindings.
-        if (iteration > 0) {
-          this.scratchBuffer.element(index).assign(this.positionBuffer.element(index));
-          storageBarrier();
-        }
-        passResult.assign(scratchToPosition(index, bool(false)));
-        storageBarrier();
-        if (iteration >= CAPE.solverIterations - 6) {
-          for (let color = 0; color < 8; color += 1) {
-            passResult.assign(positionBodyFaceColorPass(uint(color)));
-            storageBarrier();
-          }
-        }
+    const hardPositionToScratch = this.createProjectionKernel(
+      this.positionBuffer,
+      this.scratchBuffer,
+      true,
+      'Cape reconcile position to scratch',
+    );
+    const positionBodyFaces = this.createFaceSweepKernel(
+      this.createBodyFaceColorFunction(this.positionBuffer, 'Position'),
+      'Cape body faces in position',
+    );
+    const scratchBodyFaces = this.createFaceSweepKernel(
+      this.createBodyFaceColorFunction(this.scratchBuffer, 'Scratch'),
+      'Cape body faces in scratch',
+    );
+    const positionRockFaces = this.createFaceSweepKernel(
+      this.createRockFaceColorFunction(this.positionBuffer, 'Position'),
+      'Cape rock faces in position',
+    );
+    const scratchRockFaces = this.createFaceSweepKernel(
+      this.createRockFaceColorFunction(this.scratchBuffer, 'Scratch'),
+      'Cape rock faces in scratch',
+    );
+
+    // Keep every dispatch short enough for conservative browser/driver
+    // watchdogs, but batch the complete schedule into one compute pass and
+    // one queue submission. Ping-pong projection also avoids a snapshot
+    // dispatch between Jacobi passes.
+    let currentBufferIsPosition = false;
+    for (let iteration = 0; iteration < CAPE.solverIterations; iteration += 1) {
+      this.computeSequence.push(
+        currentBufferIsPosition ? positionToScratch : scratchToPosition,
+      );
+      currentBufferIsPosition = !currentBufferIsPosition;
+      if (iteration >= CAPE.solverIterations - 6) {
+        this.computeSequence.push(
+          currentBufferIsPosition ? positionBodyFaces : scratchBodyFaces,
+        );
       }
-      // Finish point/world recovery first, then process non-adjacent cloth
-      // triangles by color. Each color can update all three triangle
-      // vertices coherently without atomics; the barrier makes the next
-      // color a parallel Gauss-Seidel pass inside this one submission.
-      for (let reconciliation = 0; reconciliation < 3; reconciliation += 1) {
-        this.scratchBuffer.element(index).assign(this.positionBuffer.element(index));
-        storageBarrier();
-        passResult.assign(scratchToPosition(index, bool(true)));
-        storageBarrier();
-        if (reconciliation > 0) {
-          for (let color = 0; color < 8; color += 1) {
-            passResult.assign(positionBodyFaceColorPass(uint(color)));
-            storageBarrier();
-          }
-        }
-        for (let color = 0; color < 8; color += 1) {
-          passResult.assign(positionRockFaceColorPass(uint(color)));
-          storageBarrier();
-        }
+    }
+    for (let reconciliation = 0; reconciliation < 3; reconciliation += 1) {
+      this.computeSequence.push(
+        currentBufferIsPosition ? hardPositionToScratch : hardScratchToPosition,
+      );
+      currentBufferIsPosition = !currentBufferIsPosition;
+      if (reconciliation > 0) {
+        this.computeSequence.push(
+          currentBufferIsPosition ? positionBodyFaces : scratchBodyFaces,
+        );
       }
-    })().compute(PARTICLE_COUNT, [PARTICLE_COUNT]).setName('Cape fused projections'));
+      this.computeSequence.push(
+        currentBufferIsPosition ? positionRockFaces : scratchRockFaces,
+      );
+    }
+    if (!currentBufferIsPosition) {
+      throw new Error('GPU cape projection schedule must finish in the render position buffer.');
+    }
     this.sleepKernel = this.createSleepKernel();
 
     const geometry = this.diagnosticMirror.mesh.geometry;
@@ -288,7 +308,7 @@ export class GpuCapeSimulation {
     this.updateAnchorBuffer(anchors);
     this.updateBodyBuffers(bodyColliders, anchors.back);
     this.updateWorldBuffers(worldColliders);
-    for (const computeNode of this.computeSequence) this.renderer.compute(computeNode);
+    this.renderer.compute(this.computeSequence);
     if (this.settledSeconds >= GPU_SLEEP_AFTER_IDLE_SECONDS) {
       this.renderer.compute(this.sleepKernel);
       this.sleeping = true;
@@ -485,6 +505,32 @@ export class GpuCapeSimulation {
       // still observable without a new storage binding or a GPU fence.
       target.assign(vec4(predicted, current.w));
     })().compute(PARTICLE_COUNT).setName('Cape predict');
+  }
+
+  private createProjectionKernel(
+    source: typeof this.positionBuffer,
+    target: typeof this.positionBuffer,
+    hardRockRecovery: boolean,
+    name: string,
+  ): THREE.ComputeNode {
+    const project = this.createProjectionFunction(source, target, name.replaceAll(' ', ''));
+    return Fn(() => {
+      const passResult = float(0).toVar('projectionPassResult');
+      passResult.assign(project(instanceIndex, bool(hardRockRecovery)));
+    })().compute(PARTICLE_COUNT).setName(name);
+  }
+
+  private createFaceSweepKernel(
+    colorPass: ReturnType<GpuCapeSimulation['createBodyFaceColorFunction']>,
+    name: string,
+  ): THREE.ComputeNode {
+    return Fn(() => {
+      const passResult = float(0).toVar('faceSweepResult');
+      for (let color = 0; color < 8; color += 1) {
+        passResult.assign(colorPass(uint(color)));
+        storageBarrier();
+      }
+    })().compute(PARTICLE_COUNT, [PARTICLE_COUNT]).setName(name);
   }
 
   private createProjectionFunction(

@@ -94,6 +94,9 @@ export class CapeDemo {
   private fixedTime = 0;
   private harnessAccumulator = 0;
   private ready = false;
+  private webGpuRecoveryStarted = false;
+  private webGpuStartupTimer: number | null = null;
+  private stopDeviceLossWatch: (() => void) | null = null;
 
   public constructor() {
     this.canvas = invariant(document.querySelector<HTMLCanvasElement>('#scene-canvas'), 'Scene canvas is missing.');
@@ -129,14 +132,27 @@ export class CapeDemo {
   }
 
   public async start(): Promise<void> {
+    if (this.rendererPreference === 'webgpu') {
+      this.webGpuStartupTimer = window.setTimeout(() => {
+        this.recoverWithWebGL('WebGPU startup stalled; restarting with WebGL');
+      }, 20_000);
+    }
     await this.loading.update(0.03, 'Selecting the graphics backend');
     try {
       await this.pipeline.init();
     } catch (error) {
       if (this.rendererPreference !== 'webgpu') throw error;
-      await this.loading.update(0.04, 'WebGPU unavailable; retrying with WebGL');
-      window.location.replace(rendererPreferenceUrl(window.location.href, 'webgl'));
+      this.recoverWithWebGL('WebGPU unavailable; restarting with WebGL');
       return;
+    }
+    if (this.pipeline.getActualBackend() === 'webgpu') {
+      this.stopDeviceLossWatch = this.pipeline.onDeviceLost((info) => {
+        const detail = info.message || info.reason || 'unknown device error';
+        console.warn(`WebGPU device lost: ${detail}`);
+        this.recoverWithWebGL('WebGPU stopped responding; restarting with WebGL');
+      });
+    } else {
+      this.clearWebGpuStartupTimer();
     }
     this.rendererSwitch.setActive(
       this.pipeline.getActualBackend(),
@@ -210,6 +226,7 @@ export class CapeDemo {
     this.installHarness();
     await this.loading.reveal();
     this.ready = true;
+    this.clearWebGpuStartupTimer();
     if (window.__CAPE_DEMO__) window.__CAPE_DEMO__.ready = true;
     if (this.harnessMode) {
       this.updateScene(0);
@@ -291,6 +308,25 @@ export class CapeDemo {
   private readonly dismissOnboarding = (): void => {
     document.querySelector<HTMLElement>('[data-onboarding]')?.classList.add('is-dismissed');
   };
+
+  private clearWebGpuStartupTimer(): void {
+    if (this.webGpuStartupTimer === null) return;
+    window.clearTimeout(this.webGpuStartupTimer);
+    this.webGpuStartupTimer = null;
+  }
+
+  private recoverWithWebGL(message: string): void {
+    if (this.webGpuRecoveryStarted) return;
+    this.webGpuRecoveryStarted = true;
+    this.ready = false;
+    if (window.__CAPE_DEMO__) window.__CAPE_DEMO__.ready = false;
+    this.clearWebGpuStartupTimer();
+    this.stopDeviceLossWatch?.();
+    this.stopDeviceLossWatch = null;
+    document.body.classList.remove('is-ready');
+    void this.loading.update(0.04, message);
+    window.location.replace(rendererPreferenceUrl(window.location.href, 'webgl'));
+  }
 
   private applyQuality(state: QualityState): void {
     this.pipeline.setResolutionScale(state.scale);
@@ -662,6 +698,9 @@ export class CapeDemo {
   }
 
   private readonly dispose = (): void => {
+    this.clearWebGpuStartupTimer();
+    this.stopDeviceLossWatch?.();
+    this.stopDeviceLossWatch = null;
     void this.pipeline.renderer.setAnimationLoop(null);
     this.rendererSwitch.dispose();
     this.mobileControls?.dispose();

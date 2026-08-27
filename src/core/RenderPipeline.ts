@@ -28,11 +28,17 @@ interface BackendShape {
   readonly trackTimestamp?: boolean;
   readonly device?: {
     readonly adapterInfo?: AdapterInfoShape;
+    readonly lost?: Promise<DeviceLostInfoShape>;
     readonly queue?: {
       onSubmittedWorkDone?: () => Promise<void>;
     };
   };
   readonly getContext?: () => WebGL2RenderingContext;
+}
+
+interface DeviceLostInfoShape {
+  readonly message?: string;
+  readonly reason?: string;
 }
 
 interface AdapterInfoShape {
@@ -260,6 +266,21 @@ export class RenderPipeline {
   public getActualBackend(): RendererPreference {
     const backend = this.renderer.backend as BackendShape;
     return backend.isWebGPUBackend === true ? 'webgpu' : 'webgl';
+  }
+
+  public onDeviceLost(
+    handler: (info: DeviceLostInfoShape) => void,
+  ): () => void {
+    const deviceLost = (this.renderer.backend as BackendShape).device?.lost;
+    let active = true;
+    if (deviceLost) {
+      void deviceLost.then((info) => {
+        if (active) handler(info);
+      }).catch(() => undefined);
+    }
+    return () => {
+      active = false;
+    };
   }
 
   public getBackendDiagnostics(): RendererBackendDiagnostics {
