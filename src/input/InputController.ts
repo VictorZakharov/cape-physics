@@ -1,18 +1,23 @@
 import * as THREE from 'three';
+import type { MobileControlInput } from './MobileControls';
 
-export class InputController {
+export class InputController implements MobileControlInput {
   private readonly pressed = new Set<string>();
   private readonly orbitDelta = new THREE.Vector2();
   private readonly movement = new THREE.Vector2();
   private readonly virtualMovement = new THREE.Vector2();
+  private readonly touchMovement = new THREE.Vector2();
   private zoomDelta = 0;
   private activePointer: number | null = null;
   private lastPointer = new THREE.Vector2();
   private interacted = false;
   private virtualMovementEnabled = false;
   private virtualRunning = false;
+  private touchMovementEnabled = false;
+  private touchRunning = false;
   private jumpQueued = false;
   private virtualJumpQueued = false;
+  private touchJumpQueued = false;
 
   public constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -33,7 +38,9 @@ export class InputController {
     if (this.virtualMovementEnabled) return this.virtualMovement;
     const horizontal = Number(this.pressed.has('KeyD')) - Number(this.pressed.has('KeyA'));
     const forward = Number(this.pressed.has('KeyW')) - Number(this.pressed.has('KeyS'));
-    return this.movement.set(horizontal, forward).clampLength(0, 1);
+    this.movement.set(horizontal, forward);
+    if (this.touchMovementEnabled) this.movement.add(this.touchMovement);
+    return this.movement.clampLength(0, 1);
   }
 
   public setVirtualMovement(horizontal: number, forward: number): void {
@@ -43,7 +50,9 @@ export class InputController {
 
   public isRunning(): boolean {
     if (this.virtualMovementEnabled) return this.virtualRunning;
-    return this.pressed.has('ShiftLeft') || this.pressed.has('ShiftRight');
+    return this.touchRunning
+      || this.pressed.has('ShiftLeft')
+      || this.pressed.has('ShiftRight');
   }
 
   public setVirtualRunning(running: boolean): void {
@@ -51,9 +60,10 @@ export class InputController {
   }
 
   public consumeJump(): boolean {
-    const queued = this.jumpQueued || this.virtualJumpQueued;
+    const queued = this.jumpQueued || this.virtualJumpQueued || this.touchJumpQueued;
     this.jumpQueued = false;
     this.virtualJumpQueued = false;
+    this.touchJumpQueued = false;
     return queued;
   }
 
@@ -66,6 +76,44 @@ export class InputController {
     this.virtualMovementEnabled = false;
     this.virtualRunning = false;
     this.virtualJumpQueued = false;
+  }
+
+  public setTouchMovement(horizontal: number, forward: number): void {
+    this.touchMovement.set(horizontal, forward).clampLength(0, 1);
+    this.touchMovementEnabled = true;
+    this.markInteracted();
+  }
+
+  public clearTouchMovement(): void {
+    this.touchMovement.set(0, 0);
+    this.touchMovementEnabled = false;
+  }
+
+  public setTouchRunning(running: boolean): void {
+    this.touchRunning = running;
+    if (running) this.markInteracted();
+  }
+
+  public queueTouchJump(): void {
+    this.touchJumpQueued = true;
+    this.markInteracted();
+  }
+
+  public addTouchOrbitDelta(horizontal: number, vertical: number): void {
+    this.orbitDelta.x += THREE.MathUtils.clamp(horizontal, -180, 180);
+    this.orbitDelta.y += THREE.MathUtils.clamp(vertical, -180, 180);
+    this.markInteracted();
+  }
+
+  public addTouchZoomDelta(delta: number): void {
+    this.zoomDelta += THREE.MathUtils.clamp(delta, -2, 2);
+    if (delta !== 0) this.markInteracted();
+  }
+
+  public clearTouchInput(): void {
+    this.clearTouchMovement();
+    this.touchRunning = false;
+    this.touchJumpQueued = false;
   }
 
   public consumeOrbitDelta(target: THREE.Vector2): void {
@@ -121,11 +169,13 @@ export class InputController {
   private readonly handleBlur = (): void => {
     this.pressed.clear();
     this.jumpQueued = false;
+    this.clearTouchInput();
     this.activePointer = null;
     document.body.classList.remove('is-orbiting');
   };
 
   private readonly handlePointerDown = (event: PointerEvent): void => {
+    if (event.pointerType === 'touch') return;
     if (event.button !== 0 && event.button !== 2) return;
     this.activePointer = event.pointerId;
     this.lastPointer.set(event.clientX, event.clientY);
@@ -135,6 +185,7 @@ export class InputController {
   };
 
   private readonly handlePointerMove = (event: PointerEvent): void => {
+    if (event.pointerType === 'touch') return;
     if (event.pointerId !== this.activePointer) return;
     this.orbitDelta.x += event.clientX - this.lastPointer.x;
     this.orbitDelta.y += event.clientY - this.lastPointer.y;
@@ -142,6 +193,7 @@ export class InputController {
   };
 
   private readonly handlePointerUp = (event: PointerEvent): void => {
+    if (event.pointerType === 'touch') return;
     if (event.pointerId !== this.activePointer) return;
     this.activePointer = null;
     document.body.classList.remove('is-orbiting');

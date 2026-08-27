@@ -1,5 +1,6 @@
 import './styles/base.css';
 import './styles/hud.css';
+import './styles/mobile-controls.css';
 import './styles/loading.css';
 import { CapeDemo } from './CapeDemo';
 import { LoadingScreen } from './ui/LoadingScreen';

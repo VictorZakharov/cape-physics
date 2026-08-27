@@ -14,6 +14,7 @@ import { RenderPipeline } from './core/RenderPipeline';
 import { CHARACTER_RENDER_LAYER } from './core/renderLayers';
 import { configureTextureFiltering, createRockTextures } from './graphics/proceduralTextures';
 import { InputController } from './input/InputController';
+import { MobileControls } from './input/MobileControls';
 import { CinematicLighting } from './lighting/CinematicLighting';
 import { CapeSimulation } from './physics/CapeSimulation';
 import type { WorldCollider } from './physics/colliders';
@@ -53,6 +54,7 @@ export class CapeDemo {
   private readonly qualityLabel: HTMLElement;
   private readonly harnessMode = new URLSearchParams(window.location.search).get('harness') === '1';
   private input!: InputController;
+  private mobileControls!: MobileControls;
   private character!: Character;
   private characterController!: CharacterController;
   private thirdPersonCamera!: ThirdPersonCamera;
@@ -122,6 +124,7 @@ export class CapeDemo {
     enableCameraIndependentShadowCaster(this.cape.mesh);
 
     this.input = new InputController(this.canvas, this.dismissOnboarding);
+    this.mobileControls = new MobileControls(this.canvas, this.input);
     this.characterController = new CharacterController(this.character, this.input, this.worldCollision);
     this.thirdPersonCamera = new ThirdPersonCamera(this.camera, this.input, this.cave.cameraColliders);
     this.thirdPersonCamera.snapTo(this.character.root.position);
@@ -259,6 +262,9 @@ export class CapeDemo {
       },
       setMovement: (horizontal, forward) => {
         this.input.setVirtualMovement(horizontal, forward);
+      },
+      clearMovement: () => {
+        this.input.clearVirtualMovement();
       },
       setRunning: (running) => {
         this.input.setVirtualRunning(running);
@@ -505,6 +511,7 @@ export class CapeDemo {
 
   private readonly dispose = (): void => {
     this.pipeline.renderer.setAnimationLoop(null);
+    this.mobileControls?.dispose();
     this.input?.dispose();
     this.lighting?.dispose();
     this.performance.dispose();

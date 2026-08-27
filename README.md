@@ -14,7 +14,7 @@ Everything is generated at runtime. There are no downloaded models, textures, or
 ## What is in the demo
 
 - A neck-mounted cape that drapes over the shoulders and upper back instead of hanging from two disconnected points
-- Walking, Shift-to-run, jumping, gait animation, and terrain-aware character movement
+- Desktop and touch movement controls, running, jumping, gait animation, and terrain-aware character movement
 - Cloth contact with the character, fitted waist strap, boots, floor, banks, rocks, stalagmites, and stalactites
 - A procedural cave with wet rock materials, torch shadows, glowing mineral veins, fog, dust, and bloom
 - Clear walkable pools with footstep, landing, and ceiling-drop ripples
@@ -31,6 +31,11 @@ Everything is generated at runtime. There are no downloaded models, textures, or
 | Left- or right-mouse drag | Orbit the camera |
 | Drag upward | Look upward |
 | Mouse wheel | Zoom |
+| Touch joystick | Move relative to the camera |
+| Hold `RUN` | Run on touch devices |
+| Tap `JUMP` | Jump on touch devices |
+| One-finger swipe | Orbit the camera on touch devices |
+| Two-finger pinch | Zoom on touch devices |
 | Click the FPS graph | Copy a rolling 15-second performance report |
 | `Esc` | Release pointer interaction |
 
@@ -96,12 +101,12 @@ Open the printed URL in a WebGL 2 browser with hardware acceleration enabled.
 ```powershell
 bun run check          # strict TypeScript and deterministic unit/integration tests
 bun run harness        # renderer-free traversal plus the optional local timing budget
-bun run audit:visual   # direct Edge/Chrome dynamic audit across 36 rendered views
+bun run audit:visual   # direct Edge/Chrome dynamic audit across 37 rendered views
 bun run stress:rocks   # optional extended rock-contact stress matrix
 bun run build:pages    # production GitHub Pages build
 ```
 
-The renderer-free harness advances character movement, cloth, jumping, water landings, footsteps, ceiling drops, lights, and mineral effects without using a browser. The visual audit then drives the production build directly through Edge or Chrome and checks real input, depth ordering, shadows, water motion, cape contact, and animation from 36 camera studies.
+The renderer-free harness advances character movement, cloth, jumping, water landings, footsteps, ceiling drops, lights, and mineral effects without using a browser. The visual audit then drives the production build directly through Edge or Chrome and checks desktop and touch input, responsive controls, depth ordering, shadows, water motion, cape contact, and animation from 37 camera studies.
 
 CI gates deterministic correctness, geometry, collision, rendering, and builds. It does **not** gate merges on millisecond or elapsed-time thresholds. Pull requests receive a temporary GitHub Pages preview, while merges to `main` deploy the production demo.
 

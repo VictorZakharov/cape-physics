@@ -140,6 +140,7 @@ declare global {
       setCameraPose: (pose: { position: number[]; target: number[] }) => CapeDemoDiagnostics;
       setPlayerPose: (pose: { position: number[]; yaw?: number }) => CapeDemoDiagnostics;
       setMovement: (horizontal: number, forward: number) => void;
+      clearMovement: () => void;
       setRunning: (running: boolean) => void;
       jump: () => void;
       advance: (options: { duration: number; frameStep?: number }) => CapeDemoDiagnostics;

@@ -183,6 +183,10 @@ try {
     command,
     `window.__CAPE_DEMO__.setMovement(${horizontal}, ${forward})`,
   );
+  const clearMovement = () => evaluate(
+    command,
+    'window.__CAPE_DEMO__.clearMovement()',
+  );
   const setRunning = (running) => evaluate(
     command,
     `window.__CAPE_DEMO__.setRunning(${running})`,
@@ -265,6 +269,31 @@ try {
       type: 'mouseReleased', x: 800, y: toY, button, buttons: 0, clickCount: 1,
     });
   };
+  const dispatchTouchPointer = (
+    selector,
+    type,
+    pointerId,
+    clientX,
+    clientY,
+    buttons = type === 'pointerup' || type === 'pointercancel' ? 0 : 1,
+    isPrimary = true,
+  ) => evaluate(command, `(() => {
+    const element = document.querySelector(${JSON.stringify(selector)});
+    if (!element) throw new Error('Touch audit target is missing: ' + ${JSON.stringify(selector)});
+    return element.dispatchEvent(new PointerEvent(${JSON.stringify(type)}, {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      pointerId: ${pointerId},
+      pointerType: 'touch',
+      isPrimary: ${isPrimary},
+      clientX: ${clientX},
+      clientY: ${clientY},
+      button: 0,
+      buttons: ${buttons},
+      pressure: ${buttons === 0 ? 0 : 0.5},
+    }));
+  })()`);
 
   const initial = await diagnostics();
   assert(initial.ready, 'demo harness did not report ready');
@@ -330,6 +359,163 @@ try {
   await evaluate(command, 'window.dispatchEvent(new Event("resize")); true');
   await delay(120);
   await advance(1.2);
+
+  const runMobileTouchAudit = async () => {
+    await clearMovement();
+    await command('Emulation.setDeviceMetricsOverride', {
+      width: 844,
+      height: 390,
+      deviceScaleFactor: 2,
+      mobile: true,
+    });
+    await evaluate(command, 'window.dispatchEvent(new Event("resize")); true');
+    await delay(120);
+    await dispatchTouchPointer('#scene-canvas', 'pointerdown', 41, 422, 195);
+    await dispatchTouchPointer('#scene-canvas', 'pointerup', 41, 422, 195);
+    const mobileLayout = await evaluate(command, `(() => {
+      const measure = (selector) => {
+        const element = document.querySelector(selector);
+        if (!element) throw new Error('Mobile layout target is missing: ' + selector);
+        const bounds = element.getBoundingClientRect();
+        return {
+          centerX: bounds.left + bounds.width * 0.5,
+          centerY: bounds.top + bounds.height * 0.5,
+          width: bounds.width,
+          height: bounds.height,
+        };
+      };
+      const root = document.querySelector('[data-mobile-controls]');
+      return {
+        ariaHidden: root?.getAttribute('aria-hidden'),
+        display: root ? getComputedStyle(root).display : 'missing',
+        stick: measure('[data-touch-move]'),
+        run: measure('[data-touch-run]'),
+        jump: measure('[data-touch-jump]'),
+      };
+    })()`);
+    assert(mobileLayout.ariaHidden === 'false', 'touch input did not reveal the mobile controls');
+    assert(mobileLayout.display !== 'none', 'mobile controls remained visually hidden after touch');
+    assert(
+      mobileLayout.stick.width >= 90 && mobileLayout.stick.height >= 90,
+      'mobile movement stick is too small to operate',
+    );
+    assert(
+      mobileLayout.run.width >= 54 && mobileLayout.jump.width >= 60,
+      'mobile action targets are too small to operate',
+    );
+
+    await setPlayerPose(initial.player.position, 0);
+    const mobileTouchStart = await setView(0.08, 0.18, 5.5);
+    await dispatchTouchPointer('#scene-canvas', 'pointerdown', 42, 340, 190);
+    await dispatchTouchPointer('#scene-canvas', 'pointermove', 42, 410, 120);
+    const mobileOrbit = await advance(0.05, 1 / 120);
+    await dispatchTouchPointer('#scene-canvas', 'pointerup', 42, 410, 120);
+    assert(
+      mobileOrbit.camera.pitch < mobileTouchStart.camera.pitch - 0.18,
+      'one-finger touch drag did not orbit the camera',
+    );
+
+    const mobilePinchStart = await setView(0.08, 0.18, 5.5);
+    await dispatchTouchPointer('#scene-canvas', 'pointerdown', 43, 330, 180);
+    await dispatchTouchPointer('#scene-canvas', 'pointerdown', 44, 510, 180, 1, false);
+    await dispatchTouchPointer('#scene-canvas', 'pointermove', 44, 650, 180, 1, false);
+    const mobilePinch = await advance(0.24, 1 / 120);
+    await dispatchTouchPointer('#scene-canvas', 'pointerup', 44, 650, 180, 0, false);
+    await dispatchTouchPointer('#scene-canvas', 'pointerup', 43, 330, 180);
+    assert(
+      mobilePinch.camera.distance < mobilePinchStart.camera.distance - 0.25,
+      'two-finger pinch did not zoom the camera',
+    );
+
+    await setPlayerPose(initial.player.position, 0);
+    await setView(0.08, 0.22, 4.5);
+    const mobileMoveStart = await diagnostics();
+    const stickX = mobileLayout.stick.centerX;
+    const stickY = mobileLayout.stick.centerY - mobileLayout.stick.height * 0.35;
+    await dispatchTouchPointer('[data-touch-move]', 'pointerdown', 45, stickX, stickY);
+    await dispatchTouchPointer(
+      '[data-touch-run]',
+      'pointerdown',
+      46,
+      mobileLayout.run.centerX,
+      mobileLayout.run.centerY,
+      1,
+      false,
+    );
+    const mobileRun = await advance(0.72, 1 / 120);
+    assert(mobileRun.player.running, 'hold-to-run touch input did not engage');
+    assert(mobileRun.player.speed > 5.5, 'touch running did not reach running speed');
+    assert(
+      Math.hypot(
+        mobileRun.player.position[0] - mobileMoveStart.player.position[0],
+        mobileRun.player.position[2] - mobileMoveStart.player.position[2],
+      ) > 2.5,
+      'virtual stick did not move the player through the cave',
+    );
+
+    await dispatchTouchPointer(
+      '[data-touch-jump]',
+      'pointerdown',
+      47,
+      mobileLayout.jump.centerX,
+      mobileLayout.jump.centerY,
+      1,
+      false,
+    );
+    const mobileJump = await advance(0.16, 1 / 120);
+    assert(!mobileJump.player.grounded, 'tap-to-jump touch input did not leave the ground');
+    assert(mobileJump.player.verticalSpeed > 1, 'touch jump had no upward velocity');
+    assert(mobileJump.player.gait.airborneBlend > 0.45, 'touch jump did not engage procedural limb animation');
+    await capture('mobile-touch-controls');
+    await dispatchTouchPointer(
+      '[data-touch-jump]',
+      'pointerup',
+      47,
+      mobileLayout.jump.centerX,
+      mobileLayout.jump.centerY,
+      0,
+      false,
+    );
+    await dispatchTouchPointer(
+      '[data-touch-run]',
+      'pointerup',
+      46,
+      mobileLayout.run.centerX,
+      mobileLayout.run.centerY,
+      0,
+      false,
+    );
+    await dispatchTouchPointer('[data-touch-move]', 'pointerup', 45, stickX, stickY);
+    const report = {
+      layout: mobileLayout,
+      start: mobileTouchStart,
+      orbit: mobileOrbit,
+      pinch: mobilePinch,
+      run: mobileRun,
+      jump: mobileJump,
+    };
+
+    await command('Emulation.setDeviceMetricsOverride', {
+      width: 1600,
+      height: 900,
+      deviceScaleFactor: 1,
+      mobile: false,
+    });
+    await evaluate(command, `(() => {
+      window.dispatchEvent(new Event('resize'));
+      document.querySelector('[data-mobile-controls]')?.style.setProperty(
+        'display',
+        'none',
+        'important',
+      );
+      return true;
+    })()`);
+    await delay(120);
+    await setPlayerPose(initial.player.position, 0);
+    await setView(0.08, 0.22, 4.5);
+    await advance(0.45, 1 / 120);
+    return report;
+  };
 
   await setView(0.08, 0, 4.5);
   const leftDragBefore = await diagnostics();
@@ -1064,6 +1250,8 @@ try {
   const oppositeDepthOcclusion = await depthOcclusionProbe();
   assertDepthOcclusion(oppositeDepthOcclusion, 'character-facing rock angle');
 
+  const mobileTouch = await runMobileTouchAudit();
+
   const runtimeFailures = events.filter((event) => (
     event.method === 'Runtime.exceptionThrown'
     || event.method === 'Inspector.targetCrashed'
@@ -1078,6 +1266,7 @@ try {
     captures,
     initial,
     highDensity,
+    mobileTouch,
     beforeWalk,
     afterWalk,
     beforeDrips,
