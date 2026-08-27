@@ -1,11 +1,16 @@
 import { describe, expect, test } from 'bun:test';
 import * as THREE from 'three';
 import { PHYSICS_STEP, PLAYER } from '../src/config';
-import { CLOTH_BODY_CLEARANCE } from '../src/physics/ClothBodyCollision';
+import {
+  getClothBodyClearance,
+  getClothBodyDepthRadius,
+} from '../src/physics/ClothBodyCollision';
 import type { CapsuleCollider, WorldSphereCollider } from '../src/physics/colliders';
 import {
   Character,
+  BELT_NAME,
   GORGET_NAME,
+  HIPS_NAME,
   LEFT_SHOULDER_NAME,
   NECK_NAME,
   RIGHT_SHOULDER_NAME,
@@ -79,17 +84,29 @@ function capsuleSurfaceExcess(
   point: THREE.Vector3,
   collider: CapsuleCollider,
 ): number {
+  const back = new THREE.Vector3(0, 0, 1);
   const axis = new THREE.Vector3().subVectors(collider.end, collider.start);
-  const axisLengthSquared = axis.lengthSq();
-  const progress = axisLengthSquared > 0.000_001
+  const lateralAxis = axis.clone().addScaledVector(back, -axis.dot(back));
+  const delta = new THREE.Vector3().subVectors(point, collider.start);
+  const particleLateral = delta.clone().addScaledVector(back, -delta.dot(back));
+  const lateralAxisLengthSquared = lateralAxis.lengthSq();
+  const progress = lateralAxisLengthSquared > 0.000_001
     ? THREE.MathUtils.clamp(
-      new THREE.Vector3().subVectors(point, collider.start).dot(axis) / axisLengthSquared,
+      particleLateral.dot(lateralAxis) / lateralAxisLengthSquared,
       0,
       1,
     )
     : 0;
   const closest = new THREE.Vector3().copy(collider.start).addScaledVector(axis, progress);
-  return point.distanceTo(closest) - collider.radius - CLOTH_BODY_CLEARANCE;
+  delta.copy(point).sub(closest);
+  const depth = delta.dot(back);
+  const lateralSquared = Math.max(0, delta.lengthSq() - depth * depth);
+  const radius = collider.radius + getClothBodyClearance(collider);
+  if (lateralSquared >= radius * radius) return Number.POSITIVE_INFINITY;
+  const normalizedLateralSquared = lateralSquared / (radius * radius);
+  const surfaceDepth = getClothBodyDepthRadius(collider)
+    * Math.sqrt(1 - normalizedLateralSquared);
+  return depth - surfaceDepth;
 }
 
 describe('CharacterController', () => {
@@ -132,18 +149,25 @@ describe('CharacterController', () => {
     expect(neckBounds.intersectsBox(torsoBounds)).toBe(true);
   });
 
-  test('keeps the rendered torso and gorget inside the cape collision envelope', () => {
+  test('keeps the rendered upper body and waist strap inside the cape collision envelope', () => {
     const character = new Character();
     character.root.updateMatrixWorld(true);
     const torso = character.root.getObjectByName(TORSO_NAME);
     const gorget = character.root.getObjectByName(GORGET_NAME);
+    const hips = character.root.getObjectByName(HIPS_NAME);
+    const belt = character.root.getObjectByName(BELT_NAME);
     expect(torso).toBeInstanceOf(THREE.Mesh);
     expect(gorget).toBeInstanceOf(THREE.Mesh);
+    expect(hips).toBeInstanceOf(THREE.Mesh);
+    expect(belt).toBeInstanceOf(THREE.Mesh);
     const colliders = character.getCapeColliders();
+    const upperTorsoCollider = colliders.find((collider) => collider.name === 'upper torso');
+    expect(upperTorsoCollider?.depthRadius).toBeDefined();
+    expect(upperTorsoCollider!.depthRadius! / upperTorsoCollider!.radius).toBeLessThan(0.75);
     const point = new THREE.Vector3();
     let maximumSurfaceExcess = Number.NEGATIVE_INFINITY;
 
-    for (const object of [torso, gorget]) {
+    for (const object of [torso, gorget, hips, belt]) {
       const mesh = object as THREE.Mesh<THREE.BufferGeometry>;
       const positions = mesh.geometry.getAttribute('position');
       for (let index = 0; index < positions.count; index += 1) {
@@ -163,7 +187,9 @@ describe('CharacterController', () => {
     const character = new Character();
     character.root.updateMatrixWorld(true);
     const colliders = character.getCapeColliders();
-    const hips = colliders.find((collider) => collider.name === 'hips and belt');
+    const belt = colliders.find((collider) => collider.name === 'belt strap');
+    const hips = colliders.find((collider) => collider.name === 'hips');
+    expect(belt).toBeDefined();
     expect(hips).toBeDefined();
 
     for (const side of ['left', 'right'] as const) {
@@ -175,19 +201,43 @@ describe('CharacterController', () => {
       ];
       const leg = names.map((name) => colliders.find((collider) => collider.name === name));
       expect(leg.every((collider) => collider !== undefined)).toBe(true);
-      const chain = [hips!, ...leg.map((collider) => collider!)].map((collider) => ({
+      const chain = [belt!, hips!, ...leg.map((collider) => collider!)].map((collider) => ({
         minimum: Math.min(collider.start.y, collider.end.y)
           - collider.radius
-          - CLOTH_BODY_CLEARANCE,
+          - getClothBodyClearance(collider),
         maximum: Math.max(collider.start.y, collider.end.y)
           + collider.radius
-          + CLOTH_BODY_CLEARANCE,
+          + getClothBodyClearance(collider),
       }));
       for (let index = 1; index < chain.length; index += 1) {
         expect(chain[index]!.maximum).toBeGreaterThanOrEqual(chain[index - 1]!.minimum);
       }
       expect(chain.at(-1)!.minimum).toBeLessThan(-0.1);
     }
+  });
+
+  test('uses a fitted waist strap and matching shallow cloth proxy instead of a torus', () => {
+    const character = new Character();
+    character.root.updateMatrixWorld(true);
+    const belt = character.root.getObjectByName(BELT_NAME);
+    expect(belt).toBeInstanceOf(THREE.Mesh);
+    const beltMesh = belt as THREE.Mesh<THREE.CylinderGeometry>;
+    expect(beltMesh.geometry).toBeInstanceOf(THREE.CylinderGeometry);
+    expect(beltMesh.geometry.parameters.openEnded).toBe(true);
+    const beltBounds = new THREE.Box3().setFromObject(beltMesh);
+    const beltWidth = beltBounds.max.x - beltBounds.min.x;
+    const beltDepth = beltBounds.max.z - beltBounds.min.z;
+    const beltHeight = beltBounds.max.y - beltBounds.min.y;
+    expect(beltDepth / beltWidth).toBeLessThan(0.75);
+    expect(beltHeight).toBeLessThan(0.065);
+
+    const collider = character.getCapeColliders()
+      .find((candidate) => candidate.name === 'belt strap');
+    expect(collider).toBeDefined();
+    const colliderRear = Math.max(collider!.start.z, collider!.end.z)
+      + collider!.radius
+      + getClothBodyClearance(collider!);
+    expect(colliderRear - beltBounds.max.z).toBeLessThan(0.01);
   });
 
   test('cape colliders enclose every animated boot corner', () => {
@@ -239,7 +289,7 @@ describe('CharacterController', () => {
           closest.copy(collider.start).addScaledVector(axis, progress);
           maximumColliderExcess = Math.max(
             maximumColliderExcess,
-            point.distanceTo(closest) - collider.radius - CLOTH_BODY_CLEARANCE,
+            point.distanceTo(closest) - collider.radius - getClothBodyClearance(collider),
           );
         }
       }

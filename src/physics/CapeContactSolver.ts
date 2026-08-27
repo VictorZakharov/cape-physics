@@ -13,7 +13,11 @@ import {
   type WorldRockCollider,
   type WorldSphereCollider,
 } from './colliders';
-import { CLOTH_BODY_CLEARANCE, ClothBodyCollision } from './ClothBodyCollision';
+import {
+  ClothBodyCollision,
+  getClothBodyClearance,
+  getClothBodyDepthRadius,
+} from './ClothBodyCollision';
 import { ClothRockCollision } from './ClothRockCollision';
 import {
   CLOTH_ROCK_CLEARANCE,
@@ -169,11 +173,11 @@ export class CapeContactSolver {
     this.worldContactEvents += faceContacts;
   }
 
-  public solvePostCaveWorldFaces(): void {
+  public solvePostCaveWorldFaces(): number {
     if (
       this.postCaveWorldSpheres.length === 0
       && this.activeRocks.length === 0
-    ) return;
+    ) return 0;
     // Constraint, cave, and body projections can reintroduce a genuine
     // face-only crossing after an earlier bounded nudge. Reset only the
     // per-pass face allowance; the shared per-particle step budget remains
@@ -183,6 +187,7 @@ export class CapeContactSolver {
       + this.rockFaceCollision.solve(this.activeRocks);
     this.worldContactsLastStep += faceContacts;
     this.worldContactEvents += faceContacts;
+    return faceContacts;
   }
 
   public solveCave(): void {
@@ -310,9 +315,12 @@ export class CapeContactSolver {
     this.delta.copy(position).sub(this.closestPoint);
     const depth = this.delta.dot(back);
     const lateralSquared = Math.max(0, this.delta.lengthSq() - depth * depth);
-    const radius = collider.radius + CLOTH_BODY_CLEARANCE;
-    if (lateralSquared >= radius * radius) return 0;
-    return Math.max(0, Math.sqrt(radius * radius - lateralSquared) - depth);
+    const lateralRadius = collider.radius + getClothBodyClearance(collider);
+    if (lateralSquared >= lateralRadius * lateralRadius) return 0;
+    const normalizedLateralSquared = lateralSquared / (lateralRadius * lateralRadius);
+    const surfaceDepth = getClothBodyDepthRadius(collider)
+      * Math.sqrt(1 - normalizedLateralSquared);
+    return Math.max(0, surfaceDepth - depth);
   }
 
   private solveWorldSphere(

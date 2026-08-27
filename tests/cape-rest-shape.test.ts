@@ -26,16 +26,16 @@ describe('cape rest shape', () => {
     }
   });
 
-  test('rejoins the established body drape by the third free row', () => {
-    const down = 3 / (CAPE.rows - 1);
-    const across = 0.2;
-    const previousAttachmentDepth = 0.14;
-    const previousBackOffset = 0.045
-      + down * 0.18
-      + (1 - down) ** 2 * (1 - Math.abs(across) * 2) * 0.035;
+  test('follows the upper-back surface instead of preserving a detached panel', () => {
+    const centerDepths = Array.from({ length: 5 }, (_, index) => {
+      const down = (index + 1) / (CAPE.rows - 1);
+      return CAPE.attachment.depth + getCapeRestBackOffset(down, 0);
+    });
 
-    const previousWorldDepth = previousAttachmentDepth + previousBackOffset;
-    const revisedWorldDepth = CAPE.attachment.depth + getCapeRestBackOffset(down, across);
-    expect(revisedWorldDepth).toBeCloseTo(previousWorldDepth, 10);
+    for (const depth of centerDepths) {
+      expect(depth).toBeGreaterThan(0.125);
+      expect(depth).toBeLessThan(0.165);
+    }
+    expect(centerDepths.at(-1)!).toBeGreaterThan(centerDepths[0]!);
   });
 });

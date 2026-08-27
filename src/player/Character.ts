@@ -13,6 +13,8 @@ import { createProceduralHead } from './ProceduralHead';
 import { createProceduralTorsoGeometry } from './ProceduralTorso';
 
 export const TORSO_NAME = 'Tapered torso armor';
+export const HIPS_NAME = 'Fitted hip armor';
+export const BELT_NAME = 'Fitted leather waist strap';
 export const NECK_NAME = 'Visible skin neck';
 export const GORGET_NAME = 'Fitted leather gorget';
 export const LEFT_SHOULDER_NAME = 'Left fitted shoulder armor';
@@ -55,12 +57,13 @@ export class Character {
     back: this.backWorld,
   };
   private readonly capeColliderRig = {
-    shoulders: this.createCapeCollider(0.095, 'shoulders'),
-    upperTorso: this.createCapeCollider(0.205, 'upper torso'),
-    hips: this.createCapeCollider(0.198, 'hips and belt'),
-    belt: this.createCapeCollider(0.225, 'belt ring'),
-    leftArm: this.createCapeCollider(0.095, 'left arm'),
-    rightArm: this.createCapeCollider(0.095, 'right arm'),
+    shoulders: this.createCapeCollider(0.095, 'shoulders', 0.008),
+    upperTorso: this.createCapeCollider(0.211, 'upper torso', 0.006, 0.07, 0.145),
+    gorget: this.createCapeCollider(0.109, 'gorget', 0.006, 0.03),
+    hips: this.createCapeCollider(0.198, 'hips', 0.008, 0.08),
+    belt: this.createCapeCollider(0.138, 'belt strap', 0.006, 0.04),
+    leftArm: this.createCapeCollider(0.095, 'left arm', 0.008, undefined, 0.075),
+    rightArm: this.createCapeCollider(0.095, 'right arm', 0.008, undefined, 0.075),
     leftThigh: this.createCapeCollider(0.085, 'left thigh'),
     leftKnee: this.createCapeCollider(0.08, 'left knee'),
     leftLowerLeg: this.createCapeCollider(0.075, 'left lower leg'),
@@ -112,6 +115,7 @@ export class Character {
     const {
       shoulders,
       upperTorso,
+      gorget,
       hips,
       belt,
       leftArm,
@@ -126,10 +130,11 @@ export class Character {
       rightBoot,
     } = this.capeColliderRig;
 
-    this.setWorldCapsule(shoulders, this.rig, [-0.195, 1.45, -0.015], [0.195, 1.45, -0.015]);
-    this.setWorldCapsule(upperTorso, this.rig, [0, 1.36, -0.06], [0, 1.11, -0.06]);
-    this.setWorldCapsule(hips, this.rig, [0, 1.01, -0.035], [0, 0.79, -0.035]);
-    this.setWorldCapsule(belt, this.rig, [0, 1.01, -0.005], [0, 1.01, -0.005]);
+    this.setWorldCapsule(shoulders, this.rig, [-0.195, 1.45, -0.0115], [0.195, 1.45, -0.0115]);
+    this.setWorldCapsule(upperTorso, this.rig, [0, 1.33, 0], [0, 1.11, 0]);
+    this.setWorldCapsule(gorget, this.rig, [0, 1.49, 0], [0, 1.49, 0]);
+    this.setWorldCapsule(hips, this.rig, [0, 1.01, -0.068], [0, 0.77, -0.068]);
+    this.setWorldCapsule(belt, this.rig, [-0.054, 1.01, 0], [0.054, 1.01, 0]);
     this.setWorldCapsule(leftArm, this.leftArm, [0, -0.02, 0], [0, -0.69, 0]);
     this.setWorldCapsule(rightArm, this.rightArm, [0, -0.02, 0], [0, -0.69, 0]);
     this.setWorldCapsule(leftThigh, this.leftLeg, [0, -0.29, 0], [0, -0.29, 0]);
@@ -205,6 +210,7 @@ export class Character {
     }
 
     const hips = new THREE.Mesh(new THREE.CapsuleGeometry(0.18, 0.17, 5, 10), armor);
+    hips.name = HIPS_NAME;
     hips.position.y = 0.87;
     hips.scale.z = 0.72;
     this.rig.add(hips);
@@ -218,12 +224,12 @@ export class Character {
     breastplate.scale.z = 0.69;
     this.rig.add(breastplate);
 
-    const belt = new THREE.Mesh(new THREE.TorusGeometry(0.19, 0.026, 6, 18), leather);
-    belt.rotation.x = Math.PI / 2;
+    const belt = new THREE.Mesh(new THREE.CylinderGeometry(0.19, 0.19, 0.06, 18, 1, true), leather);
+    belt.name = BELT_NAME;
     belt.position.y = 1.01;
-    belt.scale.z = 0.74;
+    belt.scale.z = 0.72;
     const buckle = new THREE.Mesh(new THREE.BoxGeometry(0.078, 0.064, 0.032), trim);
-    buckle.position.set(0, 1.01, -0.172);
+    buckle.position.set(0, 1.01, -0.154);
     this.rig.add(belt, buckle);
 
     const head = createProceduralHead(skin, darkMetal, trim);
@@ -323,12 +329,21 @@ export class Character {
     space.localToWorld(collider.end.set(...end));
   }
 
-  private createCapeCollider(radius: number, name: string): CapsuleCollider {
+  private createCapeCollider(
+    radius: number,
+    name: string,
+    clearance?: number,
+    faceSampleSpacing?: number,
+    depthRadius?: number,
+  ): CapsuleCollider {
     return {
       start: new THREE.Vector3(),
       end: new THREE.Vector3(),
       radius,
+      depthRadius,
       name,
+      clearance,
+      faceSampleSpacing,
     };
   }
 }

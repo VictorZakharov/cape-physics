@@ -194,7 +194,10 @@ export class CapeSimulation {
         // fallback projections share one strict per-particle step budget;
         // temporal rollback itself adds no impulse.
         this.contactSolver.solveBody(bodyColliders, anchors.back);
-        this.contactSolver.solvePostCaveWorldFaces();
+        if (this.contactSolver.solvePostCaveWorldFaces() > 0) {
+          this.contactSolver.solveBody(bodyColliders, anchors.back);
+          this.contactSolver.solvePostCaveWorldFaces();
+        }
       }
       this.pinAnchors(anchors);
     }
