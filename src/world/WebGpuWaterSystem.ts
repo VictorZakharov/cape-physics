@@ -1,5 +1,13 @@
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
+import {
+  cameraPosition,
+  float,
+  instancedBufferAttribute,
+  shapeCircle,
+  vec3,
+} from 'three/tsl';
 import { RIPPLE_CAPACITY } from '../config';
+import { createProceduralWaterMaterial } from '../graphics/ProceduralWaterMaterial';
 import { SeededRandom } from '../utils/random';
 import {
   caveCeiling,
@@ -33,151 +41,17 @@ interface SplashParticle {
 const WATER_MINIMUM_ALPHA = 0.12;
 const WATER_MAXIMUM_ALPHA = 0.55;
 
-const waterVertexShader = /* glsl */ `
-  #define RIPPLE_COUNT ${RIPPLE_CAPACITY}
-  uniform float uTime;
-  uniform vec4 uRipples[RIPPLE_COUNT];
-  varying vec3 vWorldPosition;
-  varying vec2 vUv;
-  varying float vWave;
-  varying vec2 vSlope;
-
-  float rippleHeight(vec2 worldPosition) {
-    float height = 0.0;
-    for (int index = 0; index < RIPPLE_COUNT; index++) {
-      vec4 ripple = uRipples[index];
-      float age = uTime - ripple.z;
-      if (age > 0.0 && age < 4.0) {
-        float distanceToImpact = length(worldPosition - ripple.xy);
-        float front = 1.0 - smoothstep(age * 2.1 - 0.1, age * 2.1 + 0.2, distanceToImpact);
-        float wake = sin(distanceToImpact * 13.0 - age * 13.5);
-        float fade = exp(-age * 0.86) * exp(-distanceToImpact * 0.48);
-        height += wake * fade * front * ripple.w;
-      }
-    }
-    return height;
-  }
-
-  float surfaceHeight(vec2 worldPosition) {
-    float ambientWave = sin(worldPosition.x * 2.4 + uTime * 0.7)
-      * cos(worldPosition.y * 2.1 - uTime * 0.55) * 0.0025;
-    return rippleHeight(worldPosition) + ambientWave;
-  }
-
-  void main() {
-    vec4 flatWorld = modelMatrix * vec4(position, 1.0);
-    float wave = surfaceHeight(flatWorld.xz);
-    float slopeEpsilon = 0.035;
-    vSlope = vec2(
-      (surfaceHeight(flatWorld.xz + vec2(slopeEpsilon, 0.0)) - wave) / slopeEpsilon,
-      (surfaceHeight(flatWorld.xz + vec2(0.0, slopeEpsilon)) - wave) / slopeEpsilon
-    );
-    vec3 transformed = position;
-    transformed.z += wave;
-    vec4 world = modelMatrix * vec4(transformed, 1.0);
-    vWorldPosition = world.xyz;
-    vUv = uv;
-    vWave = wave;
-    gl_Position = projectionMatrix * viewMatrix * world;
-  }
-`;
-
-const waterFragmentShader = /* glsl */ `
-  uniform float uTime;
-  uniform vec3 uDeepColor;
-  uniform vec3 uShallowColor;
-  uniform vec3 uFogColor;
-  varying vec3 vWorldPosition;
-  varying vec2 vUv;
-  varying float vWave;
-  varying vec2 vSlope;
-
-  float hash(vec2 point) {
-    return fract(sin(dot(point, vec2(127.1, 311.7))) * 43758.5453123);
-  }
-
-  float valueNoise(vec2 point) {
-    vec2 cell = floor(point);
-    vec2 local = fract(point);
-    local = local * local * (3.0 - 2.0 * local);
-    float a = hash(cell);
-    float b = hash(cell + vec2(1.0, 0.0));
-    float c = hash(cell + vec2(0.0, 1.0));
-    float d = hash(cell + vec2(1.0, 1.0));
-    return mix(mix(a, b, local.x), mix(c, d, local.x), local.y);
-  }
-
-  vec2 microGradient(vec2 point) {
-    vec2 firstDirection = normalize(vec2(0.83, 0.56));
-    vec2 secondDirection = normalize(vec2(-0.42, 0.91));
-    vec2 thirdDirection = normalize(vec2(0.97, -0.24));
-    float first = cos(dot(point, firstDirection) * 4.1 + uTime * 1.18) * 0.019;
-    float second = cos(dot(point, secondDirection) * 7.7 - uTime * 1.62) * 0.011;
-    float third = cos(dot(point, thirdDirection) * 13.4 + uTime * 2.05) * 0.005;
-    float breakup = mix(0.72, 1.18, valueNoise(point * 1.8 + vec2(uTime * 0.08, -uTime * 0.05)));
-    return (firstDirection * first + secondDirection * second + thirdDirection * third) * breakup;
-  }
-
-  float distributionGGX(float alpha, float normalDotHalf) {
-    float alphaSquared = alpha * alpha;
-    float denominator = normalDotHalf * normalDotHalf * (alphaSquared - 1.0) + 1.0;
-    return alphaSquared / max(3.14159265 * denominator * denominator, 0.0001);
-  }
-
-  void main() {
-    vec2 centered = vUv * 2.0 - 1.0;
-    float angle = atan(centered.y, centered.x);
-    float irregularEdge = 0.91 + sin(angle * 5.0) * 0.035 + sin(angle * 9.0) * 0.025;
-    float edgeDistance = length(centered);
-    float edgeAntialias = max(fwidth(edgeDistance - irregularEdge) * 1.5, 0.002);
-    float alphaEdge = 1.0 - smoothstep(irregularEdge - 0.09 - edgeAntialias, irregularEdge + edgeAntialias, edgeDistance);
-    if (alphaEdge < 0.015) discard;
-
-    vec2 detailGradient = microGradient(vWorldPosition.xz);
-    vec3 normal = normalize(vec3(
-      -vSlope.x - detailGradient.x,
-      1.0,
-      -vSlope.y - detailGradient.y
-    ));
-    vec3 viewDirection = normalize(cameraPosition - vWorldPosition);
-    float viewFacing = clamp(dot(normal, viewDirection), 0.0, 1.0);
-    float fresnel = 0.025 + 0.975 * pow(1.0 - viewFacing, 5.0);
-    vec3 torchDirection = normalize(vec3(-0.35, 0.72, 0.48));
-    vec3 halfDirection = normalize(viewDirection + torchDirection);
-    float normalVariance = max(dot(dFdx(normal), dFdx(normal)), dot(dFdy(normal), dFdy(normal)));
-    float roughness = clamp(0.11 + normalVariance * 0.38, 0.11, 0.28);
-    float specular = distributionGGX(roughness, max(dot(normal, halfDirection), 0.0));
-    specular = specular / (1.0 + specular);
-    float mineralGlint = pow(max(0.0, sin(vWorldPosition.x * 1.7 + vWorldPosition.z * 0.8)), 16.0);
-    float depthTint = smoothstep(0.2, 0.92, edgeDistance);
-    vec3 waterBody = mix(uDeepColor, uShallowColor, depthTint * 0.24);
-    vec3 caveReflection = mix(vec3(0.012, 0.048, 0.072), vec3(0.075, 0.22, 0.26), normal.y * 0.5 + 0.5);
-    vec3 color = mix(waterBody, caveReflection, clamp(0.025 + fresnel * 0.58, 0.0, 0.68));
-    color += vec3(1.0, 0.38, 0.075) * specular * max(dot(normal, torchDirection), 0.0) * 1.45;
-    color += vec3(0.15, 0.9, 0.76) * mineralGlint * fresnel * 0.16;
-    color += abs(vWave) * vec3(0.58, 0.92, 0.9) * 0.9;
-    float wetRim = smoothstep(0.73, 0.93, edgeDistance) * (1.0 - smoothstep(0.93, 1.0, edgeDistance));
-    color += vec3(0.08, 0.2, 0.2) * wetRim * 0.16;
-    float distanceToCamera = length(cameraPosition - vWorldPosition);
-    float fogFactor = 1.0 - exp(-0.0032 * distanceToCamera * distanceToCamera);
-    color = mix(color, uFogColor, fogFactor);
-    gl_FragColor = vec4(
-      color,
-      alphaEdge * mix(${WATER_MINIMUM_ALPHA.toFixed(2)}, ${WATER_MAXIMUM_ALPHA.toFixed(2)}, fresnel)
-    );
-  }
-`;
-
-export class WaterSystem {
+export class WebGpuWaterSystem {
   public readonly group = new THREE.Group();
   private readonly puddles: PuddleDefinition[];
   private readonly ripples = Array.from({ length: RIPPLE_CAPACITY }, () => new THREE.Vector4(0, 0, -100, 0));
-  private readonly material: THREE.ShaderMaterial;
+  private readonly material: THREE.MeshBasicNodeMaterial;
+  private readonly timeNode: THREE.UniformNode<'float', number>;
   private readonly drops: Drop[] = [];
   private readonly dropMesh: THREE.InstancedMesh;
   private readonly splashes: SplashParticle[] = [];
-  private readonly splashPositions: THREE.BufferAttribute;
-  private readonly splashPoints: THREE.Points;
+  private readonly splashPositions: THREE.InstancedBufferAttribute;
+  private readonly splashPoints: THREE.Sprite;
   private readonly random = new SeededRandom(0xd1a9);
   private readonly dropMatrix = new THREE.Matrix4();
   private readonly hiddenDropMatrix = new THREE.Matrix4().makeScale(0, 0, 0);
@@ -193,21 +67,13 @@ export class WaterSystem {
   public constructor() {
     this.group.name = 'Reactive shallow water';
     this.puddles = this.createDefinitions();
-    this.material = new THREE.ShaderMaterial({
-      uniforms: {
-        uTime: { value: 0 },
-        uRipples: { value: this.ripples },
-        uDeepColor: { value: new THREE.Color(0x031820) },
-        uShallowColor: { value: new THREE.Color(0x185652) },
-        uFogColor: { value: new THREE.Color(0x071012) },
-      },
-      vertexShader: waterVertexShader,
-      fragmentShader: waterFragmentShader,
-      transparent: true,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-    });
-    this.material.name = 'Procedural ripple water';
+    const waterMaterial = createProceduralWaterMaterial(
+      this.ripples,
+      WATER_MINIMUM_ALPHA,
+      WATER_MAXIMUM_ALPHA,
+    );
+    this.material = waterMaterial.material;
+    this.timeNode = waterMaterial.timeNode;
 
     const geometry = new THREE.PlaneGeometry(2, 2, 96, 68);
     for (const puddle of this.puddles) {
@@ -224,22 +90,25 @@ export class WaterSystem {
     this.dropMesh = this.createDropMesh();
     this.group.add(this.dropMesh);
 
-    const splashGeometry = new THREE.BufferGeometry();
-    this.splashPositions = new THREE.Float32BufferAttribute(new Float32Array(72 * 3), 3);
-    splashGeometry.setAttribute('position', this.splashPositions);
-    splashGeometry.setDrawRange(0, 0);
-    this.splashPoints = new THREE.Points(
-      splashGeometry,
-      new THREE.PointsMaterial({
-        color: 0xb9e5dc,
-        size: 0.034,
-        transparent: true,
-        opacity: 0.72,
-        depthWrite: false,
-        blending: THREE.AdditiveBlending,
-        sizeAttenuation: true,
-      }),
-    );
+    this.splashPositions = new THREE.InstancedBufferAttribute(new Float32Array(72 * 3), 3);
+    const splashPosition = instancedBufferAttribute<'vec3'>(this.splashPositions, 'vec3');
+    const splashDistance = cameraPosition.sub(splashPosition).length();
+    const splashMaterial = new THREE.PointsNodeMaterial({
+      color: 0xb9e5dc,
+      colorNode: vec3(0.73, 0.9, 0.86),
+      opacityNode: float(shapeCircle() as THREE.Node<'float'>).mul(0.72),
+      positionNode: splashPosition,
+      sizeNode: float(30).div(splashDistance.max(1)),
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      sizeAttenuation: false,
+      alphaToCoverage: true,
+    });
+    splashMaterial.name = 'TSL water splash particles';
+    this.splashPoints = new THREE.Sprite(splashMaterial);
+    this.splashPoints.count = 0;
+    this.splashPoints.name = 'Water splash particles';
     this.splashPoints.frustumCulled = false;
     this.group.add(this.splashPoints);
   }
@@ -251,7 +120,7 @@ export class WaterSystem {
     playerYaw: number,
     playerSpeed: number,
   ): void {
-    this.material.uniforms.uTime!.value = time;
+    this.timeNode.value = time;
     this.updateDrops(delta, time);
     this.updateSplashes(delta);
 
@@ -474,6 +343,6 @@ export class WaterSystem {
       array[index * 3 + 2] = splash.position.z;
     });
     this.splashPositions.needsUpdate = true;
-    this.splashPoints.geometry.setDrawRange(0, this.splashes.length);
+    this.splashPoints.count = this.splashes.length;
   }
 }

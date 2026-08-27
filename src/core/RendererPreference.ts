@@ -24,7 +24,10 @@ export function resolveRendererPreference(
 
   if (requested !== null) return requested;
 
-  return environment.webGPUAvailable ? 'webgpu' : 'webgl';
+  // A supported API is not evidence that a browser/driver combination will
+  // outperform the mature path. Keep WebGPU opt-in until real-device results
+  // show a repeatable end-to-end win.
+  return 'webgl';
 }
 
 export function rendererPreferenceUrl(

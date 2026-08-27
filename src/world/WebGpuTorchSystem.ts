@@ -1,4 +1,15 @@
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
+import {
+  cos,
+  mix,
+  oneMinus,
+  positionLocal,
+  sin,
+  smoothstep,
+  uniform,
+  uv,
+  vec3,
+} from 'three/tsl';
 import { NearestPointLightPool, type LocalLightSource } from '../lighting/NearestPointLightPool';
 import type { WorldSphereCollider } from '../physics/colliders';
 import { SeededRandom } from '../utils/random';
@@ -6,7 +17,7 @@ import { caveCenterX, caveHalfWidth, floorHeightAt } from './caveProfile';
 
 interface Torch extends LocalLightSource {
   readonly root: THREE.Group;
-  readonly flame: THREE.Mesh<THREE.SphereGeometry, THREE.ShaderMaterial>;
+  readonly flame: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicNodeMaterial>;
   readonly inward: THREE.Vector3;
   readonly phase: number;
 }
@@ -20,36 +31,13 @@ export interface TorchShadowDiagnostics {
   readonly mapSize: readonly [number, number];
 }
 
-const flameVertexShader = /* glsl */ `
-  uniform float uTime;
-  uniform float uPhase;
-  varying float vHeight;
-  void main() {
-    vec3 transformed = position;
-    float height = uv.y;
-    transformed.x += sin(uTime * 7.0 + uPhase + position.y * 8.0) * 0.045 * height;
-    transformed.z += cos(uTime * 5.3 + uPhase + position.y * 6.0) * 0.03 * height;
-    transformed.xz *= 0.78 + height * 0.25;
-    vHeight = height;
-    gl_Position = projectionMatrix * modelViewMatrix * vec4(transformed, 1.0);
-  }
-`;
-
-const flameFragmentShader = /* glsl */ `
-  varying float vHeight;
-  void main() {
-    float edge = smoothstep(0.0, 0.32, vHeight) * (1.0 - smoothstep(0.7, 1.0, vHeight));
-    vec3 color = mix(vec3(5.0, 0.42, 0.035), vec3(1.4, 0.07, 0.01), vHeight);
-    gl_FragColor = vec4(color, edge * 0.92);
-  }
-`;
-
-export class TorchSystem {
+export class WebGpuTorchSystem {
   public readonly group = new THREE.Group();
   public readonly worldColliders: WorldSphereCollider[] = [];
   private readonly torches: Torch[] = [];
   private readonly lightPool = new NearestPointLightPool(3, 'Torch');
   private readonly shadowLight: THREE.SpotLight;
+  private readonly timeNode = uniform(0);
   private activeShadowTorch = -1;
 
   public constructor() {
@@ -71,6 +59,7 @@ export class TorchSystem {
   }
 
   public update(time: number, viewer: THREE.Vector3): void {
+    this.timeNode.value = time;
     let closestIndex = 0;
     let closestDistance = Number.POSITIVE_INFINITY;
 
@@ -83,7 +72,6 @@ export class TorchSystem {
       const flicker = 1 + Math.sin(time * 11.3 + torch.phase) * 0.055 + Math.sin(time * 17.7 + torch.phase * 2.2) * 0.028;
       torch.intensity = 22 * flicker;
       torch.flame.scale.y = flicker;
-      torch.flame.material.uniforms.uTime!.value = time;
     });
     this.lightPool.update(viewer, this.torches);
 
@@ -137,15 +125,38 @@ export class TorchSystem {
     bracket.position.set(side * 0.22, -0.18, 0);
     root.add(handle, collar, bracket);
 
-    const flameMaterial = new THREE.ShaderMaterial({
-      uniforms: { uTime: { value: 0 }, uPhase: { value: random.range(0, Math.PI * 2) } },
-      vertexShader: flameVertexShader,
-      fragmentShader: flameFragmentShader,
+    const flamePhase = random.range(0, Math.PI * 2);
+    const phaseNode = uniform(flamePhase);
+    const height = uv().y;
+    const horizontalScale = height.mul(0.25).add(0.78);
+    const flameMaterial = new THREE.MeshBasicNodeMaterial({
       transparent: true,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
       side: THREE.DoubleSide,
     });
+    flameMaterial.positionNode = vec3(
+      positionLocal.x.add(
+        sin(this.timeNode.mul(7).add(phaseNode).add(positionLocal.y.mul(8)))
+          .mul(0.045)
+          .mul(height),
+      ).mul(horizontalScale),
+      positionLocal.y,
+      positionLocal.z.add(
+        cos(this.timeNode.mul(5.3).add(phaseNode).add(positionLocal.y.mul(6)))
+          .mul(0.03)
+          .mul(height),
+      ).mul(horizontalScale),
+    );
+    flameMaterial.colorNode = mix(
+      vec3(5, 0.42, 0.035),
+      vec3(1.4, 0.07, 0.01),
+      height,
+    );
+    flameMaterial.opacityNode = smoothstep(0, 0.32, height)
+      .mul(oneMinus(smoothstep(0.7, 1, height)))
+      .mul(0.92);
+    flameMaterial.name = 'TSL procedural torch flame';
     const flame = new THREE.Mesh(new THREE.SphereGeometry(0.15, 9, 12), flameMaterial);
     flame.scale.set(0.72, 1.8, 0.72);
     flame.position.y = 0.57;
@@ -179,7 +190,7 @@ export class TorchSystem {
       flame,
       position: worldFlamePosition,
       inward,
-      phase: random.range(0, Math.PI * 2),
+      phase: flamePhase,
       color: new THREE.Color(0xffa24e),
       intensity: 22,
       range: 9.5,

@@ -1,4 +1,4 @@
-import * as THREE from 'three/webgpu';
+import * as THREE from 'three';
 import type { InputController } from '../input/InputController';
 import { caveGroundHeightAt } from '../world/caveProfile';
 

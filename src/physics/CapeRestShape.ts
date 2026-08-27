@@ -1,4 +1,4 @@
-import * as THREE from 'three/webgpu';
+import * as THREE from 'three';
 import { CAPE } from '../config';
 
 const SHOULDER_WIDTH = 0.5;

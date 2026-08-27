@@ -1,4 +1,4 @@
-import * as THREE from 'three/webgpu';
+import * as THREE from 'three';
 import { CAVE } from '../config';
 import type { SurfaceTextures } from '../graphics/proceduralTextures';
 import type { WorldCollider } from '../physics/colliders';

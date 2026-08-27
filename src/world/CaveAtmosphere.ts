@@ -1,23 +1,37 @@
-import * as THREE from 'three/webgpu';
-import {
-  cameraPosition,
-  float,
-  instancedBufferAttribute,
-  oneMinus,
-  shapeCircle,
-  sin,
-  smoothstep,
-  uniform,
-  vec3,
-} from 'three/tsl';
+import * as THREE from 'three';
 import { CAVE } from '../config';
 import { SeededRandom } from '../utils/random';
 import { caveCeiling, caveCenterX, caveHalfWidth } from './caveProfile';
 
+const dustVertexShader = /* glsl */ `
+  uniform float uTime;
+  uniform float uPixelRatio;
+  attribute float aPhase;
+  attribute float aSize;
+  varying float vAlpha;
+  void main() {
+    vec3 transformed = position;
+    transformed.x += sin(uTime * 0.19 + aPhase) * 0.19;
+    transformed.y += sin(uTime * 0.27 + aPhase * 1.7) * 0.11;
+    vec4 view = modelViewMatrix * vec4(transformed, 1.0);
+    gl_Position = projectionMatrix * view;
+    gl_PointSize = aSize * uPixelRatio * (24.0 / max(1.0, -view.z));
+    vAlpha = smoothstep(58.0, 3.0, -view.z);
+  }
+`;
+
+const dustFragmentShader = /* glsl */ `
+  varying float vAlpha;
+  void main() {
+    float distanceToCenter = length(gl_PointCoord - 0.5) * 2.0;
+    float alpha = (1.0 - smoothstep(0.15, 1.0, distanceToCenter)) * vAlpha;
+    gl_FragColor = vec4(vec3(0.52, 0.76, 0.7), alpha * 0.2);
+  }
+`;
+
 export class CaveAtmosphere {
-  public readonly points: THREE.Sprite;
-  private readonly material: THREE.PointsNodeMaterial;
-  private readonly timeNode = uniform(0);
+  public readonly points: THREE.Points;
+  private readonly material: THREE.ShaderMaterial;
 
   public constructor() {
     const count = 620;
@@ -34,43 +48,31 @@ export class CaveAtmosphere {
       phases[index] = random.range(0, Math.PI * 2);
       sizes[index] = random.range(0.45, 1.15);
     }
-    const positionAttribute = new THREE.InstancedBufferAttribute(positions, 3);
-    const phaseAttribute = new THREE.InstancedBufferAttribute(phases, 1);
-    const sizeAttribute = new THREE.InstancedBufferAttribute(sizes, 1);
-    const basePosition = instancedBufferAttribute<'vec3'>(positionAttribute, 'vec3');
-    const phase = instancedBufferAttribute<'float'>(phaseAttribute, 'float');
-    const animatedPosition = basePosition.add(vec3(
-      sin(this.timeNode.mul(0.19).add(phase)).mul(0.19),
-      sin(this.timeNode.mul(0.27).add(phase.mul(1.7))).mul(0.11),
-      0,
-    ));
-    const distance = cameraPosition.sub(animatedPosition).length();
-    this.material = new THREE.PointsNodeMaterial({
-      color: 0x84c2b3,
-      colorNode: vec3(0.52, 0.76, 0.7),
-      opacityNode: float(shapeCircle() as THREE.Node<'float'>)
-        .mul(oneMinus(smoothstep(3, 58, distance)))
-        .mul(0.2),
-      positionNode: animatedPosition,
-      sizeNode: instancedBufferAttribute<'float'>(sizeAttribute, 'float')
-        .mul(24)
-        .div(distance.max(1)),
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute('aPhase', new THREE.BufferAttribute(phases, 1));
+    geometry.setAttribute('aSize', new THREE.BufferAttribute(sizes, 1));
+    this.material = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uPixelRatio: { value: Math.min(window.devicePixelRatio, 2) },
+      },
+      vertexShader: dustVertexShader,
+      fragmentShader: dustFragmentShader,
       transparent: true,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
-      sizeAttenuation: false,
-      alphaToCoverage: true,
     });
-    this.material.name = 'TSL suspended cave dust';
-    this.points = new THREE.Sprite(this.material);
-    this.points.count = count;
+    this.points = new THREE.Points(geometry, this.material);
     this.points.name = 'Suspended cave dust';
     this.points.frustumCulled = false;
   }
 
   public update(time: number): void {
-    this.timeNode.value = time;
+    this.material.uniforms.uTime!.value = time;
   }
 
-  public resize(): void {}
+  public resize(): void {
+    this.material.uniforms.uPixelRatio!.value = Math.min(window.devicePixelRatio, 2);
+  }
 }

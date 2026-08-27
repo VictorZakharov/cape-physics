@@ -115,7 +115,13 @@ try {
 
   const startup = await evaluate(command, `(() => {
     const resources = performance.getEntriesByType('resource');
-    const scripts = resources.filter((entry) => entry.initiatorType === 'script');
+    const scripts = resources.filter((entry) => {
+      try {
+        return new URL(entry.name, window.location.href).pathname.endsWith('.js');
+      } catch {
+        return false;
+      }
+    });
     return {
       readyMilliseconds: performance.now(),
       scriptTransferBytes: scripts.reduce((sum, entry) => sum + entry.transferSize, 0),

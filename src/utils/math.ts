@@ -1,4 +1,4 @@
-import * as THREE from 'three/webgpu';
+import * as THREE from 'three';
 
 export function damp(current: number, target: number, smoothing: number, delta: number): number {
   return THREE.MathUtils.lerp(current, target, 1 - Math.exp(-smoothing * delta));

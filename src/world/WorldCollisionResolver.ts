@@ -1,4 +1,4 @@
-import * as THREE from 'three/webgpu';
+import * as THREE from 'three';
 import { CAVE, PLAYER } from '../config';
 import {
   isWorldRockCollider,

@@ -19,7 +19,7 @@ Everything is generated at runtime. There are no downloaded models, textures, or
 - A procedural cave with wet rock materials, torch shadows, glowing mineral veins, fog, dust, and bloom
 - Clear walkable pools with footstep, landing, and ceiling-drop ripples
 - A collision-aware third-person camera with a close-range character fade
-- A WebGPU-first adaptive renderer with an in-game WebGL fallback and a clickable performance HUD
+- A native WebGL renderer by default, an opt-in experimental WebGPU compute path, and a clickable performance HUD
 
 ## Controls
 
@@ -37,71 +37,71 @@ Everything is generated at runtime. There are no downloaded models, textures, or
 | One-finger swipe | Orbit the camera on touch devices |
 | Two-finger pinch | Zoom on touch devices |
 | Click the FPS graph | Copy a rolling 15-second performance report |
-| `WEBGPU` / `WEBGL` | Reload with the selected renderer; the choice is remembered |
+| `WEBGPU EXP` / `WEBGL` | Reload with the selected renderer; WebGL is recommended and the choice is remembered |
 | `Esc` | Release pointer interaction |
 
 ## Rendering backends
 
-The demo selects WebGPU when the browser supports it and otherwise uses WebGL 2. The `WEBGPU` / `WEBGL` switch in the lower-right corner reloads the selected backend and remembers the choice. Performance reports show both the requested and active backend, so a browser fallback is never mislabeled. If a WebGPU device is lost or startup stops responding, the page restarts with WebGL instead of remaining behind the loading screen.
+The demo defaults to native WebGL 2 on every device. The lower-right switch exposes WebGPU as an explicit experimental option and remembers a player's choice. WebGPU renderer, TSL material, and compute-solver chunks are loaded only after that option is selected, so they do not inflate the normal WebGL download.
 
-WebGPU handles both rendering and cape simulation. WebGL keeps the same visual behavior through the CPU cloth solver, making it a compatibility path as well as a useful comparison. Three.js still describes `WebGPURenderer` as experimental, so results can vary by browser and driver; see the [Three.js WebGPU renderer guide](https://threejs.org/manual/en/webgpurenderer).
+WebGPU handles both rendering and cape simulation. WebGL uses the mature `WebGLRenderer` pipeline and the CPU cloth solver. Performance reports show both the requested and active backend, and a lost or stalled WebGPU device restarts with WebGL instead of leaving the loading screen stuck.
+
+Three.js describes `WebGPURenderer` as experimental, and measurements in this project vary materially by browser, driver, and device. See the [Three.js WebGPU renderer guide](https://threejs.org/manual/en/webgpurenderer).
 
 ## How the cape simulation works
 
-The cape is a 13 × 18 grid—234 particles—simulated with position-based dynamics (PBD) at a fixed 120 Hz. Its top row follows an animated arc around the neck, while structural, shear, bending, and anti-fold constraints shape the free rows.
+The cape is a 13 x 18 grid—234 particles—simulated with position-based dynamics (PBD) at a fixed 120 Hz. Its pinned top row follows an animated arc around the neck. Structural, shear, bending, and anti-fold constraints shape the free rows.
 
 ```text
 animated neckline
        ↓
 predict inertia, gravity, and airflow
        ↓
-project cloth and point-contact constraints (10 passes)
+project cloth shape constraints (10 passes)
        ↓
-resolve cloth-face contact in race-free triangle colors
+resolve body, cave, rock, self-contact, and fold limits
        ↓
-render positions and normals directly from GPU storage
+update the rendered cape
 ```
 
-The WebGPU path keeps current positions, previous positions, topology, anchors, and collider data in persistent storage buffers. Each fixed step batches 25 short dispatches into one compute pass and one queue submission; normal gameplay performs no particle readback. Shape projection ping-pongs between two position buffers, so every particle reads an immutable preceding pass without a copy dispatch. Body-face and rock-face constraints update three vertices at once, so the grid triangles are processed in eight non-overlapping colors with a storage barrier between colors. This preserves coherent corrections without float atomics or write races while avoiding one oversized driver-sensitive shader.
+Collision is deliberately hybrid:
 
-Collision is intentionally hybrid:
-
-- Animated body parts use fitted elliptical capsules, including complementary capsule-point/cloth-face contact so a limb cannot pass through the middle of a coarse triangle.
-- The cave floor, banks, walls, and ceiling use direct procedural surface queries.
-- Contact rocks use exact convex triangle geometry, continuous particle sweeps, and last-known-safe triangle recovery for thin edge/face crossings.
+- Animated body parts use fitted elliptical capsules plus complementary point/cloth-face contact, preventing limbs from crossing the middle of a coarse cloth triangle.
+- The cave floor, banks, walls, and ceiling use direct queries against the same procedural surfaces that are rendered.
+- Contact rocks use exact convex triangle geometry, continuous particle sweeps, and last-known-safe recovery for thin edge and face crossings.
 - Self-contact, fold limits, bounded corrections, and coupled body/world reconciliation prevent tunnelling, spikes, and contact jitter.
 
-This is not a global signed-distance-field simulation. Analytic moving-body queries are cheaper and fit the character more closely, while exact convex rock faces preserve the visible contact boundary. It is also not the Macklin “small steps” variant: motion is predicted once per 120 Hz step and the tuned shape is projected ten times. Changing that integration scheme would be a separate numerical and visual change, not a mechanical performance port.
+The default CPU solver applies the ten projection passes sequentially and uploads the updated mesh. The experimental WebGPU solver keeps particle and collider state in storage buffers, batches 25 short dispatches into one compute submission per fixed step, and renders directly from GPU positions without animation-loop readback. Its position-owned Jacobi passes avoid write races; cloth triangles are split into eight non-overlapping colors for coherent face corrections.
 
-The CPU fallback applies the same PBD and collision model sequentially, then uploads the updated mesh. The WebGPU implementation instead exposes its storage buffer directly to the cape material, including dynamically reconstructed normals.
+This is not a global signed-distance-field simulation. Analytic body queries fit the moving character closely, while exact rock faces preserve the visible contact boundary. It is also not the Macklin “small steps” variant: motion is predicted once per 120 Hz step and the tuned shape is projected ten times.
 
-The implementation builds on [Position Based Dynamics by Müller et al.](https://matthias-research.github.io/pages/publications/posBasedDyn.pdf) and the continuous-contact ideas in [Robust Treatment of Collisions, Contact and Friction for Cloth Animation](https://graphics.stanford.edu/papers/cloth-sig02/). GPU buffer ownership and compute/render handoff were cross-checked against [WebGPU Cloth](https://github.com/blazecus/WebGPU_Cloth), [Jack Blazes' WebGPU cloth port notes](https://jackblazes.net/posts/2024-10-09-clothsim_ported.html), and [Junyi Choi's WebGPU mass-spring project](https://junyic.blogspot.com/2024/05/06-webgpu-cloth-simulation-project-mass.html); the cape's solver and collision model remain project-specific.
+The implementation builds on [Position Based Dynamics by Müller et al.](https://matthias-research.github.io/pages/publications/posBasedDyn.pdf) and [Robust Treatment of Collisions, Contact and Friction for Cloth Animation](https://graphics.stanford.edu/papers/cloth-sig02/). GPU ownership and compute/render handoff were cross-checked against [WebGPU Cloth](https://github.com/blazecus/WebGPU_Cloth), [Jack Blazes' WebGPU cloth port notes](https://jackblazes.net/posts/2024-10-09-clothsim_ported.html), and [Junyi Choi's WebGPU mass-spring project](https://junyic.blogspot.com/2024/05/06/webgpu-cloth-simulation-project-mass.html); the solver and collision model remain project-specific.
 
 ## Performance
 
-Reference measurements were captured on August 27, 2026 with Edge 151, Windows, an AMD Ryzen 9 5900X, and an NVIDIA GeForce RTX 4070 Ti. Each backend value is the median of three independent warmed runs at 1600 × 900, DPR 1, and `ADAPTIVE ULTRA`: 1,728 frames over the same 12-second running route, with backend completion amortized every 12 frames.
+Reference measurements were captured on August 27, 2026 with Edge 151, Windows, an AMD Ryzen 9 5900X, and an NVIDIA GeForce RTX 4070 Ti. Each timing is the median of three independent warmed runs at 1600 x 900, DPR 1, and `ADAPTIVE ULTRA`: 1,728 frames over the same 12-second running route, with backend completion amortized every 12 frames.
 
-| Metric | WebGPU + GPU cape | WebGL 2 + CPU cape | Result |
-| --- | ---: | ---: | ---: |
-| Synchronized frame | **3.31 ms** average / 3.94 ms p95 / 4.29 ms max | 5.30 ms / 6.59 ms / 8.70 ms | **1.60× faster** average |
-| Main-thread cape physics | **0.223 ms/frame** | 2.793 ms/frame | **12.5× less CPU time** |
-| Ready time | **8.30 s** | 18.06 s | **2.18× faster** |
-| GPU timestamp queries | render 0.304 ms + cape compute 0.975 ms = **1.278 ms average** / 1.573 ms p95 total | Not available | 144 samples/run |
-| Shader stability | 94 → 94 programs | 85 → 85 programs | No warm-route growth |
-| Scene complexity | 74 draw calls / 67,577 triangles | 74 / 67,577 | Matched |
+| Metric | WebGL 2 + CPU cape (default) | WebGPU + GPU cape (experimental) | Observation |
+| --- | ---: | ---: | --- |
+| Synchronized frame | **2.96 ms** avg / 4.25 ms p95 / 6.19 ms max | 3.21 ms / **4.00 ms** / **4.57 ms** | WebGL is 8.3% faster on average; WebGPU has a steadier local tail |
+| Main-thread cape physics | 1.970 ms/frame | **0.236 ms/frame** | WebGPU removes 8.4x of cape CPU work |
+| Scene + submission | **0.989 ms/frame** | 2.795 ms/frame | WebGPU renderer overhead offsets the compute gain |
+| Ready time | **4.80 s** | 7.25 s | WebGL becomes interactive 2.45 s sooner |
+| JavaScript loaded | **0.77 MB** | 1.48 MB | WebGL loads 48% less JavaScript |
+| Warm shader programs | **41 → 41** | 94 → 94 | Neither route grows after warm-up |
 
-Against the recorded WebGPU renderer baseline before GPU cape compute, synchronized frame time fell from 5.23 ms to 3.31 ms (**1.58× faster**) and main-thread cape physics fell from 3.085 ms to 0.223 ms (**13.8× less CPU time**). Rendering and browser submission now dominate the frame, so the whole application does not scale by the full physics-only factor.
+Real-device testing is why WebGL remains the default. On an Adreno 830 phone at DPR 3.75, WebGL held 59.93 FPS average with a 59.52 FPS 1% low and 16.8 ms p99. WebGPU measured 55.07 FPS average, a 28.99 FPS 1% low, 34.5 ms p99, and a 650.8 ms worst frame. On a 144 Hz NVIDIA desktop both backends reached the display callback ceiling, so displayed FPS could not distinguish them.
 
-These are throughput diagnostics, not display-refresh measurements or universal guarantees. GPU, browser, driver, thermal state, and scene visibility all matter. The in-game FPS graph is the best measurement on your hardware; click it to copy a rolling report with callback pacing, physics, scene, submission, renderer counters, and cape state.
+These are throughput diagnostics, not universal guarantees. GPU, browser, driver, thermal state, scene activity, and display refresh all matter. Click the in-game FPS graph to copy a rolling report with callback pacing, physics, scene, submission, renderer counters, and cape state.
 
 Reproduce the local, non-gating profile with:
 
 ```powershell
-$env:CAPE_PROFILE_RENDERER = "webgpu" # or "webgl"
+$env:CAPE_PROFILE_RENDERER = "webgl" # or "webgpu"
 bun run profile:render
 ```
 
-Timing budgets are never CI merge gates. The visual audit and automated tests enforce deterministic correctness instead.
+Timing budgets are never CI merge gates. Deterministic tests and visual audits enforce correctness instead.
 
 ## Run locally
 

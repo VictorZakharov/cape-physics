@@ -1,4 +1,4 @@
-import type { PerspectiveCamera } from 'three/webgpu';
+import type { PerspectiveCamera } from 'three';
 
 const MINIMUM_VIEWPORT_DIMENSION = 1;
 

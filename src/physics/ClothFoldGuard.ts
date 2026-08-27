@@ -1,4 +1,4 @@
-import * as THREE from 'three/webgpu';
+import * as THREE from 'three';
 
 // A small upward tuck remains possible as cloth rides over contact, but it
 // cannot become the long crossed S-fold that used to form around stones.

@@ -1,4 +1,4 @@
-import * as THREE from 'three/webgpu';
+import * as THREE from 'three';
 import type { RenderPipeline } from '../core/RenderPipeline';
 import { CHARACTER_RENDER_LAYER, WORLD_RENDER_LAYER } from '../core/renderLayers';
 

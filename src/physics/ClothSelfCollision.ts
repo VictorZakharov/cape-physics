@@ -1,4 +1,4 @@
-import * as THREE from 'three/webgpu';
+import * as THREE from 'three';
 
 export const CLOTH_THICKNESS = 0.058;
 

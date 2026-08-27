@@ -1,5 +1,7 @@
-import * as THREE from 'three/webgpu';
+import * as THREE from 'three';
+import { WebGLRenderer, WebGLRenderTarget } from 'three';
 import { enableCameraIndependentShadowCaster } from '../core/CameraIndependentShadowCaster';
+import type { RenderPipelineRenderer } from '../core/RenderPipeline';
 import {
   CHARACTER_RENDER_LAYER,
   WORLD_RENDER_LAYER,
@@ -22,6 +24,7 @@ export interface ShadowLayerProbeResult {
 
 const TARGET_SIZE = 128;
 const SAMPLE_RADIUS = 2;
+type ProbeTarget = THREE.RenderTarget | WebGLRenderTarget;
 
 /**
  * Renders a character-layer caster over a world-layer receiver twice: once
@@ -29,7 +32,7 @@ const SAMPLE_RADIUS = 2;
  * camera fading. The sampled world-space shadow must survive both renders.
  */
 export async function runShadowLayerProbe(
-  renderer: THREE.Renderer,
+  renderer: RenderPipelineRenderer,
 ): Promise<ShadowLayerProbeResult> {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x050505);
@@ -64,7 +67,10 @@ export async function runShadowLayerProbe(
   caster.position.y = 0.6;
   caster.castShadow = true;
   caster.layers.set(CHARACTER_RENDER_LAYER);
-  enableCameraIndependentShadowCaster(caster);
+  enableCameraIndependentShadowCaster(
+    caster,
+    renderer instanceof WebGLRenderer ? 'webgl' : 'webgpu',
+  );
 
   const ambient = new THREE.AmbientLight(0xffffff, 0.08);
   const light = new THREE.DirectionalLight(0xffffff, 3.4);
@@ -84,12 +90,20 @@ export async function runShadowLayerProbe(
   scene.add(receiver, caster, ambient, light, light.target);
   scene.updateMatrixWorld(true);
 
-  const target = new THREE.RenderTarget(TARGET_SIZE, TARGET_SIZE, {
-    type: THREE.UnsignedByteType,
-    depthBuffer: true,
-    stencilBuffer: false,
-  });
-  const previousTarget = renderer.getRenderTarget();
+  const target: ProbeTarget = renderer instanceof WebGLRenderer
+    ? new WebGLRenderTarget(TARGET_SIZE, TARGET_SIZE, {
+        type: THREE.UnsignedByteType,
+        depthBuffer: true,
+        stencilBuffer: false,
+      })
+    : new THREE.RenderTarget(TARGET_SIZE, TARGET_SIZE, {
+        type: THREE.UnsignedByteType,
+        depthBuffer: true,
+        stencilBuffer: false,
+      });
+  const previousTarget: ProbeTarget | null = renderer instanceof WebGLRenderer
+    ? renderer.getRenderTarget()
+    : renderer.getRenderTarget();
   const previousShadowEnabled = renderer.shadowMap.enabled;
   const previousClearAlpha = renderer.getClearAlpha();
   const previousClearColor = renderer.getClearColor(new THREE.Color()).clone();
@@ -136,7 +150,7 @@ export async function runShadowLayerProbe(
       angleContrastDelta: Math.abs(isolated.contrast - secondAngle.contrast),
     };
   } finally {
-    renderer.setRenderTarget(previousTarget);
+    setProbeRenderTarget(renderer, previousTarget);
     renderer.shadowMap.enabled = previousShadowEnabled;
     renderer.setClearColor(previousClearColor, previousClearAlpha);
     target.dispose();
@@ -149,17 +163,17 @@ export async function runShadowLayerProbe(
 }
 
 async function renderSample(
-  renderer: THREE.Renderer,
+  renderer: RenderPipelineRenderer,
   scene: THREE.Scene,
   camera: THREE.OrthographicCamera,
-  target: THREE.RenderTarget,
+  target: ProbeTarget,
   shadowPoint: THREE.Vector3,
   litPoint: THREE.Vector3,
   includeCharacterLayer: boolean,
 ): Promise<ShadowLayerProbeSample> {
   camera.layers.set(WORLD_RENDER_LAYER);
   if (includeCharacterLayer) camera.layers.enable(CHARACTER_RENDER_LAYER);
-  renderer.setRenderTarget(target);
+  setProbeRenderTarget(renderer, target);
   renderer.setClearColor(0x050505, 1);
   renderer.clear(true, true, false);
   renderer.render(scene, camera);
@@ -173,8 +187,8 @@ async function renderSample(
 }
 
 async function readWorldPoint(
-  renderer: THREE.Renderer,
-  target: THREE.RenderTarget,
+  renderer: RenderPipelineRenderer,
+  target: ProbeTarget,
   camera: THREE.Camera,
   point: THREE.Vector3,
 ): Promise<FramebufferPixel> {
@@ -190,13 +204,22 @@ async function readWorldPoint(
     TARGET_SIZE - SAMPLE_RADIUS - 1,
   );
   const size = SAMPLE_RADIUS * 2 + 1;
-  const pixels = await renderer.readRenderTargetPixelsAsync(
-    target,
-    x - SAMPLE_RADIUS,
-    y - SAMPLE_RADIUS,
-    size,
-    size,
-  );
+  const pixels = renderer instanceof WebGLRenderer
+    ? await renderer.readRenderTargetPixelsAsync(
+        target as WebGLRenderTarget,
+        x - SAMPLE_RADIUS,
+        y - SAMPLE_RADIUS,
+        size,
+        size,
+        new Uint8Array(size * size * 4),
+      )
+    : await renderer.readRenderTargetPixelsAsync(
+        target as THREE.RenderTarget,
+        x - SAMPLE_RADIUS,
+        y - SAMPLE_RADIUS,
+        size,
+        size,
+      );
   let red = 0;
   let green = 0;
   let blue = 0;
@@ -226,6 +249,17 @@ export function framebufferYFromNdc(
     ? 1 - normalizedFromBottom
     : normalizedFromBottom;
   return Math.round(normalizedFromOrigin * (targetSize - 1));
+}
+
+function setProbeRenderTarget(
+  renderer: RenderPipelineRenderer,
+  target: ProbeTarget | null,
+): void {
+  if (renderer instanceof WebGLRenderer) {
+    renderer.setRenderTarget(target as WebGLRenderTarget | null);
+    return;
+  }
+  renderer.setRenderTarget(target as THREE.RenderTarget | null);
 }
 
 function luminance(pixel: FramebufferPixel): number {

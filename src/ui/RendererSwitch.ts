@@ -53,9 +53,11 @@ export class RendererSwitch {
       button.classList.toggle('is-active', active);
       button.setAttribute('aria-pressed', String(active));
     }
-    this.root.title = actual === requested
-      ? `${actual.toUpperCase()} renderer active`
-      : 'WebGPU was requested but unavailable; WebGL is active';
+    this.root.title = actual !== requested
+      ? 'WebGPU was requested but unavailable; WebGL is active'
+      : actual === 'webgpu'
+        ? 'Experimental WebGPU renderer active; WebGL is recommended'
+        : 'WebGL renderer active (recommended)';
   }
 
   public dispose(): void {

@@ -6,12 +6,12 @@ import {
 } from '../src/core/RendererPreference';
 
 describe('renderer preference', () => {
-  test('defaults to WebGPU when supported and WebGL otherwise', () => {
+  test('defaults to WebGL even when WebGPU is available', () => {
     expect(resolveRendererPreference({
       search: '',
       storedPreference: null,
       webGPUAvailable: true,
-    })).toBe('webgpu');
+    })).toBe('webgl');
     expect(resolveRendererPreference({
       search: '',
       storedPreference: null,

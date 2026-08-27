@@ -1,4 +1,4 @@
-import * as THREE from 'three/webgpu';
+import * as THREE from 'three';
 import type { CapsuleCollider } from './colliders';
 
 export const CLOTH_BODY_CLEARANCE = 0.026;

@@ -1,4 +1,4 @@
-import * as THREE from 'three/webgpu';
+import * as THREE from 'three';
 import { CAMERA_NEAR_OPACITY, PHYSICS_STEP, PLAYER } from './config';
 import { ThirdPersonCamera } from './camera/ThirdPersonCamera';
 import {
@@ -23,8 +23,9 @@ import { configureTextureFiltering, createRockTextures } from './graphics/proced
 import { InputController } from './input/InputController';
 import { MobileControls } from './input/MobileControls';
 import { CinematicLighting } from './lighting/CinematicLighting';
+import type { WebGpuCinematicLighting } from './lighting/WebGpuCinematicLighting';
 import { CapeSimulation } from './physics/CapeSimulation';
-import { GpuCapeSimulation } from './physics/GpuCapeSimulation';
+import type { GpuCapeSimulation } from './physics/GpuCapeSimulation';
 import type { WorldCollider } from './physics/colliders';
 import { Character } from './player/Character';
 import { CharacterController } from './player/CharacterController';
@@ -35,11 +36,14 @@ import { RendererSwitch } from './ui/RendererSwitch';
 import { invariant } from './utils/assert';
 import { percentile } from './utils/math';
 import { CaveAtmosphere } from './world/CaveAtmosphere';
+import type { WebGpuCaveAtmosphere } from './world/WebGpuCaveAtmosphere';
 import { CaveWorld } from './world/CaveWorld';
 import { caveCenterX, caveGroundHeightAt } from './world/caveProfile';
 import { MineralVeins } from './world/MineralVeins';
 import { TorchSystem } from './world/TorchSystem';
+import type { WebGpuTorchSystem } from './world/WebGpuTorchSystem';
 import { WaterSystem } from './world/WaterSystem';
+import type { WebGpuWaterSystem } from './world/WebGpuWaterSystem';
 import { WorldCollisionResolver } from './world/WorldCollisionResolver';
 
 function averageOrNull(values: readonly number[]): number | null {
@@ -84,11 +88,11 @@ export class CapeDemo {
   private thirdPersonCamera!: ThirdPersonCamera;
   private cape!: CapeSimulation | GpuCapeSimulation;
   private cave!: CaveWorld;
-  private water!: WaterSystem;
-  private torches!: TorchSystem;
+  private water!: WaterSystem | WebGpuWaterSystem;
+  private torches!: TorchSystem | WebGpuTorchSystem;
   private veins!: MineralVeins;
-  private atmosphere!: CaveAtmosphere;
-  private lighting!: CinematicLighting;
+  private atmosphere!: CaveAtmosphere | WebGpuCaveAtmosphere;
+  private lighting!: CinematicLighting | WebGpuCinematicLighting;
   private worldCollision!: WorldCollisionResolver;
   private worldColliders: readonly WorldCollider[] = [];
   private fixedTime = 0;
@@ -162,16 +166,32 @@ export class CapeDemo {
     const rockTextures = createRockTextures(512);
     configureTextureFiltering(
       rockTextures,
-      Math.min(8, this.pipeline.renderer.getMaxAnisotropy()),
+      Math.min(8, this.pipeline.getMaxAnisotropy()),
     );
     this.cave = new CaveWorld(rockTextures);
     this.scene.add(this.cave.group);
 
     await this.loading.update(0.3, 'Awakening mineral light');
     this.veins = new MineralVeins();
-    this.torches = new TorchSystem();
-    this.water = new WaterSystem();
-    this.atmosphere = new CaveAtmosphere();
+    const usesNodeRenderer = this.pipeline.usesNodeRenderer();
+    if (usesNodeRenderer) {
+      const [
+        { WebGpuTorchSystem },
+        { WebGpuWaterSystem },
+        { WebGpuCaveAtmosphere },
+      ] = await Promise.all([
+        import('./world/WebGpuTorchSystem'),
+        import('./world/WebGpuWaterSystem'),
+        import('./world/WebGpuCaveAtmosphere'),
+      ]);
+      this.torches = new WebGpuTorchSystem();
+      this.water = new WebGpuWaterSystem();
+      this.atmosphere = new WebGpuCaveAtmosphere();
+    } else {
+      this.torches = new TorchSystem();
+      this.water = new WaterSystem();
+      this.atmosphere = new CaveAtmosphere();
+    }
     this.scene.add(this.veins.group, this.torches.group, this.water.group, this.atmosphere.points);
     this.worldColliders = [
       ...this.cave.worldColliders,
@@ -187,25 +207,48 @@ export class CapeDemo {
     this.character.root.position.set(startX, this.worldCollision.getPlayerRootHeight(startX, startZ), startZ);
     this.character.root.updateMatrixWorld(true);
     this.scene.add(this.character.root);
-    this.cape = this.pipeline.getActualBackend() === 'webgpu'
-      ? new GpuCapeSimulation(this.pipeline.renderer, this.character.getCapeAnchors())
-      : new CapeSimulation(this.character.getCapeAnchors());
+    const gpuRenderer = this.pipeline.getWebGpuRenderer();
+    if (gpuRenderer) {
+      const { GpuCapeSimulation } = await import('./physics/GpuCapeSimulation');
+      this.cape = new GpuCapeSimulation(gpuRenderer, this.character.getCapeAnchors());
+    } else {
+      this.cape = new CapeSimulation(this.character.getCapeAnchors());
+    }
     this.scene.add(this.cape.mesh);
     this.character.root.traverse((object) => {
       object.layers.set(CHARACTER_RENDER_LAYER);
       if (object instanceof THREE.Mesh && object.castShadow) {
-        enableCameraIndependentShadowCaster(object);
+        enableCameraIndependentShadowCaster(
+          object,
+          usesNodeRenderer ? 'webgpu' : 'webgl',
+        );
       }
     });
     this.cape.mesh.layers.set(CHARACTER_RENDER_LAYER);
-    enableCameraIndependentShadowCaster(this.cape.mesh);
+    enableCameraIndependentShadowCaster(
+      this.cape.mesh,
+      usesNodeRenderer ? 'webgpu' : 'webgl',
+    );
 
     this.input = new InputController(this.canvas, this.dismissOnboarding);
     this.mobileControls = new MobileControls(this.canvas, this.input);
     this.characterController = new CharacterController(this.character, this.input, this.worldCollision);
     this.thirdPersonCamera = new ThirdPersonCamera(this.camera, this.input, this.cave.cameraColliders);
     this.thirdPersonCamera.snapTo(this.character.root.position);
-    this.lighting = new CinematicLighting(this.scene, this.pipeline.renderer);
+    if (usesNodeRenderer) {
+      const { WebGpuCinematicLighting } = await import('./lighting/WebGpuCinematicLighting');
+      const nodeRenderer = invariant(
+        this.pipeline.getNodeRenderer(),
+        'WebGPU node renderer is missing.',
+      );
+      this.lighting = new WebGpuCinematicLighting(this.scene, nodeRenderer);
+    } else {
+      const webGlRenderer = invariant(
+        this.pipeline.getWebGlRenderer(),
+        'Native WebGL renderer is missing.',
+      );
+      this.lighting = new CinematicLighting(this.scene, webGlRenderer);
+    }
     this.scene.add(this.lighting.group);
     this.enableCharacterLighting();
     this.lighting.update(this.character.root.position, 0);

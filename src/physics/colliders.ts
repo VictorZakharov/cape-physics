@@ -1,4 +1,4 @@
-import type * as THREE from 'three/webgpu';
+import type * as THREE from 'three';
 
 export interface CapsuleCollider {
   readonly start: THREE.Vector3;

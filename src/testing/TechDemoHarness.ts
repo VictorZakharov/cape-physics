@@ -1,4 +1,4 @@
-import * as THREE from 'three/webgpu';
+import * as THREE from 'three';
 import { PHYSICS_STEP, PLAYER } from '../config';
 import { createRockTextures } from '../graphics/proceduralTextures';
 import { CapeSimulation } from '../physics/CapeSimulation';
@@ -105,7 +105,10 @@ function analyzeScene(scene: THREE.Scene): SceneBudget {
       }
       const materials = Array.isArray(object.material) ? object.material : [object.material];
       proceduralMaterials += materials.filter(
-        (material) => 'isNodeMaterial' in material && material.isNodeMaterial === true,
+        (material) => (
+          ('isNodeMaterial' in material && material.isNodeMaterial === true)
+          || ('isShaderMaterial' in material && material.isShaderMaterial === true)
+        ),
       ).length;
     }
   });
@@ -329,7 +332,7 @@ export function runTechDemoHarness(simulatedSeconds = 12): TechDemoHarnessReport
   invariant(mineralLights.visibleLights === mineralLights.lights, 'mineral pool changed the compiled light count');
   invariant(
     sceneBudget.proceduralMaterials >= 3,
-    'procedural TSL water or flame materials are missing',
+    'procedural water or flame materials are missing',
   );
   invariant(sceneBudget.estimatedDrawCalls <= 85, `estimated draw calls ${sceneBudget.estimatedDrawCalls} exceeded budget`);
   invariant(sceneBudget.triangles <= 160_000, `triangle count ${sceneBudget.triangles} exceeded budget`);
