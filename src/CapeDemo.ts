@@ -132,7 +132,7 @@ export class CapeDemo {
   }
 
   public async start(): Promise<void> {
-    if (this.rendererPreference === 'webgpu') {
+    if (this.rendererPreference === 'webgpu' && !this.harnessMode) {
       this.webGpuStartupTimer = window.setTimeout(() => {
         this.recoverWithWebGL('WebGPU startup stalled; restarting with WebGL');
       }, 20_000);

@@ -37,9 +37,19 @@ if (!existsSync(join(distRoot, 'index.html'))) {
   throw new Error(`Production build missing at ${distRoot}.`);
 }
 
-const durationSeconds = 12;
+function numericSetting(name, fallback, minimum, maximum) {
+  const value = Number(process.env[name] ?? fallback);
+  if (!Number.isFinite(value) || value < minimum || value > maximum) {
+    throw new Error(`${name} must be a finite number from ${minimum} to ${maximum}.`);
+  }
+  return value;
+}
+
+const durationSeconds = numericSetting('CAPE_PROFILE_DURATION_SECONDS', 12, 1 / 144, 12);
+const settleSeconds = numericSetting('CAPE_PROFILE_SETTLE_SECONDS', 0.45, 0, 2);
+const runningWarmupSeconds = numericSetting('CAPE_PROFILE_RUNNING_WARMUP_SECONDS', 0.85, 0, 2);
 const frameStep = 1 / 144;
-const expectedFrames = Math.round(durationSeconds / frameStep);
+const expectedFrames = Math.ceil(durationSeconds / frameStep - 0.000_000_1);
 const outputPath = resolve(
   process.env.CAPE_PROFILE_OUTPUT
     ?? join(repositoryRoot, 'artifacts', 'performance', `${rendererPreference}.json`),
@@ -131,10 +141,22 @@ try {
     pitch: 0.2,
     distance: 4.4,
   })})`);
-  await evaluate(command, 'window.__CAPE_DEMO__.advance({ duration: 0.45, frameStep: 1 / 120 })');
+  await evaluate(
+    command,
+    `window.__CAPE_DEMO__.advance(${JSON.stringify({
+      duration: settleSeconds,
+      frameStep: 1 / 120,
+    })})`,
+  );
   await evaluate(command, 'window.__CAPE_DEMO__.setRunning(true)');
   await evaluate(command, 'window.__CAPE_DEMO__.setMovement(0, 1)');
-  await evaluate(command, 'window.__CAPE_DEMO__.advance({ duration: 0.85, frameStep: 1 / 120 })');
+  await evaluate(
+    command,
+    `window.__CAPE_DEMO__.advance(${JSON.stringify({
+      duration: runningWarmupSeconds,
+      frameStep: 1 / 120,
+    })})`,
+  );
   const profile = await evaluate(
     command,
     `window.__CAPE_DEMO__.profile(${JSON.stringify({

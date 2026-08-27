@@ -127,7 +127,7 @@ bun run build:pages    # production GitHub Pages build
 
 The renderer-free harness advances character movement, cloth, jumping, water landings, footsteps, ceiling drops, lights, and mineral effects without using a browser. The visual audit then drives the production build directly through Edge or Chrome and checks desktop and touch input, responsive controls, depth ordering, shadows, water motion, cape contact, and animation from 37 camera studies.
 
-CI gates deterministic correctness, geometry, collision, rendering, and builds. It does **not** gate merges on millisecond or elapsed-time thresholds. Pull requests receive a temporary GitHub Pages preview, while merges to `main` deploy the production demo.
+CI gates deterministic correctness, geometry, collision, rendering, and builds. It runs the complete multi-angle audit through WebGL plus a short native WebGPU compute/readback smoke; the full 37-view WebGPU audit remains available locally. CI does **not** gate merges on millisecond or elapsed-time thresholds. Pull requests receive a temporary GitHub Pages preview, while merges to `main` deploy the production demo.
 
 ## Project structure
 
