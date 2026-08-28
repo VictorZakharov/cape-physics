@@ -233,7 +233,7 @@ export class CapeDemo {
 
     await this.loading.update(0.54, 'Forging the traveller');
     this.character = new Character();
-    this.pipeline.bundleFixedChildren(this.character.root);
+    this.pipeline.bundleDynamicChildren(this.character.root);
     const startZ = 11.8;
     const startX = caveCenterX(startZ);
     this.character.root.position.set(startX, this.worldCollision.getPlayerRootHeight(startX, startZ), startZ);

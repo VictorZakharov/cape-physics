@@ -98,6 +98,10 @@ export class RenderPipeline {
     this.active.bundleFixedChildren(group);
   }
 
+  public bundleDynamicChildren(group: THREE.Group): void {
+    this.active.bundleDynamicChildren(group);
+  }
+
   public getCharacterOpacity(): number {
     return this.active.getCharacterOpacity();
   }

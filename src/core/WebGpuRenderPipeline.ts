@@ -19,6 +19,10 @@ import {
 } from './frameRenderStats';
 import { measureBundledRenderStats } from './bundleRenderStats';
 import {
+  moveChildrenIntoRenderBundle,
+  type RenderBundleTransformMode,
+} from './renderBundle';
+import {
   CHARACTER_RENDER_LAYER,
   WORLD_RENDER_LAYER,
 } from './renderLayers';
@@ -226,18 +230,26 @@ export class WebGpuRenderPipeline {
     this.opacityNode.value = THREE.MathUtils.clamp(opacity, 0, 1);
   }
 
-  /** Records a fixed object hierarchy once while retaining per-frame binding updates. */
-  public bundleFixedChildren(group: THREE.Group): void {
+  /** Records an object hierarchy once, selecting the correct transform refresh mode. */
+  private bundleChildren(
+    group: THREE.Group,
+    transformMode: RenderBundleTransformMode,
+  ): void {
     if (group.children.length === 0 || this.getActualBackend() !== 'webgpu') return;
     this.bundledRenderStats = addFrameRenderStats(
       this.bundledRenderStats,
       measureBundledRenderStats(group),
     );
     this.bundlesNeedFirstRecording = true;
-    const bundle = new THREE.BundleGroup();
-    bundle.name = `${group.name || 'Fixed hierarchy'} render bundle`;
-    bundle.add(...group.children);
-    group.add(bundle);
+    moveChildrenIntoRenderBundle(group, transformMode);
+  }
+
+  public bundleFixedChildren(group: THREE.Group): void {
+    this.bundleChildren(group, 'fixed');
+  }
+
+  public bundleDynamicChildren(group: THREE.Group): void {
+    this.bundleChildren(group, 'dynamic');
   }
 
   public getCharacterOpacity(): number {
