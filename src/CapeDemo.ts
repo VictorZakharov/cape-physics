@@ -13,7 +13,7 @@ import type { PerformanceReportDetails } from './core/PerformanceReport';
 import { RenderPipeline } from './core/RenderPipeline';
 import {
   browserSupportsWebGPU,
-  RENDERER_STORAGE_KEY,
+  rendererDefaultUrl,
   rendererPreferenceUrl,
   resolveRendererPreference,
   type RendererPreference,
@@ -32,6 +32,10 @@ import { CharacterController } from './player/CharacterController';
 import { runDepthOcclusionProbe } from './testing/DepthOcclusionProbe';
 import { runShadowLayerProbe } from './testing/ShadowLayerProbe';
 import { LoadingScreen } from './ui/LoadingScreen';
+import {
+  CustomizationPanel,
+  type CustomizationSettings,
+} from './ui/CustomizationPanel';
 import { RendererSwitch } from './ui/RendererSwitch';
 import { invariant } from './utils/assert';
 import { percentile } from './utils/math';
@@ -73,6 +77,7 @@ export class CapeDemo {
   private readonly pipeline: RenderPipeline;
   private readonly rendererPreference: RendererPreference;
   private readonly rendererSwitch: RendererSwitch;
+  private readonly customizationPanel: CustomizationPanel;
   private readonly webGPUAvailable: boolean;
   private readonly performance: PerformanceMonitor;
   private readonly clock = new FixedStepClock();
@@ -101,23 +106,24 @@ export class CapeDemo {
   private webGpuRecoveryStarted = false;
   private webGpuStartupTimer: number | null = null;
   private stopDeviceLossWatch: (() => void) | null = null;
+  private customizationSettings: CustomizationSettings;
+  private readonly stabilizationVelocity = new THREE.Vector3();
+  private readonly savedLightIntensities = new Map<THREE.Light, number>();
+  private readonly savedShadowIntensities = new Map<THREE.Light, number>();
+  private shadowsEnabled = true;
 
   public constructor() {
     this.canvas = invariant(document.querySelector<HTMLCanvasElement>('#scene-canvas'), 'Scene canvas is missing.');
     this.scene.background = new THREE.Color(0x050a0c);
     this.scene.fog = new THREE.FogExp2(0x071012, 0.034);
     this.webGPUAvailable = browserSupportsWebGPU();
-    let storedRendererPreference: string | null = null;
-    try {
-      storedRendererPreference = window.localStorage.getItem(RENDERER_STORAGE_KEY);
-    } catch {
-      // Storage can be disabled without preventing the demo from rendering.
-    }
     this.rendererPreference = resolveRendererPreference({
       search: window.location.search,
-      storedPreference: storedRendererPreference,
-      webGPUAvailable: this.webGPUAvailable,
     });
+    const defaultUrl = rendererDefaultUrl(window.location.href);
+    if (defaultUrl !== window.location.href) {
+      window.history.replaceState(window.history.state, '', defaultUrl);
+    }
     this.pipeline = new RenderPipeline(
       this.canvas,
       this.scene,
@@ -129,6 +135,8 @@ export class CapeDemo {
       this.rendererPreference,
       this.webGPUAvailable,
     );
+    this.customizationPanel = new CustomizationPanel(this.handleCustomizationChange);
+    this.customizationSettings = this.customizationPanel.getSettings();
     this.qualityLabel = invariant(document.querySelector<HTMLElement>('[data-quality-label]'), 'Quality label is missing.');
     this.quality = new AdaptiveQuality((state) => this.applyQuality(state));
     this.performance = new PerformanceMonitor(this.getPerformanceReportDetails);
@@ -210,9 +218,16 @@ export class CapeDemo {
     const gpuRenderer = this.pipeline.getWebGpuRenderer();
     if (gpuRenderer) {
       const { GpuCapeSimulation } = await import('./physics/GpuCapeSimulation');
-      this.cape = new GpuCapeSimulation(gpuRenderer, this.character.getCapeAnchors());
+      this.cape = new GpuCapeSimulation(
+        gpuRenderer,
+        this.character.getCapeAnchors(),
+        this.customizationSettings,
+      );
     } else {
-      this.cape = new CapeSimulation(this.character.getCapeAnchors());
+      this.cape = new CapeSimulation(
+        this.character.getCapeAnchors(),
+        this.customizationSettings,
+      );
     }
     this.scene.add(this.cape.mesh);
     this.character.root.traverse((object) => {
@@ -254,7 +269,9 @@ export class CapeDemo {
     this.lighting.update(this.character.root.position, 0);
     this.torches.update(0, this.character.root.position);
     this.veins.update(0, this.character.root.position);
+    this.stabilizeCape();
     this.cape.syncGeometry();
+    this.applySceneCustomization(this.customizationSettings);
 
     await this.loading.update(0.76, 'Compiling cloth and water shaders');
     await this.pipeline.compile(this.scene, this.camera);
@@ -332,6 +349,7 @@ export class CapeDemo {
     this.veins.update(this.fixedTime, playerPosition);
     this.atmosphere.update(this.fixedTime);
     this.lighting.update(playerPosition, this.fixedTime);
+    if (!this.customizationSettings.lights) this.setLightsEnabled(false);
   }
 
   private readonly handleResize = (): void => {
@@ -374,6 +392,79 @@ export class CapeDemo {
   private applyQuality(state: QualityState): void {
     this.pipeline.setResolutionScale(state.scale);
     this.qualityLabel.textContent = state.label;
+  }
+
+  private readonly handleCustomizationChange = (
+    settings: CustomizationSettings,
+    settleDimensions: boolean,
+  ): void => {
+    this.customizationSettings = settings;
+    if (!this.cape || !this.character) return;
+    this.cape.updateSettings(settings, this.character.getCapeAnchors());
+    if (settleDimensions) this.stabilizeCape();
+    this.applySceneCustomization(settings);
+    if (this.ready) this.pipeline.renderManual(0);
+  };
+
+  private applySceneCustomization(settings: CustomizationSettings): void {
+    this.setLightsEnabled(settings.lights);
+    this.setShadowsEnabled(settings.shadows);
+    this.scene.environmentIntensity = settings.reflections ? 0.24 : 0;
+    this.water.setReflectionsEnabled(settings.reflections);
+  }
+
+  private stabilizeCape(): void {
+    const anchors = this.character.getCapeAnchors();
+    const bodyColliders = this.character.getCapeColliders();
+    this.stabilizationVelocity.set(0, 0, 0);
+    for (let step = 0; step < 12; step += 1) {
+      this.cape.step(
+        PHYSICS_STEP,
+        anchors,
+        bodyColliders,
+        this.worldColliders,
+        this.stabilizationVelocity,
+        this.fixedTime + step * PHYSICS_STEP,
+      );
+    }
+  }
+
+  private setLightsEnabled(enabled: boolean): void {
+    this.scene.traverse((object) => {
+      if (!(object instanceof THREE.Light)) return;
+      if (enabled) {
+        const savedIntensity = this.savedLightIntensities.get(object);
+        if (savedIntensity !== undefined) object.intensity = savedIntensity;
+        return;
+      }
+      if (!this.savedLightIntensities.has(object)) {
+        this.savedLightIntensities.set(object, object.intensity);
+      }
+      object.intensity = 0;
+    });
+    if (enabled) this.savedLightIntensities.clear();
+  }
+
+  private setShadowsEnabled(enabled: boolean): void {
+    if (this.shadowsEnabled === enabled) return;
+    this.shadowsEnabled = enabled;
+
+    this.scene.traverse((object) => {
+      if (
+        !(object instanceof THREE.DirectionalLight)
+        && !(object instanceof THREE.PointLight)
+        && !(object instanceof THREE.SpotLight)
+      ) return;
+      if (enabled) {
+        const intensity = this.savedShadowIntensities.get(object);
+        if (intensity !== undefined) object.shadow.intensity = intensity;
+      } else {
+        this.savedShadowIntensities.set(object, object.shadow.intensity);
+        object.shadow.intensity = 0;
+      }
+    });
+
+    if (enabled) this.savedShadowIntensities.clear();
   }
 
   private installHarness(): void {
@@ -619,6 +710,7 @@ export class CapeDemo {
         contactRocks: this.cave.contactRocks,
       },
       cape: {
+        settings: { ...this.customizationSettings },
         maximumStructuralError: this.cape.getMaximumStructuralError(),
         maximumBodyPenetration: this.cape.getMaximumBodyPenetration(
           capeColliders,
@@ -746,6 +838,7 @@ export class CapeDemo {
     this.stopDeviceLossWatch = null;
     void this.pipeline.renderer.setAnimationLoop(null);
     this.rendererSwitch.dispose();
+    this.customizationPanel.dispose();
     this.mobileControls?.dispose();
     this.input?.dispose();
     this.lighting?.dispose();

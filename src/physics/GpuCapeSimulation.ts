@@ -38,6 +38,11 @@ import {
   getClothWorldClearance,
 } from './ClothWorldCollision';
 import {
+  DEFAULT_CAPE_PHYSICS_SETTINGS,
+  normalizeCapePhysicsSettings,
+  type CapePhysicsSettings,
+} from './CapeSettings';
+import {
   CAVE_SHELL_CONTACT_SKIN,
   getCaveShellSampleData,
   WATER_BASINS,
@@ -48,6 +53,7 @@ interface ConstraintDefinition {
   readonly second: number;
   readonly restLength: number;
   readonly stiffness: number;
+  readonly structural: boolean;
 }
 
 interface ConstraintLink {
@@ -55,6 +61,7 @@ interface ConstraintLink {
   readonly restLength: number;
   readonly stiffness: number;
   readonly massShare: number;
+  readonly structural: boolean;
 }
 
 const PARTICLE_COUNT = CAPE.columns * CAPE.rows;
@@ -72,7 +79,7 @@ const ROCK_SWEEP_TANGENTIAL_DAMPING = 0.76;
 const BODY_BUFFER_STRIDE = 5;
 const ROCK_BUFFER_STRIDE = 4 + ROCK_FACES_PER_COLLIDER * 4;
 const TOPOLOGY_METADATA_STRIDE = 2;
-const WORLD_QUERY_RADIUS = CAPE.length + 2.2;
+const WORLD_QUERY_RADIUS = CAPE.lengthRange.max + 2.2;
 const CAVE_LOWER_RADIAL_START = Math.floor(CAVE.radialSegments / 2);
 
 /**
@@ -101,6 +108,9 @@ export class GpuCapeSimulation {
   private readonly timeUniform = uniform(0);
   private readonly movementBlendUniform = uniform(0);
   private readonly airflowUniform = uniform(new THREE.Vector3());
+  private readonly stiffnessUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.stiffness);
+  private readonly dampingUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.damping);
+  private readonly weightUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.weight);
   private readonly bodyCountUniform = uniform(0, 'uint');
   private readonly backUniform = uniform(new THREE.Vector3(0, 0, 1));
   private readonly worldSphereCountUniform = uniform(0, 'uint');
@@ -121,10 +131,17 @@ export class GpuCapeSimulation {
   private settledSeconds = 0;
   private sleeping = false;
   private submittedSteps = 0;
+  private settings: CapePhysicsSettings;
 
-  public constructor(renderer: THREE.WebGPURenderer, initialAnchors: CapeAnchors) {
+  public constructor(
+    renderer: THREE.WebGPURenderer,
+    initialAnchors: CapeAnchors,
+    settings: Partial<CapePhysicsSettings> = {},
+  ) {
     this.renderer = renderer;
-    this.diagnosticMirror = new CapeSimulation(initialAnchors);
+    this.settings = normalizeCapePhysicsSettings(settings);
+    this.applySettingsUniforms();
+    this.diagnosticMirror = new CapeSimulation(initialAnchors, this.settings);
 
     const initialState = this.createInitialState();
     this.positionBuffer = instancedArray(initialState.slice(), 'vec4');
@@ -180,8 +197,12 @@ export class GpuCapeSimulation {
       'Cape body faces in scratch',
     );
     const positionRockFaces = this.createFaceSweepKernel(
-      this.createRockFaceColorFunction(this.positionBuffer, 'Position'),
+      this.createRockFaceColorFunction(this.positionBuffer, 'Position', false, true),
       'Cape rock faces in position',
+    );
+    const positionSweptRockFaces = this.createFaceSweepKernel(
+      this.createRockFaceColorFunction(this.positionBuffer, 'PositionSwept', true),
+      'Cape swept rock faces in position',
     );
     const scratchRockFaces = this.createFaceSweepKernel(
       this.createRockFaceColorFunction(this.scratchBuffer, 'Scratch'),
@@ -214,9 +235,9 @@ export class GpuCapeSimulation {
           currentBufferIsPosition ? positionBodyFaces : scratchBodyFaces,
         );
       }
-      this.computeSequence.push(
-        currentBufferIsPosition ? positionRockFaces : scratchRockFaces,
-      );
+      this.computeSequence.push(reconciliation === 0
+        ? positionSweptRockFaces
+        : currentBufferIsPosition ? positionRockFaces : scratchRockFaces);
     }
     if (!currentBufferIsPosition) {
       throw new Error('GPU cape projection schedule must finish in the render position buffer.');
@@ -331,6 +352,36 @@ export class GpuCapeSimulation {
     this.submittedSteps = 0;
     this.worldContactsLastStep = 0;
     this.worldContactEventOffset = this.worldContactEvents;
+  }
+
+  public updateSettings(
+    settings: Partial<CapePhysicsSettings>,
+    anchors: CapeAnchors,
+  ): void {
+    const next = normalizeCapePhysicsSettings(settings);
+    const dimensionsChanged = next.length !== this.settings.length
+      || next.width !== this.settings.width;
+    this.settings = next;
+    this.applySettingsUniforms();
+    this.diagnosticMirror.updateSettings(next, anchors);
+    this.settledSeconds = 0;
+    this.sleeping = false;
+    if (!dimensionsChanged) return;
+
+    const state = this.createInitialState();
+    const topology = this.createTopology(state);
+    this.writeStorage(this.positionBuffer.value, state);
+    this.writeStorage(this.scratchBuffer.value, state);
+    this.writeStorage(this.previousBuffer.value, state);
+    this.writeStorage(this.topologyBuffer.value, topology.packed);
+    this.updateAnchorBuffer(anchors);
+    this.submittedSteps = 0;
+    this.worldContactsLastStep = 0;
+    this.worldContactEventOffset = this.worldContactEvents;
+  }
+
+  public getSettings(): CapePhysicsSettings {
+    return { ...this.settings };
   }
 
   public setOpacity(_opacity: number): void {}
@@ -470,7 +521,7 @@ export class GpuCapeSimulation {
         float(IDLE_DRAG_PER_SECOND),
         float(ACTIVE_DRAG_PER_SECOND),
         this.movementBlendUniform,
-      );
+      ).mul(this.dampingUniform);
       velocity.mulAssign(drag.mul(this.deltaTimeUniform).negate().exp());
       previous.assign(vec4(current.xyz, 0));
 
@@ -495,10 +546,14 @@ export class GpuCapeSimulation {
         .mul(0.42);
       const deltaSquared = this.deltaTimeUniform.mul(this.deltaTimeUniform);
       const predicted = currentPosition.add(velocity).toVar('predicted');
-      predicted.y.subAssign(deltaSquared.mul(9.81));
-      predicted.addAssign(normal.mul(pressure.mul(pressure.abs()).mul(0.026).mul(deltaSquared)));
+      predicted.y.subAssign(deltaSquared.mul(9.81).mul(this.weightUniform));
+      predicted.addAssign(normal.mul(
+        pressure.mul(pressure.abs()).mul(0.026).mul(deltaSquared),
+      ));
       predicted.addAssign(
-        this.airflowUniform.mul(float(0.048).add(turbulence.mul(0.011))).mul(deltaSquared),
+        this.airflowUniform
+          .mul(float(0.048).add(turbulence.mul(0.011)))
+          .mul(deltaSquared),
       );
       // Keep a monotonic event count in the otherwise-unused state lane so
       // contacts that begin and end between explicit diagnostic readbacks are
@@ -566,13 +621,18 @@ export class GpuCapeSimulation {
         const neighborPosition = source.element(uint(link.x)).xyz;
         const delta = neighborPosition.sub(position).toVar('constraintDelta');
         const length = delta.length().max(0.000_001).toVar('constraintLength');
-        const weight = link.z.mul(link.w);
+        const baseWeight = link.z.abs().mul(link.w);
         correction.addAssign(
-          delta.mul(length.sub(link.y).div(length)).mul(weight),
+          delta
+            .mul(length.sub(link.y).div(length))
+            .mul(baseWeight)
+            .mul(this.stiffnessUniform),
         );
-        correctionWeight.addAssign(weight);
+        correctionWeight.addAssign(baseWeight);
       });
-      position.addAssign(correction.div(correctionWeight.max(1)));
+      position.addAssign(
+        correction.div(correctionWeight.max(1)),
+      );
 
       const topologyNeighbors = this.topologyBuffer.element(
         index.mul(uint(TOPOLOGY_METADATA_STRIDE)).add(1),
@@ -1168,7 +1228,16 @@ export class GpuCapeSimulation {
         maximumX.assign(center.add(0.08));
       });
       position.x.assign(position.x.clamp(minimumX, maximumX));
-      previousPosition.addAssign(position.sub(contactStart));
+      const contactCorrection = position.sub(contactStart).toVar('contactCorrection');
+      previousPosition.addAssign(contactCorrection);
+      If(contactCorrection.dot(contactCorrection).greaterThan(0.000_000_1), () => {
+        const contactNormal = contactCorrection.normalize().toVar('contactNormal');
+        const inwardMotion = position.sub(previousPosition)
+          .dot(contactNormal)
+          .min(0)
+          .toVar('contactInwardMotion');
+        previousPosition.addAssign(contactNormal.mul(inwardMotion));
+      });
       this.previousBuffer.element(index).assign(vec4(
         previousPosition,
         rockCorrectionUsed.add(select(rockSweepResolved, 1, 0)),
@@ -1196,6 +1265,8 @@ export class GpuCapeSimulation {
   private createRockFaceColorFunction(
     buffer: typeof this.positionBuffer,
     passName: string,
+    allowSweptFaceRecovery = false,
+    includeCaveFaceRecovery = false,
   ) {
     const intersectsSegmentTriangle = Fn<
       readonly [
@@ -1253,6 +1324,225 @@ export class GpuCapeSimulation {
         { name: 'third', type: 'vec3' },
       ],
     });
+    const trianglesIntersect = (
+      clothFirst: THREE.Node<'vec3'>,
+      clothSecond: THREE.Node<'vec3'>,
+      clothThird: THREE.Node<'vec3'>,
+      rockFirst: THREE.Node<'vec3'>,
+      rockSecond: THREE.Node<'vec3'>,
+      rockThird: THREE.Node<'vec3'>,
+    ): THREE.Node<'bool'> => intersectsSegmentTriangle(
+      clothFirst,
+      clothSecond,
+      rockFirst,
+      rockSecond,
+      rockThird,
+    ).or(intersectsSegmentTriangle(
+      clothSecond,
+      clothThird,
+      rockFirst,
+      rockSecond,
+      rockThird,
+    )).or(intersectsSegmentTriangle(
+      clothThird,
+      clothFirst,
+      rockFirst,
+      rockSecond,
+      rockThird,
+    )).or(intersectsSegmentTriangle(
+      rockFirst,
+      rockSecond,
+      clothFirst,
+      clothSecond,
+      clothThird,
+    )).or(intersectsSegmentTriangle(
+      rockSecond,
+      rockThird,
+      clothFirst,
+      clothSecond,
+      clothThird,
+    )).or(intersectsSegmentTriangle(
+      rockThird,
+      rockFirst,
+      clothFirst,
+      clothSecond,
+      clothThird,
+    ));
+    const sphereIntersectsTriangle = Fn<
+      readonly [
+        THREE.Node<'vec4'>,
+        THREE.Node<'vec3'>,
+        THREE.Node<'vec3'>,
+        THREE.Node<'vec3'>,
+      ],
+      THREE.Node<'bool'>
+    >(([sphere, first, second, third]) => {
+      const center = sphere.xyz;
+      const firstEdge = second.sub(first).toVar('sphereFaceFirstEdge');
+      const secondEdge = third.sub(first).toVar('sphereFaceSecondEdge');
+      const fromFirst = center.sub(first).toVar('sphereFaceFromFirst');
+      const firstFirst = firstEdge.dot(fromFirst).toVar('sphereFaceFirstFirst');
+      const firstSecond = secondEdge.dot(fromFirst).toVar('sphereFaceFirstSecond');
+      const fromSecond = center.sub(second).toVar('sphereFaceFromSecond');
+      const secondFirst = firstEdge.dot(fromSecond).toVar('sphereFaceSecondFirst');
+      const secondSecond = secondEdge.dot(fromSecond).toVar('sphereFaceSecondSecond');
+      const fromThird = center.sub(third).toVar('sphereFaceFromThird');
+      const thirdFirst = firstEdge.dot(fromThird).toVar('sphereFaceThirdFirst');
+      const thirdSecond = secondEdge.dot(fromThird).toVar('sphereFaceThirdSecond');
+      const firstRegion = firstFirst.mul(secondSecond)
+        .sub(secondFirst.mul(firstSecond))
+        .toVar('sphereFaceFirstRegion');
+      const secondRegion = thirdFirst.mul(firstSecond)
+        .sub(firstFirst.mul(thirdSecond))
+        .toVar('sphereFaceSecondRegion');
+      const thirdRegion = secondFirst.mul(thirdSecond)
+        .sub(thirdFirst.mul(secondSecond))
+        .toVar('sphereFaceThirdRegion');
+      const closest = first.toVar('sphereFaceClosest');
+      If(firstFirst.lessThanEqual(0).and(firstSecond.lessThanEqual(0)), () => {
+        closest.assign(first);
+      }).ElseIf(secondFirst.greaterThanEqual(0).and(secondSecond.lessThanEqual(secondFirst)), () => {
+        closest.assign(second);
+      }).ElseIf(
+        firstRegion.lessThanEqual(0)
+          .and(firstFirst.greaterThanEqual(0))
+          .and(secondFirst.lessThanEqual(0)),
+        () => {
+          const progress = firstFirst.div(firstFirst.sub(secondFirst).max(0.000_001));
+          closest.assign(first.add(firstEdge.mul(progress)));
+        },
+      ).ElseIf(thirdSecond.greaterThanEqual(0).and(thirdFirst.lessThanEqual(thirdSecond)), () => {
+        closest.assign(third);
+      }).ElseIf(
+        secondRegion.lessThanEqual(0)
+          .and(firstSecond.greaterThanEqual(0))
+          .and(thirdSecond.lessThanEqual(0)),
+        () => {
+          const progress = firstSecond.div(firstSecond.sub(thirdSecond).max(0.000_001));
+          closest.assign(first.add(secondEdge.mul(progress)));
+        },
+      ).ElseIf(
+        thirdRegion.lessThanEqual(0)
+          .and(secondSecond.sub(secondFirst).greaterThanEqual(0))
+          .and(thirdFirst.sub(thirdSecond).greaterThanEqual(0)),
+        () => {
+          const firstDistance = secondSecond.sub(secondFirst);
+          const secondDistance = thirdFirst.sub(thirdSecond);
+          const progress = firstDistance.div(firstDistance.add(secondDistance).max(0.000_001));
+          closest.assign(second.add(third.sub(second).mul(progress)));
+        },
+      ).Else(() => {
+        const denominator = thirdRegion.add(secondRegion).add(firstRegion)
+          .max(0.000_001)
+          .reciprocal();
+        closest.assign(
+          first
+            .add(firstEdge.mul(secondRegion.mul(denominator)))
+            .add(secondEdge.mul(firstRegion.mul(denominator))),
+        );
+      });
+      return closest.sub(center).dot(closest.sub(center))
+        .lessThan(sphere.w.mul(sphere.w));
+    }, 'bool').setLayout({
+      name: `capeSphereFaceTriangle${passName}`,
+      type: 'bool',
+      inputs: [
+        { name: 'sphere', type: 'vec4' },
+        { name: 'first', type: 'vec3' },
+        { name: 'second', type: 'vec3' },
+        { name: 'third', type: 'vec3' },
+      ],
+    });
+    const getCaveWallCorrection = includeCaveFaceRecovery ? Fn<
+      readonly [THREE.Node<'vec3'>],
+      THREE.Node<'float'>
+    >(([sample]) => {
+      const segmentPosition = float(CAVE.startZ).sub(sample.z)
+        .div(CAVE.startZ - CAVE.endZ)
+        .clamp(0, 1)
+        .mul(CAVE.segments)
+        .toVar('caveFaceSegmentPosition');
+      const firstSegment = uint(segmentPosition.floor()).toVar('caveFaceFirstSegment');
+      const secondSegment = select(
+        firstSegment.lessThan(uint(CAVE.segments)),
+        firstSegment.add(1),
+        firstSegment,
+      ).toVar('caveFaceSecondSegment');
+      const blend = segmentPosition.sub(float(firstSegment)).toVar('caveFaceBlend');
+      const sectionSamples = uint(CAVE.radialSegments + 1);
+      const center = sample.z.sub(10).mul(0.055).sin().mul(2.05)
+        .add(sample.z.add(5).mul(0.137).sin().mul(0.38))
+        .toVar('caveFaceCenter');
+      const minimumIntersection = float(1_000_000).toVar('caveFaceMinimumIntersection');
+      const maximumIntersection = float(-1_000_000).toVar('caveFaceMaximumIntersection');
+      const nearestLeft = float(-1_000_000).toVar('caveFaceNearestLeft');
+      const nearestRight = float(1_000_000).toVar('caveFaceNearestRight');
+      Loop(
+        { start: uint(0), end: uint(CAVE.radialSegments), type: 'uint', condition: '<' },
+        ({ i }) => {
+          const firstA = this.caveShellBuffer.element(
+            firstSegment.mul(sectionSamples).add(i),
+          );
+          const firstB = this.caveShellBuffer.element(
+            secondSegment.mul(sectionSamples).add(i),
+          );
+          const secondA = this.caveShellBuffer.element(
+            firstSegment.mul(sectionSamples).add(i).add(1),
+          );
+          const secondB = this.caveShellBuffer.element(
+            secondSegment.mul(sectionSamples).add(i).add(1),
+          );
+          const firstX = mix(firstA.x, firstB.x, blend).toVar('caveFaceFirstX');
+          const firstY = mix(firstA.y, firstB.y, blend).toVar('caveFaceFirstY');
+          const secondX = mix(secondA.x, secondB.x, blend).toVar('caveFaceSecondX');
+          const secondY = mix(secondA.y, secondB.y, blend).toVar('caveFaceSecondY');
+          If(firstX.lessThanEqual(center), () => {
+            nearestLeft.assign(nearestLeft.max(firstX));
+          });
+          If(firstX.greaterThanEqual(center), () => {
+            nearestRight.assign(nearestRight.min(firstX));
+          });
+          const edgeHeight = secondY.sub(firstY);
+          If(
+            sample.y.greaterThanEqual(firstY.min(secondY))
+              .and(sample.y.lessThanEqual(firstY.max(secondY)))
+              .and(edgeHeight.abs().greaterThan(0.000_001)),
+            () => {
+              const edgeBlend = sample.y.sub(firstY).div(edgeHeight);
+              const intersection = mix(firstX, secondX, edgeBlend);
+              minimumIntersection.assign(minimumIntersection.min(intersection));
+              maximumIntersection.assign(maximumIntersection.max(intersection));
+            },
+          );
+        },
+      );
+      const minimumX = select(
+        minimumIntersection.lessThan(500_000),
+        minimumIntersection,
+        nearestLeft,
+      ).add(CLOTH_WORLD_CLEARANCE).toVar('caveFaceMinimumX');
+      const maximumX = select(
+        maximumIntersection.greaterThan(-500_000),
+        maximumIntersection,
+        nearestRight,
+      ).sub(CLOTH_WORLD_CLEARANCE).toVar('caveFaceMaximumX');
+      If(minimumX.greaterThan(maximumX), () => {
+        const midpoint = minimumX.add(maximumX).mul(0.5);
+        minimumX.assign(midpoint.sub(0.08));
+        maximumX.assign(midpoint.add(0.08));
+      });
+      const correction = float(0).toVar('caveFaceSampleCorrection');
+      If(sample.x.lessThan(minimumX), () => {
+        correction.assign(minimumX.sub(sample.x));
+      }).ElseIf(sample.x.greaterThan(maximumX), () => {
+        correction.assign(maximumX.sub(sample.x));
+      });
+      return correction;
+    }, 'float').setLayout({
+      name: `capeCaveFaceSample${passName}`,
+      type: 'float',
+      inputs: [{ name: 'sample', type: 'vec3' }],
+    }) : null;
 
     return Fn<readonly [THREE.Node<'uint'>], THREE.Node<'float'>>(([color]) => {
       const orientation = color.mod(uint(2));
@@ -1285,15 +1575,103 @@ export class GpuCapeSimulation {
         const previousFirst = this.previousBuffer.element(firstIndex).xyz;
         const previousSecond = this.previousBuffer.element(secondIndex).xyz;
         const previousThird = this.previousBuffer.element(thirdIndex).xyz;
+        const sweptFirstQuarter = mix(previousFirst, first, 0.25);
+        const sweptSecondQuarter = mix(previousSecond, second, 0.25);
+        const sweptThirdQuarter = mix(previousThird, third, 0.25);
+        const sweptFirstHalf = mix(previousFirst, first, 0.5);
+        const sweptSecondHalf = mix(previousSecond, second, 0.5);
+        const sweptThirdHalf = mix(previousThird, third, 0.5);
+        const sweptFirstThreeQuarter = mix(previousFirst, first, 0.75);
+        const sweptSecondThreeQuarter = mix(previousSecond, second, 0.75);
+        const sweptThirdThreeQuarter = mix(previousThird, third, 0.75);
         const triangleMinimum = first.min(second).min(third)
           .sub(CLOTH_ROCK_CLEARANCE);
         const triangleMaximum = first.max(second).max(third)
           .add(CLOTH_ROCK_CLEARANCE);
         const previousTriangleMinimum = previousFirst.min(previousSecond).min(previousThird);
         const previousTriangleMaximum = previousFirst.max(previousSecond).max(previousThird);
+        const sweptTriangleMinimum = triangleMinimum.min(
+          previousTriangleMinimum.sub(CLOTH_ROCK_CLEARANCE),
+        );
+        const sweptTriangleMaximum = triangleMaximum.max(
+          previousTriangleMaximum.add(CLOTH_ROCK_CLEARANCE),
+        );
+        const faceTriangleMinimum = allowSweptFaceRecovery
+          ? sweptTriangleMinimum
+          : triangleMinimum;
+        const faceTriangleMaximum = allowSweptFaceRecovery
+          ? sweptTriangleMaximum
+          : triangleMaximum;
         const faceCorrection = vec3(0).toVar('rockFaceCorrection');
         const hadFaceContact = bool(false).toVar('rockFaceHadContact');
         const previousTriangleSafe = bool(true).toVar('rockFacePreviousTriangleSafe');
+        Loop(
+          {
+            start: uint(0),
+            end: uint(this.worldSphereCountUniform),
+            type: 'uint',
+            condition: '<',
+          },
+          ({ i: sphereIndex }) => {
+            const sphere = this.worldSphereBuffer.element(sphereIndex);
+            const overlapsSphere = faceTriangleMaximum.x
+              .greaterThanEqual(sphere.x.sub(sphere.w))
+              .and(faceTriangleMinimum.x.lessThanEqual(sphere.x.add(sphere.w)))
+              .and(faceTriangleMaximum.y.greaterThanEqual(sphere.y.sub(sphere.w)))
+              .and(faceTriangleMinimum.y.lessThanEqual(sphere.y.add(sphere.w)))
+              .and(faceTriangleMaximum.z.greaterThanEqual(sphere.z.sub(sphere.w)))
+              .and(faceTriangleMinimum.z.lessThanEqual(sphere.z.add(sphere.w)));
+            If(overlapsSphere, () => {
+              const previousIntersects = sphereIntersectsTriangle(
+                sphere,
+                previousFirst,
+                previousSecond,
+                previousThird,
+              );
+              If(previousIntersects, () => {
+                previousTriangleSafe.assign(bool(false));
+              });
+              const currentIntersects = sphereIntersectsTriangle(
+                sphere,
+                first,
+                second,
+                third,
+              );
+              const intersects = allowSweptFaceRecovery
+                ? currentIntersects.or(sphereIntersectsTriangle(
+                  sphere,
+                  sweptFirstQuarter,
+                  sweptSecondQuarter,
+                  sweptThirdQuarter,
+                )).or(sphereIntersectsTriangle(
+                  sphere,
+                  sweptFirstHalf,
+                  sweptSecondHalf,
+                  sweptThirdHalf,
+                )).or(sphereIntersectsTriangle(
+                  sphere,
+                  sweptFirstThreeQuarter,
+                  sweptSecondThreeQuarter,
+                  sweptThirdThreeQuarter,
+                ))
+                : currentIntersects;
+              If(intersects, () => {
+                const centroid = first.add(second).add(third).div(3);
+                const resolvedNormal = centroid.sub(sphere.xyz)
+                  .toVar('sphereFaceResolvedNormal');
+                If(resolvedNormal.dot(resolvedNormal).greaterThan(0.000_001), () => {
+                  resolvedNormal.assign(resolvedNormal.normalize());
+                }).Else(() => {
+                  resolvedNormal.assign(vec3(1, 0, 0));
+                });
+                faceCorrection.addAssign(
+                  resolvedNormal.mul(CLOTH_WORLD_CLEARANCE * 1.5),
+                );
+                hadFaceContact.assign(bool(true));
+              });
+            });
+          },
+        );
         Loop(
           { start: uint(0), end: uint(this.rockCountUniform), type: 'uint', condition: '<' },
           ({ i: rockIndex }) => {
@@ -1301,12 +1679,12 @@ export class GpuCapeSimulation {
             const rockCenterLimit = this.rockBuffer.element(rockBase);
             const rockMinimum = this.rockBuffer.element(rockBase.add(1));
             const rockMaximum = this.rockBuffer.element(rockBase.add(2));
-            const overlapsRock = triangleMaximum.x.greaterThanEqual(rockMinimum.x)
-              .and(triangleMinimum.x.lessThanEqual(rockMaximum.x))
-              .and(triangleMaximum.y.greaterThanEqual(rockMinimum.y))
-              .and(triangleMinimum.y.lessThanEqual(rockMaximum.y))
-              .and(triangleMaximum.z.greaterThanEqual(rockMinimum.z))
-              .and(triangleMinimum.z.lessThanEqual(rockMaximum.z));
+            const overlapsRock = faceTriangleMaximum.x.greaterThanEqual(rockMinimum.x)
+              .and(faceTriangleMinimum.x.lessThanEqual(rockMaximum.x))
+              .and(faceTriangleMaximum.y.greaterThanEqual(rockMinimum.y))
+              .and(faceTriangleMinimum.y.lessThanEqual(rockMaximum.y))
+              .and(faceTriangleMaximum.z.greaterThanEqual(rockMinimum.z))
+              .and(faceTriangleMinimum.z.lessThanEqual(rockMaximum.z));
             If(overlapsRock, () => {
               const previousOverlapsRock = previousTriangleMaximum.x
                 .greaterThanEqual(rockMinimum.x)
@@ -1339,51 +1717,46 @@ export class GpuCapeSimulation {
                   const rockPlane = this.rockBuffer.element(rockFaceBase.add(3));
                   const rockFaceMinimum = rockFirst.min(rockSecond).min(rockThird);
                   const rockFaceMaximum = rockFirst.max(rockSecond).max(rockThird);
-                  const overlapsRockFace = triangleMaximum.x
+                  const overlapsRockFace = faceTriangleMaximum.x
                     .greaterThanEqual(rockFaceMinimum.x)
-                    .and(triangleMinimum.x.lessThanEqual(rockFaceMaximum.x))
-                    .and(triangleMaximum.y.greaterThanEqual(rockFaceMinimum.y))
-                    .and(triangleMinimum.y.lessThanEqual(rockFaceMaximum.y))
-                    .and(triangleMaximum.z.greaterThanEqual(rockFaceMinimum.z))
-                    .and(triangleMinimum.z.lessThanEqual(rockFaceMaximum.z));
+                    .and(faceTriangleMinimum.x.lessThanEqual(rockFaceMaximum.x))
+                    .and(faceTriangleMaximum.y.greaterThanEqual(rockFaceMinimum.y))
+                    .and(faceTriangleMinimum.y.lessThanEqual(rockFaceMaximum.y))
+                    .and(faceTriangleMaximum.z.greaterThanEqual(rockFaceMinimum.z))
+                    .and(faceTriangleMinimum.z.lessThanEqual(rockFaceMaximum.z));
                   If(overlapsRockFace, () => {
-                    const intersects = intersectsSegmentTriangle(
+                    const currentIntersects = trianglesIntersect(
                       first,
-                      second,
-                      rockFirst,
-                      rockSecond,
-                      rockThird,
-                    ).or(intersectsSegmentTriangle(
                       second,
                       third,
                       rockFirst,
                       rockSecond,
                       rockThird,
-                    )).or(intersectsSegmentTriangle(
-                      third,
-                      first,
-                      rockFirst,
-                      rockSecond,
-                      rockThird,
-                    )).or(intersectsSegmentTriangle(
-                      rockFirst,
-                      rockSecond,
-                      first,
-                      second,
-                      third,
-                    )).or(intersectsSegmentTriangle(
-                      rockSecond,
-                      rockThird,
-                      first,
-                      second,
-                      third,
-                    )).or(intersectsSegmentTriangle(
-                      rockThird,
-                      rockFirst,
-                      first,
-                      second,
-                      third,
-                    ));
+                    );
+                    const intersects = allowSweptFaceRecovery
+                      ? currentIntersects.or(trianglesIntersect(
+                        sweptFirstQuarter,
+                        sweptSecondQuarter,
+                        sweptThirdQuarter,
+                        rockFirst,
+                        rockSecond,
+                        rockThird,
+                      )).or(trianglesIntersect(
+                        sweptFirstHalf,
+                        sweptSecondHalf,
+                        sweptThirdHalf,
+                        rockFirst,
+                        rockSecond,
+                        rockThird,
+                      )).or(trianglesIntersect(
+                        sweptFirstThreeQuarter,
+                        sweptSecondThreeQuarter,
+                        sweptThirdThreeQuarter,
+                        rockFirst,
+                        rockSecond,
+                        rockThird,
+                      ))
+                      : currentIntersects;
                     If(intersects, () => {
                       triangleIntersects.assign(bool(true));
                     });
@@ -1406,43 +1779,14 @@ export class GpuCapeSimulation {
                       .and(previousTriangleMaximum.z.greaterThanEqual(rockFaceMinimum.z))
                       .and(previousTriangleMinimum.z.lessThanEqual(rockFaceMaximum.z));
                     If(previousOverlapsRockFace, () => {
-                      const previousIntersects = intersectsSegmentTriangle(
+                      const previousIntersects = trianglesIntersect(
                         previousFirst,
-                        previousSecond,
-                        rockFirst,
-                        rockSecond,
-                        rockThird,
-                      ).or(intersectsSegmentTriangle(
                         previousSecond,
                         previousThird,
                         rockFirst,
                         rockSecond,
                         rockThird,
-                      )).or(intersectsSegmentTriangle(
-                        previousThird,
-                        previousFirst,
-                        rockFirst,
-                        rockSecond,
-                        rockThird,
-                      )).or(intersectsSegmentTriangle(
-                        rockFirst,
-                        rockSecond,
-                        previousFirst,
-                        previousSecond,
-                        previousThird,
-                      )).or(intersectsSegmentTriangle(
-                        rockSecond,
-                        rockThird,
-                        previousFirst,
-                        previousSecond,
-                        previousThird,
-                      )).or(intersectsSegmentTriangle(
-                        rockThird,
-                        rockFirst,
-                        previousFirst,
-                        previousSecond,
-                        previousThird,
-                      ));
+                      );
                       If(previousIntersects, () => {
                         previousTriangleIntersects.assign(bool(true));
                       });
@@ -1488,6 +1832,26 @@ export class GpuCapeSimulation {
             });
           },
         );
+        if (getCaveWallCorrection) {
+          const caveFaceCorrection = getCaveWallCorrection(
+            first.add(second).add(third).div(3),
+          ).toVar('caveFaceCorrection');
+          const keepLargerCaveCorrection = (candidate: THREE.Node<'float'>): void => {
+            If(candidate.abs().greaterThan(caveFaceCorrection.abs()), () => {
+              caveFaceCorrection.assign(candidate);
+            });
+          };
+          keepLargerCaveCorrection(getCaveWallCorrection(first.add(second).mul(0.5)));
+          keepLargerCaveCorrection(getCaveWallCorrection(first.add(third).mul(0.5)));
+          keepLargerCaveCorrection(getCaveWallCorrection(second.add(third).mul(0.5)));
+          If(caveFaceCorrection.abs().greaterThan(0.000_001), () => {
+            faceCorrection.x.addAssign(caveFaceCorrection.clamp(-0.015, 0.015));
+            hadFaceContact.assign(bool(true));
+            // A previous cloth face can pierce the same curved wall, so cave
+            // recovery must use the sampled separating correction, not rollback.
+            previousTriangleSafe.assign(bool(false));
+          });
+        }
         const correctionLength = faceCorrection.length().toVar('rockFaceCorrectionLength');
         If(correctionLength.greaterThan(0.015), () => {
           faceCorrection.mulAssign(float(0.015).div(correctionLength));
@@ -1512,13 +1876,22 @@ export class GpuCapeSimulation {
           const applyCorrection = (particleIndex: THREE.Node<'uint'>): void => {
             If(particleIndex.greaterThanEqual(uint(CAPE.columns)), () => {
               const state = buffer.element(particleIndex);
+              const corrected = state.xyz.add(faceCorrection).toVar('correctedRockFace');
               buffer.element(particleIndex).assign(vec4(
-                state.xyz.add(faceCorrection),
+                corrected,
                 state.w.add(1),
               ));
               const previousState = this.previousBuffer.element(particleIndex);
+              const correctedPrevious = previousState.xyz
+                .add(faceCorrection)
+                .toVar('correctedPreviousRockFace');
+              const faceNormal = faceCorrection.normalize().toVar('rockFaceMotionNormal');
+              const inwardMotion = corrected.sub(correctedPrevious)
+                .dot(faceNormal)
+                .min(0);
+              correctedPrevious.addAssign(faceNormal.mul(inwardMotion));
               this.previousBuffer.element(particleIndex).assign(vec4(
-                previousState.xyz.add(faceCorrection),
+                correctedPrevious,
                 previousState.w,
               ));
             });
@@ -1734,8 +2107,15 @@ export class GpuCapeSimulation {
         ): void => {
           buffer.element(particleIndex).assign(vec4(corrected, state.w));
           const previousState = this.previousBuffer.element(particleIndex);
+          const correctedPrevious = previousState.xyz
+            .add(corrected.sub(start))
+            .toVar('correctedPreviousBodyFace');
+          const inwardMotion = corrected.sub(correctedPrevious)
+            .dot(this.backUniform)
+            .min(0);
+          correctedPrevious.addAssign(this.backUniform.mul(inwardMotion));
           this.previousBuffer.element(particleIndex).assign(vec4(
-            previousState.xyz.add(corrected.sub(start)),
+            correctedPrevious,
             previousState.w,
           ));
         };
@@ -1790,6 +2170,7 @@ export class GpuCapeSimulation {
       secondColumn: number,
       secondRow: number,
       stiffness: number,
+      structural: boolean,
     ): void => {
       const first = firstRow * CAPE.columns + firstColumn;
       const second = secondRow * CAPE.columns + secondColumn;
@@ -1798,20 +2179,21 @@ export class GpuCapeSimulation {
         second,
         restLength: readPosition(first).distanceTo(readPosition(second)),
         stiffness,
+        structural,
       });
     };
     for (let row = 0; row < CAPE.rows; row += 1) {
       for (let column = 0; column < CAPE.columns; column += 1) {
-        if (column + 1 < CAPE.columns) addConstraint(column, row, column + 1, row, 0.93);
-        if (row + 1 < CAPE.rows) addConstraint(column, row, column, row + 1, 0.96);
+        if (column + 1 < CAPE.columns) addConstraint(column, row, column + 1, row, 0.93, true);
+        if (row + 1 < CAPE.rows) addConstraint(column, row, column, row + 1, 0.96, true);
         if (column + 1 < CAPE.columns && row + 1 < CAPE.rows) {
-          addConstraint(column, row, column + 1, row + 1, 0.8);
-          addConstraint(column + 1, row, column, row + 1, 0.8);
+          addConstraint(column, row, column + 1, row + 1, 0.8, false);
+          addConstraint(column + 1, row, column, row + 1, 0.8, false);
         }
-        if (column + 2 < CAPE.columns) addConstraint(column, row, column + 2, row, 0.58);
-        if (row + 2 < CAPE.rows) addConstraint(column, row, column, row + 2, 0.82);
-        if (column + 3 < CAPE.columns) addConstraint(column, row, column + 3, row, 0.16);
-        if (row + 3 < CAPE.rows) addConstraint(column, row, column, row + 3, 0.38);
+        if (column + 2 < CAPE.columns) addConstraint(column, row, column + 2, row, 0.58, false);
+        if (row + 2 < CAPE.rows) addConstraint(column, row, column, row + 2, 0.82, false);
+        if (column + 3 < CAPE.columns) addConstraint(column, row, column + 3, row, 0.16, false);
+        if (row + 3 < CAPE.rows) addConstraint(column, row, column, row + 3, 0.38, false);
       }
     }
 
@@ -1825,12 +2207,14 @@ export class GpuCapeSimulation {
         restLength: constraint.restLength,
         stiffness: constraint.stiffness,
         massShare: totalMass > 0 ? firstMass / totalMass : 0,
+        structural: constraint.structural,
       });
       adjacency[constraint.second]?.push({
         neighbor: constraint.first,
         restLength: constraint.restLength,
         stiffness: constraint.stiffness,
         massShare: totalMass > 0 ? secondMass / totalMass : 0,
+        structural: constraint.structural,
       });
     }
     const normalNeighbors = new Uint32Array(PARTICLE_COUNT * 4);
@@ -1861,7 +2245,7 @@ export class GpuCapeSimulation {
         const linkOffset = (linkBase + pointer) * 4;
         packed[linkOffset] = link.neighbor;
         packed[linkOffset + 1] = link.restLength;
-        packed[linkOffset + 2] = link.stiffness;
+        packed[linkOffset + 2] = link.structural ? -link.stiffness : link.stiffness;
         packed[linkOffset + 3] = link.massShare;
         pointer += 1;
       }
@@ -1890,6 +2274,12 @@ export class GpuCapeSimulation {
   private writeStorage(attribute: THREE.BufferAttribute, state: Float32Array): void {
     (attribute.array as Float32Array).set(state);
     attribute.needsUpdate = true;
+  }
+
+  private applySettingsUniforms(): void {
+    this.stiffnessUniform.value = this.settings.stiffness;
+    this.dampingUniform.value = this.settings.damping;
+    this.weightUniform.value = this.settings.weight;
   }
 
   private updateBodyBuffers(

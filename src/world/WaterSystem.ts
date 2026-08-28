@@ -87,6 +87,7 @@ const waterFragmentShader = /* glsl */ `
   uniform vec3 uDeepColor;
   uniform vec3 uShallowColor;
   uniform vec3 uFogColor;
+  uniform float uReflectionStrength;
   varying vec3 vWorldPosition;
   varying vec2 vUv;
   varying float vWave;
@@ -152,9 +153,13 @@ const waterFragmentShader = /* glsl */ `
     float depthTint = smoothstep(0.2, 0.92, edgeDistance);
     vec3 waterBody = mix(uDeepColor, uShallowColor, depthTint * 0.24);
     vec3 caveReflection = mix(vec3(0.012, 0.048, 0.072), vec3(0.075, 0.22, 0.26), normal.y * 0.5 + 0.5);
-    vec3 color = mix(waterBody, caveReflection, clamp(0.025 + fresnel * 0.58, 0.0, 0.68));
-    color += vec3(1.0, 0.38, 0.075) * specular * max(dot(normal, torchDirection), 0.0) * 1.45;
-    color += vec3(0.15, 0.9, 0.76) * mineralGlint * fresnel * 0.16;
+    vec3 color = mix(
+      waterBody,
+      caveReflection,
+      clamp(0.025 + fresnel * 0.58, 0.0, 0.68) * uReflectionStrength
+    );
+    color += vec3(1.0, 0.38, 0.075) * specular * max(dot(normal, torchDirection), 0.0) * 1.45 * uReflectionStrength;
+    color += vec3(0.15, 0.9, 0.76) * mineralGlint * fresnel * 0.16 * uReflectionStrength;
     color += abs(vWave) * vec3(0.58, 0.92, 0.9) * 0.9;
     float wetRim = smoothstep(0.73, 0.93, edgeDistance) * (1.0 - smoothstep(0.93, 1.0, edgeDistance));
     color += vec3(0.08, 0.2, 0.2) * wetRim * 0.16;
@@ -200,6 +205,7 @@ export class WaterSystem {
         uDeepColor: { value: new THREE.Color(0x031820) },
         uShallowColor: { value: new THREE.Color(0x185652) },
         uFogColor: { value: new THREE.Color(0x071012) },
+        uReflectionStrength: { value: 1 },
       },
       vertexShader: waterVertexShader,
       fragmentShader: waterFragmentShader,
@@ -272,6 +278,10 @@ export class WaterSystem {
     } else {
       this.strideSinceStep = Math.min(this.strideSinceStep, 0.3);
     }
+  }
+
+  public setReflectionsEnabled(enabled: boolean): void {
+    this.material.uniforms.uReflectionStrength!.value = enabled ? 1 : 0;
   }
 
   public addRipple(position: THREE.Vector3, time: number, strength: number): void {

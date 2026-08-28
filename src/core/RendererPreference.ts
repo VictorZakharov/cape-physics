@@ -1,14 +1,9 @@
 export type RendererPreference = 'webgpu' | 'webgl';
 
 export const RENDERER_QUERY_PARAMETER = 'renderer';
-// Reset preferences written while WebGPU was the automatic default. New explicit
-// selections remain persistent under this versioned key.
-export const RENDERER_STORAGE_KEY = 'cape-physics.renderer.v2';
 
 export interface RendererPreferenceEnvironment {
   readonly search: string;
-  readonly storedPreference: string | null;
-  readonly webGPUAvailable: boolean;
 }
 
 export function parseRendererPreference(value: string | null): RendererPreference | null {
@@ -21,15 +16,18 @@ export function resolveRendererPreference(
   const queryPreference = parseRendererPreference(
     new URLSearchParams(environment.search).get(RENDERER_QUERY_PARAMETER),
   );
-  const storedPreference = parseRendererPreference(environment.storedPreference);
-  const requested = queryPreference ?? storedPreference;
-
-  if (requested !== null) return requested;
+  if (queryPreference !== null) return queryPreference;
 
   // A supported API is not evidence that a browser/driver combination will
   // outperform the mature path. Keep WebGPU opt-in until real-device results
   // show a repeatable end-to-end win.
   return 'webgl';
+}
+
+export function rendererDefaultUrl(href: string): string {
+  const url = new URL(href);
+  url.searchParams.delete(RENDERER_QUERY_PARAMETER);
+  return url.href;
 }
 
 export function rendererPreferenceUrl(

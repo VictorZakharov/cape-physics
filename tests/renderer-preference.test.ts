@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   parseRendererPreference,
+  rendererDefaultUrl,
   rendererPreferenceUrl,
   resolveRendererPreference,
 } from '../src/core/RendererPreference';
@@ -9,34 +10,24 @@ describe('renderer preference', () => {
   test('defaults to WebGL even when WebGPU is available', () => {
     expect(resolveRendererPreference({
       search: '',
-      storedPreference: null,
-      webGPUAvailable: true,
-    })).toBe('webgl');
-    expect(resolveRendererPreference({
-      search: '',
-      storedPreference: null,
-      webGPUAvailable: false,
     })).toBe('webgl');
   });
 
-  test('remembers a renderer explicitly selected under the current preference version', () => {
+  test('uses an explicit renderer only for its one-time URL handoff', () => {
     expect(resolveRendererPreference({
-      search: '',
-      storedPreference: 'webgpu',
-      webGPUAvailable: true,
+      search: '?renderer=webgpu',
     })).toBe('webgpu');
+    expect(rendererDefaultUrl(
+      'https://example.test/demo?harness=1&renderer=webgpu#view',
+    )).toBe('https://example.test/demo?harness=1#view');
   });
 
-  test('the query string overrides storage and preserves an explicit fallback request', () => {
+  test('the query string preserves an explicit fallback request', () => {
     expect(resolveRendererPreference({
       search: '?renderer=webgl',
-      storedPreference: 'webgpu',
-      webGPUAvailable: true,
     })).toBe('webgl');
     expect(resolveRendererPreference({
       search: '?renderer=webgpu',
-      storedPreference: 'webgl',
-      webGPUAvailable: false,
     })).toBe('webgpu');
   });
 

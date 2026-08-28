@@ -7,12 +7,13 @@ import {
 import { TriangleContactQuery } from './TriangleContactQuery';
 
 const DISTANCE_EPSILON = 0.000_001;
-const VERTEX_CONTACT_EPSILON = 0.0005;
 const FACE_INTERSECTION_RELEASE_CLEARANCES = 1.5;
-// Face contacts are a last-resort anti-piercing constraint. Particle sweeps
-// handle ordinary surface contact, so a face-only correction must remain a
-// millimetre-scale nudge instead of accumulating into a cloth impulse.
-const MAXIMUM_FACE_CORRECTION_CLEARANCES = FACE_INTERSECTION_RELEASE_CLEARANCES;
+const SWEPT_FACE_INTERVALS = 4;
+// Face contacts are a last-resort anti-piercing constraint. A cloth edge can
+// span a sharp rock corner by more than one clearance, so one pass may need a
+// tightly bounded centimetre-scale translation. Position and previous are
+// moved together below, preventing that separation from becoming velocity.
+const MAXIMUM_FACE_CORRECTION_CLEARANCES = 10;
 
 export interface ClothRockSurfaceContact {
   readonly distance: number;
@@ -49,9 +50,12 @@ export class ClothRockCollision {
   private readonly referenceDirection = new THREE.Vector3();
   private readonly candidateContactNormal = new THREE.Vector3();
   private readonly intersectionNormal = new THREE.Vector3();
+  private intersectionSeparation = 0;
+  private readonly motion = new THREE.Vector3();
   private readonly rockQuery = new RockColliderQuery();
   private readonly triangleQuery = new TriangleContactQuery();
   private readonly faceCorrectionUsed: Float32Array;
+  private sweptFaceRecoveryPending = true;
 
   public constructor(
     private readonly positions: readonly THREE.Vector3[],
@@ -60,13 +64,12 @@ export class ClothRockCollision {
     private readonly columns: number,
     private readonly rows: number,
     private readonly clearance: number,
-    private readonly correctionUsed: Float32Array,
-    private readonly maximumCorrectionPerStep: number,
   ) {
     this.faceCorrectionUsed = new Float32Array(inverseMass.length);
   }
 
   public beginStep(): void {
+    this.sweptFaceRecoveryPending = true;
     this.beginPass();
   }
 
@@ -78,13 +81,21 @@ export class ClothRockCollision {
     colliders: readonly WorldRockCollider[],
     contactColliders?: WorldRockCollider[],
   ): number {
+    const allowSweptFaceRecovery = this.sweptFaceRecoveryPending;
+    this.sweptFaceRecoveryPending = false;
     this.updateBounds();
     let contacts = 0;
     for (const collider of colliders) {
       if (!this.intersectsColliderBounds(collider)) continue;
       let colliderContacts = 0;
       this.forEachTriangle((first, second, third) => {
-        colliderContacts += this.solveTriangle(first, second, third, collider);
+        colliderContacts += this.solveTriangle(
+          first,
+          second,
+          third,
+          collider,
+          allowSweptFaceRecovery,
+        );
       });
       contacts += colliderContacts;
       if (
@@ -201,6 +212,7 @@ export class ClothRockCollision {
     secondIndex: number,
     thirdIndex: number,
     collider: WorldRockCollider,
+    allowSweptFaceRecovery: boolean,
   ): number {
     const penetration = this.findTrianglePenetration(
       firstIndex,
@@ -209,13 +221,25 @@ export class ClothRockCollision {
       collider,
       true,
     );
-    if (penetration <= 0) return 0;
+    if (penetration <= 0) {
+      if (
+        allowSweptFaceRecovery
+        && this.sweptTriangleIntersectsCollider(
+          firstIndex,
+          secondIndex,
+          thirdIndex,
+          collider,
+        )
+        && this.restorePreviousTriangle(
+          firstIndex,
+          secondIndex,
+          thirdIndex,
+          collider,
+        )
+      ) return 1;
+      return 0;
+    }
     if (this.clothTriangle.getBarycoord(this.clothPoint, this.barycentric) === null) return 0;
-    // This solver is deliberately complementary to particle collision. If a
-    // triangle vertex already touches the rock, applying a second full
-    // triangle projection duplicates the response across adjacent faces and
-    // can turn millimetres of clearance into a large cloth impulse.
-    if (this.hasVertexContact(firstIndex, secondIndex, thirdIndex, collider)) return 0;
     // A face-only crossing was created during this physics step. Returning
     // its three vertices to their last non-intersecting state is continuous,
     // energy-dissipating contact: it cannot choose a new facet normal each
@@ -226,14 +250,6 @@ export class ClothRockCollision {
       thirdIndex,
       collider,
     )) return 1;
-
-    const firstWeight = this.inverseMass[firstIndex] ?? 0;
-    const secondWeight = this.inverseMass[secondIndex] ?? 0;
-    const thirdWeight = this.inverseMass[thirdIndex] ?? 0;
-    const denominator = firstWeight * this.barycentric.x * this.barycentric.x
-      + secondWeight * this.barycentric.y * this.barycentric.y
-      + thirdWeight * this.barycentric.z * this.barycentric.z;
-    if (denominator < DISTANCE_EPSILON) return 0;
 
     if (
       isBelowWalkableRockShoulder(collider, this.clothPoint.y)
@@ -251,10 +267,13 @@ export class ClothRockCollision {
       else this.normal.normalize();
     }
 
-    const lambda = penetration / denominator;
-    this.applyCorrection(firstIndex, firstWeight * this.barycentric.x * lambda);
-    this.applyCorrection(secondIndex, secondWeight * this.barycentric.y * lambda);
-    this.applyCorrection(thirdIndex, thirdWeight * this.barycentric.z * lambda);
+    // Move the intersected face coherently. Barycentric-only correction can
+    // lift the nearest vertex while leaving the opposite edge threaded
+    // through a sharp facet, producing the persistent triangular holes seen
+    // when a long cape rests on a rock.
+    for (const index of [firstIndex, secondIndex, thirdIndex]) {
+      if ((this.inverseMass[index] ?? 0) > 0) this.applyCorrection(index, penetration);
+    }
     return 1;
   }
 
@@ -271,34 +290,7 @@ export class ClothRockCollision {
       collider,
       false,
     );
-    if (
-      penetration <= 0
-      || this.hasVertexContact(firstIndex, secondIndex, thirdIndex, collider)
-    ) return 0;
-    return penetration;
-  }
-
-  private hasVertexContact(
-    firstIndex: number,
-    secondIndex: number,
-    thirdIndex: number,
-    collider: WorldRockCollider,
-  ): boolean {
-    return this.isVertexContact(firstIndex, collider)
-      || this.isVertexContact(secondIndex, collider)
-      || this.isVertexContact(thirdIndex, collider);
-  }
-
-  private isVertexContact(index: number, collider: WorldRockCollider): boolean {
-    const position = this.positions[index];
-    return Boolean(
-      position
-      && this.rockQuery.getSignedDistance(
-        collider,
-        position,
-        this.vertexNormal,
-      ) <= this.clearance + VERTEX_CONTACT_EPSILON,
-    );
+    return Math.max(0, penetration);
   }
 
   private restorePreviousTriangle(
@@ -330,6 +322,48 @@ export class ClothRockCollision {
       restored = true;
     }
     return restored;
+  }
+
+  private sweptTriangleIntersectsCollider(
+    firstIndex: number,
+    secondIndex: number,
+    thirdIndex: number,
+    collider: WorldRockCollider,
+  ): boolean {
+    const first = this.positions[firstIndex];
+    const second = this.positions[secondIndex];
+    const third = this.positions[thirdIndex];
+    const previousFirst = this.previous[firstIndex];
+    const previousSecond = this.previous[secondIndex];
+    const previousThird = this.previous[thirdIndex];
+    if (
+      !first
+      || !second
+      || !third
+      || !previousFirst
+      || !previousSecond
+      || !previousThird
+    ) return false;
+
+    this.previousBounds.makeEmpty();
+    this.previousBounds.expandByPoint(first);
+    this.previousBounds.expandByPoint(second);
+    this.previousBounds.expandByPoint(third);
+    this.previousBounds.expandByPoint(previousFirst);
+    this.previousBounds.expandByPoint(previousSecond);
+    this.previousBounds.expandByPoint(previousThird);
+    if (!this.previousBounds.intersectsBox(collider.bounds)) return false;
+
+    for (let interval = 1; interval < SWEPT_FACE_INTERVALS; interval += 1) {
+      const progress = interval / SWEPT_FACE_INTERVALS;
+      this.previousTriangle.set(
+        this.candidateCloth.lerpVectors(previousFirst, first, progress),
+        this.candidateRock.lerpVectors(previousSecond, second, progress),
+        this.motion.lerpVectors(previousThird, third, progress),
+      );
+      if (this.triangleIntersectsCollider(this.previousTriangle, collider)) return true;
+    }
+    return false;
   }
 
   private triangleIntersectsCollider(
@@ -396,6 +430,7 @@ export class ClothRockCollision {
 
     let intersectionKind = 0;
     let bestIntersectionScore = Number.NEGATIVE_INFINITY;
+    let bestIntersectionSeparation = Number.POSITIVE_INFINITY;
     for (const face of collider.faces) {
       if (!this.clothBounds.intersectsBox(face.bounds)) continue;
       const candidateKind = this.triangleQuery.intersectAtPoint(
@@ -408,13 +443,31 @@ export class ClothRockCollision {
       );
       if (candidateKind > 0) {
         const score = this.candidateContactNormal.dot(this.referenceDirection);
+        const separation = candidateKind === 2
+          ? this.clearance - Math.min(
+              face.normal.dot(first) - face.planeConstant,
+              face.normal.dot(second) - face.planeConstant,
+              face.normal.dot(third) - face.planeConstant,
+            )
+          : this.clearance * FACE_INTERSECTION_RELEASE_CLEARANCES;
         if (
           candidateKind > intersectionKind
-          || (candidateKind === intersectionKind && score > bestIntersectionScore)
+          || (
+            candidateKind === intersectionKind
+            && (
+              separation < bestIntersectionSeparation
+              || (
+                Math.abs(separation - bestIntersectionSeparation) < DISTANCE_EPSILON
+                && score > bestIntersectionScore
+              )
+            )
+          )
         ) {
           intersectionKind = candidateKind;
           bestIntersectionScore = score;
+          bestIntersectionSeparation = separation;
           this.intersectionNormal.copy(this.candidateContactNormal);
+          this.intersectionSeparation = separation;
           this.clothPoint.copy(this.candidateCloth);
         }
       }
@@ -422,9 +475,12 @@ export class ClothRockCollision {
 
     if (intersectionKind > 0) {
       this.normal.copy(this.intersectionNormal);
-      return this.clearance * (
-        forCorrection ? FACE_INTERSECTION_RELEASE_CLEARANCES : 1
-      );
+      return forCorrection
+        ? Math.max(
+            this.clearance * FACE_INTERSECTION_RELEASE_CLEARANCES,
+            this.intersectionSeparation,
+          )
+        : this.clearance;
     }
     return 0;
   }
@@ -433,17 +489,18 @@ export class ClothRockCollision {
     if (scale <= 0) return;
     const remaining = Math.max(
       0,
-      Math.min(
-        this.maximumCorrectionPerStep - (this.correctionUsed[index] ?? 0),
-        this.clearance * MAXIMUM_FACE_CORRECTION_CLEARANCES
-          - (this.faceCorrectionUsed[index] ?? 0),
-      ),
+      this.clearance * MAXIMUM_FACE_CORRECTION_CLEARANCES
+        - (this.faceCorrectionUsed[index] ?? 0),
     );
     const appliedScale = Math.min(scale, remaining);
     if (appliedScale <= 0) return;
-    this.positions[index]?.addScaledVector(this.normal, appliedScale);
-    this.previous[index]?.addScaledVector(this.normal, appliedScale);
-    this.correctionUsed[index] = (this.correctionUsed[index] ?? 0) + appliedScale;
+    const position = this.positions[index];
+    const previous = this.previous[index];
+    if (!position || !previous) return;
+    position.addScaledVector(this.normal, appliedScale);
+    previous.addScaledVector(this.normal, appliedScale);
+    const inwardMotion = this.motion.copy(position).sub(previous).dot(this.normal);
+    if (inwardMotion < 0) previous.addScaledVector(this.normal, inwardMotion);
     this.faceCorrectionUsed[index] = (
       this.faceCorrectionUsed[index] ?? 0
     ) + appliedScale;
@@ -463,9 +520,17 @@ export class ClothRockCollision {
   private updateBounds(): void {
     this.boundsMinimum.set(Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY);
     this.boundsMaximum.set(Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY);
-    for (const position of this.positions) {
-      this.boundsMinimum.min(position);
-      this.boundsMaximum.max(position);
+    for (let index = 0; index < this.positions.length; index += 1) {
+      const position = this.positions[index];
+      const previous = this.previous[index];
+      if (position) {
+        this.boundsMinimum.min(position);
+        this.boundsMaximum.max(position);
+      }
+      if (previous) {
+        this.boundsMinimum.min(previous);
+        this.boundsMaximum.max(previous);
+      }
     }
   }
 

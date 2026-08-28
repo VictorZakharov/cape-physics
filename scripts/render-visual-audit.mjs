@@ -319,6 +319,11 @@ try {
 
   const initial = await diagnostics();
   assert(initial.ready, 'demo harness did not report ready');
+  const consumedRendererSelection = await evaluate(
+    command,
+    'new URL(location.href).searchParams.has("renderer")',
+  );
+  assert(!consumedRendererSelection, 'renderer selection persisted after the one-time reload handoff');
   assert(
     initial.renderer.actual === rendererPreference,
     `${rendererPreference.toUpperCase()} was requested but ${initial.renderer.actual.toUpperCase()} is active`,
@@ -370,6 +375,59 @@ try {
   assert(initial.water.surfaceAlphaRange[1] <= 0.6, 'water surface is too opaque');
   assert(initial.water.minimumInteriorDepth > 0.04, 'water is not seated inside a terrain basin');
   assert(initial.water.minimumRimClearance > 0.02, 'water surface rises above its containing rim');
+
+  await evaluate(command, `(() => {
+    const input = document.querySelector('[data-customization-setting="shadows"]');
+    if (!(input instanceof HTMLInputElement)) throw new Error('shadow toggle is missing');
+    input.checked = false;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  })()`);
+  const shadowsDisabled = await diagnostics();
+  assert(!shadowsDisabled.cape.settings.shadows, 'shadow toggle did not disable shadows');
+  assert(
+    shadowsDisabled.renderer.programs === initial.renderer.programs,
+    'disabling shadows compiled new renderer programs',
+  );
+  await evaluate(command, `(() => {
+    const input = document.querySelector('[data-customization-setting="shadows"]');
+    if (!(input instanceof HTMLInputElement)) throw new Error('shadow toggle is missing');
+    input.checked = true;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  })()`);
+  const shadowsRestored = await diagnostics();
+  assert(shadowsRestored.cape.settings.shadows, 'shadow toggle did not restore shadows');
+  assert(
+    shadowsRestored.renderer.programs === initial.renderer.programs,
+    'restoring shadows compiled new renderer programs',
+  );
+
+  const liveLength = 1.31;
+  await evaluate(command, `(() => {
+    const input = document.querySelector('[data-customization-setting="length"]');
+    if (!(input instanceof HTMLInputElement)) throw new Error('length slider is missing');
+    input.value = ${liveLength};
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
+  })()`);
+  const liveLengthDiagnostics = await diagnostics();
+  assert(
+    Math.abs(liveLengthDiagnostics.cape.settings.length - liveLength) < 0.000_001,
+    'length slider did not update cape physics during input',
+  );
+  await evaluate(command, `(() => {
+    const input = document.querySelector('[data-customization-setting="length"]');
+    if (!(input instanceof HTMLInputElement)) throw new Error('length slider is missing');
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    document.querySelector('[data-customization-reset]')?.click();
+    return true;
+  })()`);
+  const resetCustomization = await diagnostics();
+  assert(
+    Math.abs(resetCustomization.cape.settings.length - initial.cape.settings.length) < 0.000_001,
+    'customization reset did not restore the default cape length',
+  );
 
   await command('Emulation.setDeviceMetricsOverride', {
     width: 3840,
@@ -974,6 +1032,7 @@ try {
       wall: 0,
       sphereFace: 0,
       rockFace: 0,
+      caveFace: 0,
     },
   };
   let smallRockContact = null;
@@ -1116,7 +1175,10 @@ try {
       + `strain=${smallRockTraversal.maximumStructuralError.toFixed(4)})`,
   );
   assert(smallRockTraversal.maximumUpwardFold < 0.03, 'small stone crossed or straightened lower cape rows');
-  assert(smallRockTraversal.maximumStructuralError < 0.035, 'small-stone traversal overstretched the cape');
+  assert(
+    smallRockTraversal.maximumStructuralError < 0.035,
+    `small-stone traversal overstretched the cape (${smallRockTraversal.maximumStructuralError.toFixed(4)} m)`,
+  );
   assert(
     smallRockTraversal.maximumBodyPenetration < 0.002,
     `small-stone traversal pushed cape through the body (${smallRockTraversal.maximumBodyPenetration.toFixed(4)} m)`,
@@ -1335,6 +1397,54 @@ try {
   const oppositeDepthOcclusion = await depthOcclusionProbe();
   assertDepthOcclusion(oppositeDepthOcclusion, 'character-facing rock angle');
 
+  const maximumCapeLength = 2.05;
+  await evaluate(command, `(() => {
+    const input = document.querySelector('[data-customization-setting="length"]');
+    if (!(input instanceof HTMLInputElement)) throw new Error('length slider is missing');
+    input.value = ${maximumCapeLength};
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  })()`);
+  await setPlayerPose([coursePathX, 0, courseFirst.position[2] + 1.15], 0);
+  await setView(0, 0.18, 4.3);
+  await setMovement(0, 1);
+  const longCapeTraversal = {
+    maximumEnvironmentPenetration: 0,
+    maximumEnvironmentFacePenetration: 0,
+    detail: null,
+  };
+  let longCapeTraversalState = await diagnostics();
+  for (let frame = 0; frame < Math.ceil(3.9 * 120); frame += 1) {
+    longCapeTraversalState = await advance(1 / 120, 1 / 120);
+    if (
+      longCapeTraversalState.cape.maximumEnvironmentPenetration
+      > longCapeTraversal.maximumEnvironmentPenetration
+    ) {
+      longCapeTraversal.maximumEnvironmentPenetration
+        = longCapeTraversalState.cape.maximumEnvironmentPenetration;
+      longCapeTraversal.detail = longCapeTraversalState.cape.environmentPenetrationByKind;
+    }
+    longCapeTraversal.maximumEnvironmentFacePenetration = Math.max(
+      longCapeTraversal.maximumEnvironmentFacePenetration,
+      longCapeTraversalState.cape.maximumEnvironmentFacePenetration,
+    );
+  }
+  await setMovement(0, 0);
+  assert(
+    longCapeTraversalState.player.position[2] < courseLast.position[2] - 0.35,
+    'maximum-length cape traversal did not cross the floor-rock course',
+  );
+  assert(
+    longCapeTraversal.maximumEnvironmentPenetration < 0.002,
+    `maximum-length cape passed through a floor rock (${longCapeTraversal.maximumEnvironmentPenetration} m; ${JSON.stringify(longCapeTraversal.detail)})`,
+  );
+  assert(
+    longCapeTraversal.maximumEnvironmentFacePenetration < 0.002,
+    `floor rock pierced a maximum-length cape triangle (${longCapeTraversal.maximumEnvironmentFacePenetration} m)`,
+  );
+  await capture('cape-long-rock-course-traversal');
+
   const mobileTouch = await runMobileTouchAudit();
 
   const runtimeFailures = events.filter((event) => (
@@ -1376,6 +1486,8 @@ try {
     bankBefore,
     bankAfter,
     courseTraversal,
+    longCapeTraversal,
+    longCapeTraversalState,
     largeRockContact,
     movingFootRockContact,
     smallRockContact,

@@ -260,6 +260,7 @@ export function runTechDemoHarness(simulatedSeconds = 12): TechDemoHarnessReport
     finalAnchors.back,
   );
   const capeMaximumEnvironmentPenetration = cape.getMaximumEnvironmentPenetration(worldColliders);
+  const capeEnvironmentPenetration = cape.getEnvironmentPenetrationDiagnostics(worldColliders);
   const capeMaximumEnvironmentFacePenetration = cape.getMaximumEnvironmentFacePenetration(worldColliders);
   const capeMinimumSelfSeparation = cape.getMinimumSelfSeparation();
   const capeHemDrop = cape.getHemDrop();
@@ -286,7 +287,14 @@ export function runTechDemoHarness(simulatedSeconds = 12): TechDemoHarnessReport
   invariant(
     capeMaximumEnvironmentPenetration < 0.002,
     `cape environment penetration ${capeMaximumEnvironmentPenetration.toFixed(4)} exceeded budget `
-      + `(face=${capeMaximumEnvironmentFacePenetration.toFixed(4)})`,
+      + `(face=${capeMaximumEnvironmentFacePenetration.toFixed(4)}, `
+      + `sphere=${capeEnvironmentPenetration.sphere.toFixed(4)}, `
+      + `rock=${capeEnvironmentPenetration.rock.toFixed(4)}, `
+      + `rockWalkable=${String(capeEnvironmentPenetration.rockWalkable)}, `
+      + `rockParticle=${String(capeEnvironmentPenetration.rockParticleIndex)}, `
+      + `rockCenter=${JSON.stringify(capeEnvironmentPenetration.rockCenter)}, `
+      + `floor=${capeEnvironmentPenetration.floor.toFixed(4)}, `
+      + `wall=${capeEnvironmentPenetration.wall.toFixed(4)})`,
   );
   invariant(capeMaximumEnvironmentFacePenetration < 0.002, `cape face penetration ${capeMaximumEnvironmentFacePenetration.toFixed(4)} exceeded budget`);
   invariant(capeMinimumSelfSeparation > 0.05, `cape self-separation ${capeMinimumSelfSeparation.toFixed(4)} collapsed`);

@@ -24,6 +24,7 @@ export class ClothBodyCollision {
   private readonly delta = new THREE.Vector3();
   private readonly boundsMinimum = new THREE.Vector3();
   private readonly boundsMaximum = new THREE.Vector3();
+  private readonly motion = new THREE.Vector3();
   private readonly rowMinimumY: Float32Array;
   private readonly rowMaximumY: Float32Array;
 
@@ -210,8 +211,13 @@ export class ClothBodyCollision {
 
   private applyCorrection(index: number, scale: number, back: THREE.Vector3): void {
     if (scale <= 0) return;
-    this.positions[index]?.addScaledVector(back, scale);
-    this.previous[index]?.addScaledVector(back, scale);
+    const position = this.positions[index];
+    const previous = this.previous[index];
+    if (!position || !previous) return;
+    position.addScaledVector(back, scale);
+    previous.addScaledVector(back, scale);
+    const inwardMotion = this.motion.copy(position).sub(previous).dot(back);
+    if (inwardMotion < 0) previous.addScaledVector(back, inwardMotion);
   }
 
   private updateBounds(): void {

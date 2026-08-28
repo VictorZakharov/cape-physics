@@ -15,6 +15,10 @@ import {
   type CapePerformanceDiagnostics,
 } from './CapePerformanceProfiler';
 import { getCapeRestBackOffset, getCapeRestWidth } from './CapeRestShape';
+import {
+  normalizeCapePhysicsSettings,
+  type CapePhysicsSettings,
+} from './CapeSettings';
 import { ClothFoldGuard } from './ClothFoldGuard';
 import { ClothSelfCollision } from './ClothSelfCollision';
 import type { CapsuleCollider, WorldCollider } from './colliders';
@@ -67,8 +71,13 @@ export class CapeSimulation {
   private sleeping = false;
   private maximumParticleMotion = 0;
   private maximumParticleVerticalMotion = 0;
+  private settings: CapePhysicsSettings;
 
-  public constructor(initialAnchors: CapeAnchors) {
+  public constructor(
+    initialAnchors: CapeAnchors,
+    settings: Partial<CapePhysicsSettings> = {},
+  ) {
+    this.settings = normalizeCapePhysicsSettings(settings);
     const particleCount = CAPE.columns * CAPE.rows;
     this.inverseMass = new Float32Array(particleCount);
     this.selfCollision = new ClothSelfCollision(particleCount, CAPE.columns);
@@ -166,16 +175,26 @@ export class CapeSimulation {
         const previous = this.previous[index];
         if (!position || !previous) continue;
 
-        const drag = THREE.MathUtils.lerp(IDLE_DRAG_PER_SECOND, ACTIVE_DRAG_PER_SECOND, movementBlend);
+        const drag = THREE.MathUtils.lerp(
+          IDLE_DRAG_PER_SECOND,
+          ACTIVE_DRAG_PER_SECOND,
+          movementBlend,
+        ) * this.settings.damping;
         this.velocity.copy(position).sub(previous).multiplyScalar(Math.exp(-drag * deltaTime));
         previous.copy(position);
         this.estimateNormal(column, row);
         const pressure = this.airflow.dot(this.normal);
         const turbulence = Math.sin(time * 4.3 + row * 0.83 + column * 1.71) * 0.42;
         position.add(this.velocity);
-        position.y -= 9.81 * deltaSquared;
-        position.addScaledVector(this.normal, pressure * Math.abs(pressure) * 0.026 * deltaSquared);
-        position.addScaledVector(this.airflow, (0.048 + turbulence * 0.011) * deltaSquared);
+        position.y -= 9.81 * this.settings.weight * deltaSquared;
+        position.addScaledVector(
+          this.normal,
+          pressure * Math.abs(pressure) * 0.026 * deltaSquared,
+        );
+        position.addScaledVector(
+          this.airflow,
+          (0.048 + turbulence * 0.011) * deltaSquared,
+        );
       }
     }
     if (profileActive) {
@@ -232,18 +251,22 @@ export class CapeSimulation {
         // Cave-floor projection can re-enter the face of a floor-seated rock.
         // Recheck triangles only against colliders that actually touched this
         // iteration; vertex contacts were already solved above.
-        this.contactSolver.solvePostCaveWorldFaces();
+        this.contactSolver.solvePostCaveWorldContacts();
         // The fixed-world projection can in turn press cloth back into an
         // animated boot or lower leg. Finish on the moving body constraint so
         // rendered limb geometry cannot emerge through a stone-pinned cape,
         // then reconcile exact world-face crossings once more. Both rock
-        // fallback projections share one strict per-particle step budget;
-        // temporal rollback itself adds no impulse.
+        // point projections share one strict per-particle step budget; exact
+        // face translations are independently bounded and velocity-neutral.
         this.contactSolver.solveBody(bodyColliders, anchors.back);
-        if (this.contactSolver.solvePostCaveWorldFaces() > 0) {
+        if (this.contactSolver.solvePostCaveWorldContacts() > 0) {
           this.contactSolver.solveBody(bodyColliders, anchors.back);
-          this.contactSolver.solvePostCaveWorldFaces();
+          this.contactSolver.solvePostCaveWorldContacts();
         }
+        // Final world/body reconciliation can push a triangle interior back
+        // through the curved cave side while all of its vertices stay valid.
+        // Make the cave face constraint authoritative for the rendered state.
+        this.contactSolver.solveCave();
       }
       if (profileActive) {
         const profileNow = performance.now();
@@ -346,6 +369,28 @@ export class CapeSimulation {
     this.sleeping = false;
     this.maximumParticleMotion = 0;
     this.maximumParticleVerticalMotion = 0;
+  }
+
+  public updateSettings(
+    settings: Partial<CapePhysicsSettings>,
+    anchors: CapeAnchors,
+  ): void {
+    const next = normalizeCapePhysicsSettings(settings);
+    const dimensionsChanged = next.length !== this.settings.length
+      || next.width !== this.settings.width;
+    this.settings = next;
+    this.settledSeconds = 0;
+    this.sleeping = false;
+    if (!dimensionsChanged) return;
+
+    this.constraints.length = 0;
+    this.reset(anchors);
+    this.createConstraints();
+    this.syncGeometry();
+  }
+
+  public getSettings(): CapePhysicsSettings {
+    return { ...this.settings };
   }
 
   public setOpacity(opacity: number): void {
@@ -494,13 +539,17 @@ export class CapeSimulation {
     const center = anchors.left.clone().add(anchors.right).multiplyScalar(0.5);
     for (let row = 0; row < CAPE.rows; row += 1) {
       const down = row / (CAPE.rows - 1);
-      const width = getCapeRestWidth(anchorWidth, down);
+      const width = getCapeRestWidth(anchorWidth, down, this.settings.width);
       for (let column = 0; column < CAPE.columns; column += 1) {
         const across = column / (CAPE.columns - 1) - 0.5;
         const position = center.clone()
           .addScaledVector(right, across * width)
           .addScaledVector(anchors.back, getCapeRestBackOffset(down, across))
-          .add(new THREE.Vector3(0, -down * CAPE.length * (1 - Math.abs(across) * 0.085), 0));
+          .add(new THREE.Vector3(
+            0,
+            -down * this.settings.length * (1 - Math.abs(across) * 0.085),
+            0,
+          ));
         if (row === 0) this.setAnchorTarget(anchors, column / (CAPE.columns - 1), position);
         this.positions.push(position);
         this.previous.push(position.clone());
@@ -666,7 +715,13 @@ export class CapeSimulation {
     const secondWeight = this.inverseMass[constraint.second] ?? 0;
     const totalWeight = firstWeight + secondWeight;
     if (totalWeight === 0) return;
-    this.correction.copy(this.delta).multiplyScalar(((length - constraint.restLength) / length) * constraint.stiffness);
+    const stiffness = Math.min(
+      0.999,
+      constraint.stiffness * this.settings.stiffness,
+    );
+    this.correction.copy(this.delta).multiplyScalar(
+      ((length - constraint.restLength) / length) * stiffness,
+    );
     if (firstWeight > 0) first.addScaledVector(this.correction, firstWeight / totalWeight);
     if (secondWeight > 0) second.addScaledVector(this.correction, -secondWeight / totalWeight);
   }
