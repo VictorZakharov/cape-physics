@@ -100,7 +100,8 @@ export class CustomizationPanel {
     this.toggle.addEventListener('click', this.handlePanelToggle);
     this.resetButton.addEventListener('click', this.handleReset);
     this.syncControls();
-    this.setExpanded(!window.matchMedia('(max-width: 720px)').matches);
+    const compactLayout = window.matchMedia('(max-width: 900px), (pointer: coarse)').matches;
+    this.setExpanded(!compactLayout);
   }
 
   public getSettings(): CustomizationSettings {

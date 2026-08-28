@@ -116,6 +116,16 @@
               <input type="checkbox" role="switch" data-customization-setting="reflections" checked />
               <i aria-hidden="true"></i>
             </label>
+            <div
+              class="renderer-switch"
+              data-renderer-switch
+              role="group"
+              aria-label="Graphics renderer. Changing renderer reloads the demo."
+            >
+              <span>RENDERER</span>
+              <button type="button" data-renderer-option="webgpu" aria-pressed="false" title="Experimental renderer; WebGL is recommended">WEBGPU EXP</button>
+              <button type="button" data-renderer-option="webgl" aria-pressed="false">WEBGL</button>
+            </div>
           </fieldset>
 
           <div class="customization__footer">
@@ -146,17 +156,6 @@
       <div class="quality-badge" data-quality-badge>
         <span class="quality-badge__pulse"></span>
         <span data-quality-label>ADAPTIVE ULTRA</span>
-      </div>
-
-      <div
-        class="renderer-switch"
-        data-renderer-switch
-        role="group"
-        aria-label="Graphics renderer. Changing renderer reloads the demo."
-      >
-        <span>RENDERER</span>
-        <button type="button" data-renderer-option="webgpu" aria-pressed="false" title="Experimental renderer; WebGL is recommended">WEBGPU EXP</button>
-        <button type="button" data-renderer-option="webgl" aria-pressed="false">WEBGL</button>
       </div>
 
       <div class="onboarding" data-onboarding role="status">

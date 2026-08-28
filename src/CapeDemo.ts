@@ -107,7 +107,11 @@ export class CapeDemo {
   private webGpuStartupTimer: number | null = null;
   private stopDeviceLossWatch: (() => void) | null = null;
   private customizationSettings: CustomizationSettings;
+  private readonly stabilizationVelocity = new THREE.Vector3();
   private readonly savedLightIntensities = new Map<THREE.Light, number>();
+  private readonly savedShadowCasters = new Map<THREE.Object3D, boolean>();
+  private readonly savedShadowReceivers = new Map<THREE.Object3D, boolean>();
+  private shadowsEnabled = true;
 
   public constructor() {
     this.canvas = invariant(document.querySelector<HTMLCanvasElement>('#scene-canvas'), 'Scene canvas is missing.');
@@ -270,6 +274,7 @@ export class CapeDemo {
     this.lighting.update(this.character.root.position, 0);
     this.torches.update(0, this.character.root.position);
     this.veins.update(0, this.character.root.position);
+    this.stabilizeCape();
     this.cape.syncGeometry();
     this.applySceneCustomization(this.customizationSettings);
 
@@ -395,18 +400,37 @@ export class CapeDemo {
   }
 
   private readonly handleCustomizationChange = (settings: CustomizationSettings): void => {
+    const dimensionsChanged = settings.length !== this.customizationSettings.length
+      || settings.width !== this.customizationSettings.width;
     this.customizationSettings = settings;
     if (!this.cape || !this.character) return;
     this.cape.updateSettings(settings, this.character.getCapeAnchors());
+    if (dimensionsChanged) this.stabilizeCape();
     this.applySceneCustomization(settings);
     if (this.ready) this.pipeline.renderManual(0);
   };
 
   private applySceneCustomization(settings: CustomizationSettings): void {
     this.setLightsEnabled(settings.lights);
-    this.pipeline.renderer.shadowMap.enabled = settings.shadows;
+    this.setShadowsEnabled(settings.shadows);
     this.scene.environmentIntensity = settings.reflections ? 0.24 : 0;
     this.water.setReflectionsEnabled(settings.reflections);
+  }
+
+  private stabilizeCape(): void {
+    const anchors = this.character.getCapeAnchors();
+    const bodyColliders = this.character.getCapeColliders();
+    this.stabilizationVelocity.set(0, 0, 0);
+    for (let step = 0; step < 12; step += 1) {
+      this.cape.step(
+        PHYSICS_STEP,
+        anchors,
+        bodyColliders,
+        this.worldColliders,
+        this.stabilizationVelocity,
+        this.fixedTime + step * PHYSICS_STEP,
+      );
+    }
   }
 
   private setLightsEnabled(enabled: boolean): void {
@@ -423,6 +447,54 @@ export class CapeDemo {
       object.intensity = 0;
     });
     if (enabled) this.savedLightIntensities.clear();
+  }
+
+  private setShadowsEnabled(enabled: boolean): void {
+    if (this.shadowsEnabled === enabled) return;
+    this.shadowsEnabled = enabled;
+
+    this.scene.traverse((object) => {
+      if (enabled) {
+        const castShadow = this.savedShadowCasters.get(object);
+        const receiveShadow = this.savedShadowReceivers.get(object);
+        if (castShadow !== undefined) object.castShadow = castShadow;
+        if (receiveShadow !== undefined) object.receiveShadow = receiveShadow;
+      } else {
+        this.savedShadowCasters.set(object, object.castShadow);
+        this.savedShadowReceivers.set(object, object.receiveShadow);
+        object.castShadow = false;
+        object.receiveShadow = false;
+      }
+
+      if (object instanceof THREE.Mesh) {
+        const materials = Array.isArray(object.material) ? object.material : [object.material];
+        materials.forEach((material) => {
+          material.needsUpdate = true;
+        });
+      }
+
+      if (
+        !enabled
+        && (
+          object instanceof THREE.DirectionalLight
+          || object instanceof THREE.PointLight
+          || object instanceof THREE.SpotLight
+        )
+      ) {
+        object.shadow.map?.dispose();
+        object.shadow.map = null;
+        object.shadow.mapPass?.dispose();
+        object.shadow.mapPass = null;
+      }
+    });
+
+    const shadowMap = this.pipeline.renderer.shadowMap;
+    shadowMap.enabled = enabled;
+    if ('needsUpdate' in shadowMap) shadowMap.needsUpdate = true;
+    if (enabled) {
+      this.savedShadowCasters.clear();
+      this.savedShadowReceivers.clear();
+    }
   }
 
   private installHarness(): void {

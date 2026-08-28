@@ -3,7 +3,6 @@
 .title-card,
 .customization,
 .quality-badge,
-.renderer-switch,
 .onboarding {
   position: fixed;
   z-index: 3;
@@ -16,7 +15,6 @@
 .is-ready .title-card,
 .is-ready .customization,
 .is-ready .quality-badge,
-.is-ready .renderer-switch,
 .is-ready .onboarding {
   opacity: 1;
   transform: translateY(0);
@@ -534,11 +532,12 @@ kbd.key-wide {
 }
 
 .renderer-switch {
-  right: clamp(16px, 2.6vw, 32px);
-  bottom: clamp(43px, 5.4vw, 65px);
+  grid-column: 1 / -1;
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 4px;
+  margin-top: 2px;
   padding: 4px;
   color: rgb(221 235 230 / 42%);
   font-size: 0.45rem;
@@ -547,11 +546,10 @@ kbd.key-wide {
   background: rgb(3 10 12 / 58%);
   border: 1px solid rgb(139 231 209 / 12%);
   border-radius: 4px;
-  backdrop-filter: blur(9px);
-  transform: translateY(8px);
 }
 
 .renderer-switch > span {
+  margin-right: auto;
   padding: 0 5px;
 }
 
@@ -623,16 +621,6 @@ kbd.key-wide {
   .performance-panel small,
   .performance-panel__copy,
   .quality-badge {
-    display: none;
-  }
-
-  .renderer-switch {
-    top: max(12px, env(safe-area-inset-top));
-    right: max(12px, env(safe-area-inset-right));
-    bottom: auto;
-  }
-
-  .renderer-switch > span {
     display: none;
   }
 

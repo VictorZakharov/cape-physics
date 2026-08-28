@@ -125,14 +125,15 @@ export class CapeSimulation {
     time: number,
   ): void {
     const characterSpeed = characterVelocity.length();
+    const windActive = this.settings.wind > 1.01;
     const profileActive = this.profiler.beginStep(
-      !this.sleeping || characterSpeed > WAKE_SPEED,
+      !this.sleeping || characterSpeed > WAKE_SPEED || windActive,
     );
     const profileStepStart = profileActive ? performance.now() : 0;
     let profilePhaseStart = profileStepStart;
     this.captureStepStart();
     const planarSpeed = Math.hypot(characterVelocity.x, characterVelocity.z);
-    if (characterSpeed > WAKE_SPEED) {
+    if (characterSpeed > WAKE_SPEED || windActive) {
       this.settledSeconds = 0;
       this.sleeping = false;
     }
@@ -164,7 +165,7 @@ export class CapeSimulation {
       Math.sin(time * 0.47) * 0.38 + Math.sin(time * 1.91) * 0.16,
       0.08 + Math.sin(time * 0.71) * 0.05,
       0.62 + Math.cos(time * 0.31) * 0.24,
-    ).multiplyScalar(THREE.MathUtils.lerp(0.025, locomotionAirflow, movementBlend))
+    ).multiplyScalar(THREE.MathUtils.lerp(0.45, locomotionAirflow, movementBlend))
       .addScaledVector(characterVelocity, -velocityAirflow);
 
     const deltaSquared = deltaTime * deltaTime;
@@ -251,7 +252,7 @@ export class CapeSimulation {
         // Cave-floor projection can re-enter the face of a floor-seated rock.
         // Recheck triangles only against colliders that actually touched this
         // iteration; vertex contacts were already solved above.
-        this.contactSolver.solvePostCaveWorldFaces();
+        this.contactSolver.solvePostCaveWorldContacts();
         // The fixed-world projection can in turn press cloth back into an
         // animated boot or lower leg. Finish on the moving body constraint so
         // rendered limb geometry cannot emerge through a stone-pinned cape,
@@ -259,9 +260,9 @@ export class CapeSimulation {
         // fallback projections share one strict per-particle step budget;
         // temporal rollback itself adds no impulse.
         this.contactSolver.solveBody(bodyColliders, anchors.back);
-        if (this.contactSolver.solvePostCaveWorldFaces() > 0) {
+        if (this.contactSolver.solvePostCaveWorldContacts() > 0) {
           this.contactSolver.solveBody(bodyColliders, anchors.back);
-          this.contactSolver.solvePostCaveWorldFaces();
+          this.contactSolver.solvePostCaveWorldContacts();
         }
       }
       if (profileActive) {
@@ -711,7 +712,9 @@ export class CapeSimulation {
     const secondWeight = this.inverseMass[constraint.second] ?? 0;
     const totalWeight = firstWeight + secondWeight;
     if (totalWeight === 0) return;
-    const stiffness = Math.min(0.999, constraint.stiffness * this.settings.stiffness);
+    const stiffness = constraint.structural
+      ? constraint.stiffness
+      : Math.min(0.999, constraint.stiffness * this.settings.stiffness);
     this.correction.copy(this.delta).multiplyScalar(
       ((length - constraint.restLength) / length) * stiffness,
     );

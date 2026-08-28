@@ -18,6 +18,7 @@ export class ClothWorldCollision {
   private readonly centroid = new THREE.Vector3();
   private readonly boundsMinimum = new THREE.Vector3();
   private readonly boundsMaximum = new THREE.Vector3();
+  private readonly motion = new THREE.Vector3();
 
   public constructor(
     private readonly positions: readonly THREE.Vector3[],
@@ -153,8 +154,13 @@ export class ClothWorldCollision {
 
   private applyCorrection(index: number, scale: number): void {
     if (scale <= 0) return;
-    this.positions[index]?.addScaledVector(this.normal, scale);
-    this.previous[index]?.addScaledVector(this.normal, scale);
+    const position = this.positions[index];
+    const previous = this.previous[index];
+    if (!position || !previous) return;
+    position.addScaledVector(this.normal, scale);
+    previous.addScaledVector(this.normal, scale);
+    const inwardMotion = this.motion.copy(position).sub(previous).dot(this.normal);
+    if (inwardMotion < 0) previous.addScaledVector(this.normal, inwardMotion);
   }
 
   private updateBounds(): void {

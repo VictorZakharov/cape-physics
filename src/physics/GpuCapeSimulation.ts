@@ -53,6 +53,7 @@ interface ConstraintDefinition {
   readonly second: number;
   readonly restLength: number;
   readonly stiffness: number;
+  readonly structural: boolean;
 }
 
 interface ConstraintLink {
@@ -60,6 +61,7 @@ interface ConstraintLink {
   readonly restLength: number;
   readonly stiffness: number;
   readonly massShare: number;
+  readonly structural: boolean;
 }
 
 const PARTICLE_COUNT = CAPE.columns * CAPE.rows;
@@ -296,7 +298,8 @@ export class GpuCapeSimulation {
     time: number,
   ): void {
     const characterSpeed = characterVelocity.length();
-    if (characterSpeed > WAKE_SPEED) {
+    const windActive = this.settings.wind > 1.01;
+    if (characterSpeed > WAKE_SPEED || windActive) {
       this.settledSeconds = 0;
       this.sleeping = false;
     } else {
@@ -316,7 +319,7 @@ export class GpuCapeSimulation {
       Math.sin(time * 0.47) * 0.38 + Math.sin(time * 1.91) * 0.16,
       0.08 + Math.sin(time * 0.71) * 0.05,
       0.62 + Math.cos(time * 0.31) * 0.24,
-    ).multiplyScalar(THREE.MathUtils.lerp(0.025, locomotionAirflow, movementBlend))
+    ).multiplyScalar(THREE.MathUtils.lerp(0.45, locomotionAirflow, movementBlend))
       .addScaledVector(characterVelocity, -velocityAirflow);
     this.deltaTimeUniform.value = deltaTime;
     this.timeUniform.value = time;
@@ -617,14 +620,19 @@ export class GpuCapeSimulation {
         const neighborPosition = source.element(uint(link.x)).xyz;
         const delta = neighborPosition.sub(position).toVar('constraintDelta');
         const length = delta.length().max(0.000_001).toVar('constraintLength');
-        const weight = link.z.mul(link.w);
-        correction.addAssign(
-          delta.mul(length.sub(link.y).div(length)).mul(weight),
+        const baseWeight = link.z.abs().mul(link.w);
+        const settingScale = select(
+          link.z.lessThan(0),
+          1,
+          this.stiffnessUniform,
         );
-        correctionWeight.addAssign(weight);
+        correction.addAssign(
+          delta.mul(length.sub(link.y).div(length)).mul(baseWeight).mul(settingScale),
+        );
+        correctionWeight.addAssign(baseWeight);
       });
       position.addAssign(
-        correction.div(correctionWeight.max(1)).mul(this.stiffnessUniform),
+        correction.div(correctionWeight.max(1)),
       );
 
       const topologyNeighbors = this.topologyBuffer.element(
@@ -1221,7 +1229,16 @@ export class GpuCapeSimulation {
         maximumX.assign(center.add(0.08));
       });
       position.x.assign(position.x.clamp(minimumX, maximumX));
-      previousPosition.addAssign(position.sub(contactStart));
+      const contactCorrection = position.sub(contactStart).toVar('contactCorrection');
+      previousPosition.addAssign(contactCorrection);
+      If(contactCorrection.dot(contactCorrection).greaterThan(0.000_000_1), () => {
+        const contactNormal = contactCorrection.normalize().toVar('contactNormal');
+        const inwardMotion = position.sub(previousPosition)
+          .dot(contactNormal)
+          .min(0)
+          .toVar('contactInwardMotion');
+        previousPosition.addAssign(contactNormal.mul(inwardMotion));
+      });
       this.previousBuffer.element(index).assign(vec4(
         previousPosition,
         rockCorrectionUsed.add(select(rockSweepResolved, 1, 0)),
@@ -1565,13 +1582,22 @@ export class GpuCapeSimulation {
           const applyCorrection = (particleIndex: THREE.Node<'uint'>): void => {
             If(particleIndex.greaterThanEqual(uint(CAPE.columns)), () => {
               const state = buffer.element(particleIndex);
+              const corrected = state.xyz.add(faceCorrection).toVar('correctedRockFace');
               buffer.element(particleIndex).assign(vec4(
-                state.xyz.add(faceCorrection),
+                corrected,
                 state.w.add(1),
               ));
               const previousState = this.previousBuffer.element(particleIndex);
+              const correctedPrevious = previousState.xyz
+                .add(faceCorrection)
+                .toVar('correctedPreviousRockFace');
+              const faceNormal = faceCorrection.normalize().toVar('rockFaceMotionNormal');
+              const inwardMotion = corrected.sub(correctedPrevious)
+                .dot(faceNormal)
+                .min(0);
+              correctedPrevious.addAssign(faceNormal.mul(inwardMotion));
               this.previousBuffer.element(particleIndex).assign(vec4(
-                previousState.xyz.add(faceCorrection),
+                correctedPrevious,
                 previousState.w,
               ));
             });
@@ -1787,8 +1813,15 @@ export class GpuCapeSimulation {
         ): void => {
           buffer.element(particleIndex).assign(vec4(corrected, state.w));
           const previousState = this.previousBuffer.element(particleIndex);
+          const correctedPrevious = previousState.xyz
+            .add(corrected.sub(start))
+            .toVar('correctedPreviousBodyFace');
+          const inwardMotion = corrected.sub(correctedPrevious)
+            .dot(this.backUniform)
+            .min(0);
+          correctedPrevious.addAssign(this.backUniform.mul(inwardMotion));
           this.previousBuffer.element(particleIndex).assign(vec4(
-            previousState.xyz.add(corrected.sub(start)),
+            correctedPrevious,
             previousState.w,
           ));
         };
@@ -1843,6 +1876,7 @@ export class GpuCapeSimulation {
       secondColumn: number,
       secondRow: number,
       stiffness: number,
+      structural: boolean,
     ): void => {
       const first = firstRow * CAPE.columns + firstColumn;
       const second = secondRow * CAPE.columns + secondColumn;
@@ -1851,20 +1885,21 @@ export class GpuCapeSimulation {
         second,
         restLength: readPosition(first).distanceTo(readPosition(second)),
         stiffness,
+        structural,
       });
     };
     for (let row = 0; row < CAPE.rows; row += 1) {
       for (let column = 0; column < CAPE.columns; column += 1) {
-        if (column + 1 < CAPE.columns) addConstraint(column, row, column + 1, row, 0.93);
-        if (row + 1 < CAPE.rows) addConstraint(column, row, column, row + 1, 0.96);
+        if (column + 1 < CAPE.columns) addConstraint(column, row, column + 1, row, 0.93, true);
+        if (row + 1 < CAPE.rows) addConstraint(column, row, column, row + 1, 0.96, true);
         if (column + 1 < CAPE.columns && row + 1 < CAPE.rows) {
-          addConstraint(column, row, column + 1, row + 1, 0.8);
-          addConstraint(column + 1, row, column, row + 1, 0.8);
+          addConstraint(column, row, column + 1, row + 1, 0.8, false);
+          addConstraint(column + 1, row, column, row + 1, 0.8, false);
         }
-        if (column + 2 < CAPE.columns) addConstraint(column, row, column + 2, row, 0.58);
-        if (row + 2 < CAPE.rows) addConstraint(column, row, column, row + 2, 0.82);
-        if (column + 3 < CAPE.columns) addConstraint(column, row, column + 3, row, 0.16);
-        if (row + 3 < CAPE.rows) addConstraint(column, row, column, row + 3, 0.38);
+        if (column + 2 < CAPE.columns) addConstraint(column, row, column + 2, row, 0.58, false);
+        if (row + 2 < CAPE.rows) addConstraint(column, row, column, row + 2, 0.82, false);
+        if (column + 3 < CAPE.columns) addConstraint(column, row, column + 3, row, 0.16, false);
+        if (row + 3 < CAPE.rows) addConstraint(column, row, column, row + 3, 0.38, false);
       }
     }
 
@@ -1878,12 +1913,14 @@ export class GpuCapeSimulation {
         restLength: constraint.restLength,
         stiffness: constraint.stiffness,
         massShare: totalMass > 0 ? firstMass / totalMass : 0,
+        structural: constraint.structural,
       });
       adjacency[constraint.second]?.push({
         neighbor: constraint.first,
         restLength: constraint.restLength,
         stiffness: constraint.stiffness,
         massShare: totalMass > 0 ? secondMass / totalMass : 0,
+        structural: constraint.structural,
       });
     }
     const normalNeighbors = new Uint32Array(PARTICLE_COUNT * 4);
@@ -1914,7 +1951,7 @@ export class GpuCapeSimulation {
         const linkOffset = (linkBase + pointer) * 4;
         packed[linkOffset] = link.neighbor;
         packed[linkOffset + 1] = link.restLength;
-        packed[linkOffset + 2] = link.stiffness;
+        packed[linkOffset + 2] = link.structural ? -link.stiffness : link.stiffness;
         packed[linkOffset + 3] = link.massShare;
         pointer += 1;
       }

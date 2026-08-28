@@ -49,6 +49,7 @@ export class ClothRockCollision {
   private readonly referenceDirection = new THREE.Vector3();
   private readonly candidateContactNormal = new THREE.Vector3();
   private readonly intersectionNormal = new THREE.Vector3();
+  private readonly motion = new THREE.Vector3();
   private readonly rockQuery = new RockColliderQuery();
   private readonly triangleQuery = new TriangleContactQuery();
   private readonly faceCorrectionUsed: Float32Array;
@@ -441,8 +442,13 @@ export class ClothRockCollision {
     );
     const appliedScale = Math.min(scale, remaining);
     if (appliedScale <= 0) return;
-    this.positions[index]?.addScaledVector(this.normal, appliedScale);
-    this.previous[index]?.addScaledVector(this.normal, appliedScale);
+    const position = this.positions[index];
+    const previous = this.previous[index];
+    if (!position || !previous) return;
+    position.addScaledVector(this.normal, appliedScale);
+    previous.addScaledVector(this.normal, appliedScale);
+    const inwardMotion = this.motion.copy(position).sub(previous).dot(this.normal);
+    if (inwardMotion < 0) previous.addScaledVector(this.normal, inwardMotion);
     this.correctionUsed[index] = (this.correctionUsed[index] ?? 0) + appliedScale;
     this.faceCorrectionUsed[index] = (
       this.faceCorrectionUsed[index] ?? 0
