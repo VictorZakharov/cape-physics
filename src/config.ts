@@ -30,6 +30,8 @@ export const CAPE = {
   rows: 18,
   width: 0.98,
   length: 1.68,
+  widthRange: { min: 0.72, max: 1.3, step: 0.01 },
+  lengthRange: { min: 1.2, max: 2.05, step: 0.01 },
   solverIterations: 10,
   attachment: {
     halfWidth: 0.105,

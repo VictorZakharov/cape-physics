@@ -38,6 +38,11 @@ import {
   getClothWorldClearance,
 } from './ClothWorldCollision';
 import {
+  DEFAULT_CAPE_PHYSICS_SETTINGS,
+  normalizeCapePhysicsSettings,
+  type CapePhysicsSettings,
+} from './CapeSettings';
+import {
   CAVE_SHELL_CONTACT_SKIN,
   getCaveShellSampleData,
   WATER_BASINS,
@@ -72,7 +77,7 @@ const ROCK_SWEEP_TANGENTIAL_DAMPING = 0.76;
 const BODY_BUFFER_STRIDE = 5;
 const ROCK_BUFFER_STRIDE = 4 + ROCK_FACES_PER_COLLIDER * 4;
 const TOPOLOGY_METADATA_STRIDE = 2;
-const WORLD_QUERY_RADIUS = CAPE.length + 2.2;
+const WORLD_QUERY_RADIUS = CAPE.lengthRange.max + 2.2;
 const CAVE_LOWER_RADIAL_START = Math.floor(CAVE.radialSegments / 2);
 
 /**
@@ -101,6 +106,10 @@ export class GpuCapeSimulation {
   private readonly timeUniform = uniform(0);
   private readonly movementBlendUniform = uniform(0);
   private readonly airflowUniform = uniform(new THREE.Vector3());
+  private readonly stiffnessUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.stiffness);
+  private readonly dampingUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.damping);
+  private readonly weightUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.weight);
+  private readonly windUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.wind);
   private readonly bodyCountUniform = uniform(0, 'uint');
   private readonly backUniform = uniform(new THREE.Vector3(0, 0, 1));
   private readonly worldSphereCountUniform = uniform(0, 'uint');
@@ -121,10 +130,17 @@ export class GpuCapeSimulation {
   private settledSeconds = 0;
   private sleeping = false;
   private submittedSteps = 0;
+  private settings: CapePhysicsSettings;
 
-  public constructor(renderer: THREE.WebGPURenderer, initialAnchors: CapeAnchors) {
+  public constructor(
+    renderer: THREE.WebGPURenderer,
+    initialAnchors: CapeAnchors,
+    settings: Partial<CapePhysicsSettings> = {},
+  ) {
     this.renderer = renderer;
-    this.diagnosticMirror = new CapeSimulation(initialAnchors);
+    this.settings = normalizeCapePhysicsSettings(settings);
+    this.applySettingsUniforms();
+    this.diagnosticMirror = new CapeSimulation(initialAnchors, this.settings);
 
     const initialState = this.createInitialState();
     this.positionBuffer = instancedArray(initialState.slice(), 'vec4');
@@ -333,6 +349,36 @@ export class GpuCapeSimulation {
     this.worldContactEventOffset = this.worldContactEvents;
   }
 
+  public updateSettings(
+    settings: Partial<CapePhysicsSettings>,
+    anchors: CapeAnchors,
+  ): void {
+    const next = normalizeCapePhysicsSettings(settings);
+    const dimensionsChanged = next.length !== this.settings.length
+      || next.width !== this.settings.width;
+    this.settings = next;
+    this.applySettingsUniforms();
+    this.diagnosticMirror.updateSettings(next, anchors);
+    this.settledSeconds = 0;
+    this.sleeping = false;
+    if (!dimensionsChanged) return;
+
+    const state = this.createInitialState();
+    const topology = this.createTopology(state);
+    this.writeStorage(this.positionBuffer.value, state);
+    this.writeStorage(this.scratchBuffer.value, state);
+    this.writeStorage(this.previousBuffer.value, state);
+    this.writeStorage(this.topologyBuffer.value, topology.packed);
+    this.updateAnchorBuffer(anchors);
+    this.submittedSteps = 0;
+    this.worldContactsLastStep = 0;
+    this.worldContactEventOffset = this.worldContactEvents;
+  }
+
+  public getSettings(): CapePhysicsSettings {
+    return { ...this.settings };
+  }
+
   public setOpacity(_opacity: number): void {}
 
   public async refreshDiagnostics(): Promise<void> {
@@ -470,7 +516,7 @@ export class GpuCapeSimulation {
         float(IDLE_DRAG_PER_SECOND),
         float(ACTIVE_DRAG_PER_SECOND),
         this.movementBlendUniform,
-      );
+      ).mul(this.dampingUniform);
       velocity.mulAssign(drag.mul(this.deltaTimeUniform).negate().exp());
       previous.assign(vec4(current.xyz, 0));
 
@@ -495,10 +541,15 @@ export class GpuCapeSimulation {
         .mul(0.42);
       const deltaSquared = this.deltaTimeUniform.mul(this.deltaTimeUniform);
       const predicted = currentPosition.add(velocity).toVar('predicted');
-      predicted.y.subAssign(deltaSquared.mul(9.81));
-      predicted.addAssign(normal.mul(pressure.mul(pressure.abs()).mul(0.026).mul(deltaSquared)));
+      predicted.y.subAssign(deltaSquared.mul(9.81).mul(this.weightUniform));
+      predicted.addAssign(normal.mul(
+        pressure.mul(pressure.abs()).mul(0.026).mul(this.windUniform).mul(deltaSquared),
+      ));
       predicted.addAssign(
-        this.airflowUniform.mul(float(0.048).add(turbulence.mul(0.011))).mul(deltaSquared),
+        this.airflowUniform
+          .mul(float(0.048).add(turbulence.mul(0.011)))
+          .mul(this.windUniform)
+          .mul(deltaSquared),
       );
       // Keep a monotonic event count in the otherwise-unused state lane so
       // contacts that begin and end between explicit diagnostic readbacks are
@@ -572,7 +623,9 @@ export class GpuCapeSimulation {
         );
         correctionWeight.addAssign(weight);
       });
-      position.addAssign(correction.div(correctionWeight.max(1)));
+      position.addAssign(
+        correction.div(correctionWeight.max(1)).mul(this.stiffnessUniform),
+      );
 
       const topologyNeighbors = this.topologyBuffer.element(
         index.mul(uint(TOPOLOGY_METADATA_STRIDE)).add(1),
@@ -1890,6 +1943,13 @@ export class GpuCapeSimulation {
   private writeStorage(attribute: THREE.BufferAttribute, state: Float32Array): void {
     (attribute.array as Float32Array).set(state);
     attribute.needsUpdate = true;
+  }
+
+  private applySettingsUniforms(): void {
+    this.stiffnessUniform.value = this.settings.stiffness;
+    this.dampingUniform.value = this.settings.damping;
+    this.weightUniform.value = this.settings.weight;
+    this.windUniform.value = this.settings.wind;
   }
 
   private updateBodyBuffers(

@@ -47,6 +47,7 @@ export class WebGpuWaterSystem {
   private readonly ripples = Array.from({ length: RIPPLE_CAPACITY }, () => new THREE.Vector4(0, 0, -100, 0));
   private readonly material: THREE.MeshBasicNodeMaterial;
   private readonly timeNode: THREE.UniformNode<'float', number>;
+  private readonly reflectionStrengthNode: THREE.UniformNode<'float', number>;
   private readonly drops: Drop[] = [];
   private readonly dropMesh: THREE.InstancedMesh;
   private readonly splashes: SplashParticle[] = [];
@@ -74,6 +75,7 @@ export class WebGpuWaterSystem {
     );
     this.material = waterMaterial.material;
     this.timeNode = waterMaterial.timeNode;
+    this.reflectionStrengthNode = waterMaterial.reflectionStrengthNode;
 
     const geometry = new THREE.PlaneGeometry(2, 2, 96, 68);
     for (const puddle of this.puddles) {
@@ -141,6 +143,10 @@ export class WebGpuWaterSystem {
     } else {
       this.strideSinceStep = Math.min(this.strideSinceStep, 0.3);
     }
+  }
+
+  public setReflectionsEnabled(enabled: boolean): void {
+    this.reflectionStrengthNode.value = enabled ? 1 : 0;
   }
 
   public addRipple(position: THREE.Vector3, time: number, strength: number): void {

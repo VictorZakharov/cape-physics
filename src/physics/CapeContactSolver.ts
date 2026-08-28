@@ -31,7 +31,7 @@ import {
   RockColliderQuery,
 } from './RockCollider';
 
-const WORLD_QUERY_RADIUS = CAPE.length + 2.2;
+const WORLD_QUERY_RADIUS = CAPE.lengthRange.max + 2.2;
 const WORLD_BROADPHASE_SKIN = 0.08;
 const CAVE_PROFILE_REFRESH_MARGIN = 0.16;
 const BODY_FACE_SOLVER_PASSES = 3;

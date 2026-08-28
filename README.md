@@ -19,6 +19,7 @@ Everything is generated at runtime. There are no downloaded models, textures, or
 - A procedural cave with wet rock materials, torch shadows, glowing mineral veins, fog, dust, and bloom
 - Clear walkable pools with footstep, landing, and ceiling-drop ripples
 - A collision-aware third-person camera with a close-range character fade
+- A responsive cape-and-scene panel for live dimensions, cloth response, lights, shadows, and reflections
 - A native WebGL renderer by default, an opt-in experimental WebGPU compute path, and a clickable performance HUD
 
 ## Controls
@@ -37,6 +38,7 @@ Everything is generated at runtime. There are no downloaded models, textures, or
 | One-finger swipe | Orbit the camera on touch devices |
 | Two-finger pinch | Zoom on touch devices |
 | Click the FPS graph | Copy a rolling 15-second performance report |
+| `CAPE & SCENE` panel | Tune cape physics or toggle lights, shadows, and reflections; reload or Reset Defaults restores the defaults |
 | `WEBGPU EXP` / `WEBGL` | Reload with the selected renderer; WebGL is recommended and the choice is remembered |
 | `Esc` | Release pointer interaction |
 

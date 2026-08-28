@@ -32,6 +32,7 @@ import { RIPPLE_CAPACITY } from '../config';
 export interface ProceduralWaterMaterial {
   readonly material: THREE.MeshBasicNodeMaterial;
   readonly timeNode: THREE.UniformNode<'float', number>;
+  readonly reflectionStrengthNode: THREE.UniformNode<'float', number>;
 }
 
 export function createProceduralWaterMaterial(
@@ -40,6 +41,7 @@ export function createProceduralWaterMaterial(
   maximumAlpha: number,
 ): ProceduralWaterMaterial {
   const timeNode = uniform(0);
+  const reflectionStrengthNode = uniform(1);
   const rippleNodes = uniformArray<'vec4'>([...ripples], 'vec4');
   const deepColor = uniform(new THREE.Color(0x031820));
   const shallowColor = uniform(new THREE.Color(0x185652));
@@ -188,15 +190,22 @@ export function createProceduralWaterMaterial(
   const waterColor = mix(
     waterBody,
     caveReflection,
-    fresnel.mul(0.58).add(0.025).clamp(0, 0.68),
+    fresnel.mul(0.58).add(0.025).clamp(0, 0.68).mul(reflectionStrengthNode),
   )
     .add(
       vec3(1, 0.38, 0.075)
       .mul(specular)
       .mul(max(normal.dot(torchDirection), 0))
-      .mul(1.45),
+      .mul(1.45)
+      .mul(reflectionStrengthNode),
     )
-    .add(vec3(0.15, 0.9, 0.76).mul(mineralGlint).mul(fresnel).mul(0.16))
+    .add(
+      vec3(0.15, 0.9, 0.76)
+        .mul(mineralGlint)
+        .mul(fresnel)
+        .mul(0.16)
+        .mul(reflectionStrengthNode),
+    )
     .add(vec3(0.58, 0.92, 0.9).mul(waveVarying.abs()).mul(0.9));
   const wetRim = smoothstep(0.73, 0.93, edgeDistance)
     .mul(oneMinus(smoothstep(0.93, 1, edgeDistance)));
@@ -218,5 +227,5 @@ export function createProceduralWaterMaterial(
   material.maskNode = alphaEdge.greaterThanEqual(0.015);
   material.name = 'TSL procedural ripple water';
 
-  return { material, timeNode };
+  return { material, timeNode, reflectionStrengthNode };
 }

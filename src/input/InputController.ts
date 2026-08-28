@@ -146,6 +146,11 @@ export class InputController implements MobileControlInput {
   }
 
   private readonly handleKeyDown = (event: KeyboardEvent): void => {
+    const target = event.target;
+    if (
+      target instanceof HTMLElement
+      && target.closest('input, button, select, textarea, [contenteditable="true"]')
+    ) return;
     if (
       event.code === 'KeyW'
       || event.code === 'KeyA'
