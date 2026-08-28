@@ -21,7 +21,7 @@ describe('ThirdPersonCamera', () => {
   test('reverses vertical drag so an upward drag looks upward', () => {
     const input = new CameraInputStub();
     const camera = new THREE.PerspectiveCamera();
-    const controller = new ThirdPersonCamera(camera, input as unknown as InputController, []);
+    const controller = new ThirdPersonCamera(camera, input as unknown as InputController);
     const z = 0;
     const x = caveCenterX(z);
     const focus = new THREE.Vector3(x, caveGroundHeightAt(x, z), z);
@@ -36,7 +36,7 @@ describe('ThirdPersonCamera', () => {
   test('preserves a sharp look-up pitch while shortening above terrain', () => {
     const input = new CameraInputStub();
     const camera = new THREE.PerspectiveCamera();
-    const controller = new ThirdPersonCamera(camera, input as unknown as InputController, []);
+    const controller = new ThirdPersonCamera(camera, input as unknown as InputController);
     const z = -8;
     const x = caveCenterX(z);
     const focus = new THREE.Vector3(x, caveGroundHeightAt(x, z), z);
@@ -46,5 +46,18 @@ describe('ThirdPersonCamera', () => {
     expect(controller.getPitch()).toBeCloseTo(-1.1, 6);
     expect(controller.getActualDistance()).toBeLessThan(2);
     expect(camera.position.y - caveGroundHeightAt(camera.position.x, camera.position.z)).toBeGreaterThanOrEqual(0.175);
+  });
+
+  test('shortens a wide orbit before it crosses the sampled cave wall', () => {
+    const input = new CameraInputStub();
+    const camera = new THREE.PerspectiveCamera();
+    const controller = new ThirdPersonCamera(camera, input as unknown as InputController);
+    const z = -12;
+    const x = caveCenterX(z);
+    const focus = new THREE.Vector3(x, caveGroundHeightAt(x, z), z);
+
+    controller.setOrbit(Math.PI / 2, 0, 7.2, focus);
+
+    expect(controller.getActualDistance()).toBeLessThan(5.5);
   });
 });

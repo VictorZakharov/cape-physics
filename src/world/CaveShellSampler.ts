@@ -95,6 +95,23 @@ export class CaveShellSampler {
     return target;
   }
 
+  public containsPoint(
+    x: number,
+    y: number,
+    z: number,
+    clearance: number,
+    target: CaveHorizontalBounds,
+  ): boolean {
+    this.getHorizontalBounds(y, z, target);
+    let maximumY = Number.NEGATIVE_INFINITY;
+    for (let radial = 0; radial < FULL_SAMPLE_COUNT; radial += 1) {
+      maximumY = Math.max(maximumY, this.sectionY[radial] ?? maximumY);
+    }
+    return y <= maximumY - clearance
+      && x >= target.minimum + clearance
+      && x <= target.maximum - clearance;
+  }
+
   /** Static shell samples shared with the WebGPU collision lookup buffer. */
   public getSampleData(): CaveShellSampleData {
     return {

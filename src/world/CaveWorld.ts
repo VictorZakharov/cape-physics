@@ -16,7 +16,6 @@ import { createSpeleothemGeometry } from './SpeleothemGeometry';
 
 export class CaveWorld {
   public readonly group = new THREE.Group();
-  public readonly cameraColliders: THREE.Object3D[];
   public readonly worldColliders: readonly WorldCollider[];
   public readonly contactRocks: readonly CapeContactRockPlacement[];
 
@@ -31,7 +30,6 @@ export class CaveWorld {
     this.group.add(this.walls, this.floor);
     this.createFormations(textures);
     this.contactRocks = this.createRockScatter(textures);
-    this.cameraColliders = [this.walls];
     this.worldColliders = this.colliderBuilder.colliders;
   }
 

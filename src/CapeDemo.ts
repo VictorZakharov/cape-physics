@@ -59,6 +59,28 @@ function percentileOrNull(values: readonly number[], ratio: number): number | nu
   return values.length > 0 ? percentile(values, ratio) : null;
 }
 
+interface ScenePhaseTotals {
+  camera: number;
+  cameraFade: number;
+  water: number;
+  torches: number;
+  veins: number;
+  atmosphere: number;
+  lighting: number;
+}
+
+function createScenePhaseTotals(): ScenePhaseTotals {
+  return {
+    camera: 0,
+    cameraFade: 0,
+    water: 0,
+    torches: 0,
+    veins: 0,
+    atmosphere: 0,
+    lighting: 0,
+  };
+}
+
 export class CapeDemo {
   private readonly canvas: HTMLCanvasElement;
   private readonly scene = new THREE.Scene();
@@ -250,7 +272,7 @@ export class CapeDemo {
     this.input = new InputController(this.canvas, this.dismissOnboarding);
     this.mobileControls = new MobileControls(this.canvas, this.input);
     this.characterController = new CharacterController(this.character, this.input, this.worldCollision);
-    this.thirdPersonCamera = new ThirdPersonCamera(this.camera, this.input, this.cave.cameraColliders);
+    this.thirdPersonCamera = new ThirdPersonCamera(this.camera, this.input);
     this.thirdPersonCamera.snapTo(this.character.root.position);
     if (usesNodeRenderer) {
       const { WebGpuCinematicLighting } = await import('./lighting/WebGpuCinematicLighting');
@@ -515,9 +537,20 @@ export class CapeDemo {
         this.input.queueVirtualJump();
       },
       advance: ({ duration, frameStep = 1 / 60 }) => this.advanceHarness(duration, frameStep),
-      profile: ({ duration, frameStep = 1 / 60, synchronizationInterval = 1 }) => (
-        this.profileHarness(duration, frameStep, synchronizationInterval)
+      profile: ({
+        duration,
+        frameStep = 1 / 60,
+        synchronizationInterval = 1,
+        includeDiagnostics = true,
+      }) => (
+        this.profileHarness(duration, frameStep, synchronizationInterval, includeDiagnostics)
       ),
+      profileGpuKernels: ({ samples = 4 } = {}) => {
+        if (!(this.cape instanceof CapeSimulation)) {
+          return this.cape.profileKernelBreakdown(samples);
+        }
+        throw new Error('Per-kernel GPU profiling requires the WebGPU cape solver.');
+      },
       runDepthOcclusionProbe: () => runDepthOcclusionProbe(
         this.scene,
         this.camera,
@@ -548,6 +581,7 @@ export class CapeDemo {
     duration: number,
     requestedFrameStep: number,
     requestedSynchronizationInterval: number,
+    includeDiagnostics: boolean,
   ) {
     const frameStep = THREE.MathUtils.clamp(requestedFrameStep, 1 / 144, 1 / 30);
     let remaining = THREE.MathUtils.clamp(duration, 0, 12);
@@ -564,6 +598,7 @@ export class CapeDemo {
     const gpuComputeDurations: number[] = [];
     const gpuTotalDurations: number[] = [];
     const programsBefore = this.pipeline.getProgramCount();
+    const scenePhaseTotals = createScenePhaseTotals();
     const profileStart = performance.now();
     let batchStart = profileStart;
     let batchFrames = 0;
@@ -572,7 +607,7 @@ export class CapeDemo {
     while (remaining > 0.000_001) {
       const delta = Math.min(frameStep, remaining);
       remaining -= delta;
-      const framePhases = this.advanceHarnessFrame(delta);
+      const framePhases = this.advanceHarnessFrame(delta, scenePhaseTotals);
       physicsDurations.push(framePhases.physicsMilliseconds);
       sceneDurations.push(framePhases.sceneMilliseconds);
       const renderStart = performance.now();
@@ -619,9 +654,15 @@ export class CapeDemo {
       averageGpuTotalMilliseconds: averageOrNull(gpuTotalDurations),
       p95GpuTotalMilliseconds: percentileOrNull(gpuTotalDurations, 0.95),
       gpuTimestampSamples: gpuTotalDurations.length,
+      scenePhaseMilliseconds: Object.fromEntries(
+        Object.entries(scenePhaseTotals).map(([name, total]) => [
+          name,
+          frames > 0 ? total / frames : 0,
+        ]),
+      ) as unknown as ScenePhaseTotals,
       programsBefore,
       programsAfter: this.pipeline.getProgramCount(),
-      diagnostics: await this.getDiagnosticsAfterReadback(),
+      diagnostics: includeDiagnostics ? await this.getDiagnosticsAfterReadback() : null,
     };
   }
 
@@ -631,6 +672,20 @@ export class CapeDemo {
   }
 
   private advanceHarnessFrame(delta: number): {
+    readonly physicsMilliseconds: number;
+    readonly sceneMilliseconds: number;
+  };
+  private advanceHarnessFrame(
+    delta: number,
+    scenePhaseTotals: ScenePhaseTotals,
+  ): {
+    readonly physicsMilliseconds: number;
+    readonly sceneMilliseconds: number;
+  };
+  private advanceHarnessFrame(
+    delta: number,
+    scenePhaseTotals?: ScenePhaseTotals,
+  ): {
     readonly physicsMilliseconds: number;
     readonly sceneMilliseconds: number;
   } {
@@ -644,11 +699,48 @@ export class CapeDemo {
     }
     if (simulated) this.cape.syncGeometry();
     const sceneStart = performance.now();
-    this.updateScene(delta);
+    if (scenePhaseTotals) {
+      this.updateSceneProfiled(delta, scenePhaseTotals);
+    } else {
+      this.updateScene(delta);
+    }
     return {
       physicsMilliseconds: sceneStart - physicsStart,
       sceneMilliseconds: performance.now() - sceneStart,
     };
+  }
+
+  private updateSceneProfiled(delta: number, totals: ScenePhaseTotals): void {
+    const playerPosition = this.character.root.position;
+    const planarSpeed = Math.hypot(this.character.velocity.x, this.character.velocity.z);
+    let start = performance.now();
+    this.thirdPersonCamera.update(delta, playerPosition);
+    totals.camera += performance.now() - start;
+    start = performance.now();
+    this.updateCameraFade();
+    totals.cameraFade += performance.now() - start;
+    start = performance.now();
+    this.water.update(
+      delta,
+      this.fixedTime,
+      playerPosition,
+      this.character.root.rotation.y,
+      this.characterController.isGrounded() ? planarSpeed : 0,
+    );
+    totals.water += performance.now() - start;
+    start = performance.now();
+    this.torches.update(this.fixedTime, playerPosition);
+    totals.torches += performance.now() - start;
+    start = performance.now();
+    this.veins.update(this.fixedTime, playerPosition);
+    totals.veins += performance.now() - start;
+    start = performance.now();
+    this.atmosphere.update(this.fixedTime);
+    totals.atmosphere += performance.now() - start;
+    start = performance.now();
+    this.lighting.update(playerPosition, this.fixedTime);
+    if (!this.customizationSettings.lights) this.setLightsEnabled(false);
+    totals.lighting += performance.now() - start;
   }
 
   private getDiagnostics() {

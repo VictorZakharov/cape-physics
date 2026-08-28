@@ -178,6 +178,7 @@ declare global {
         duration: number;
         frameStep?: number;
         synchronizationInterval?: number;
+        includeDiagnostics?: boolean;
       }) => Promise<{
         readonly frames: number;
         readonly synchronizationInterval: number;
@@ -196,10 +197,22 @@ declare global {
         readonly averageGpuTotalMilliseconds: number | null;
         readonly p95GpuTotalMilliseconds: number | null;
         readonly gpuTimestampSamples: number;
+        readonly scenePhaseMilliseconds: {
+          readonly camera: number;
+          readonly cameraFade: number;
+          readonly water: number;
+          readonly torches: number;
+          readonly veins: number;
+          readonly atmosphere: number;
+          readonly lighting: number;
+        };
         readonly programsBefore: number;
         readonly programsAfter: number;
-        readonly diagnostics: CapeDemoDiagnostics;
+        readonly diagnostics: CapeDemoDiagnostics | null;
       }>;
+      profileGpuKernels: (options?: { samples?: number }) => Promise<import(
+        '../physics/GpuCapeSimulation'
+      ).GpuCapeKernelProfile>;
       runDepthOcclusionProbe: () => Promise<DepthOcclusionProbeResult>;
       runShadowLayerProbe: () => Promise<ShadowLayerProbeResult>;
     };

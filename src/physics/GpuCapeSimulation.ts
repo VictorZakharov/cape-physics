@@ -68,6 +68,35 @@ interface ConstraintLink {
   readonly structural: boolean;
 }
 
+interface KernelTimestampBackend {
+  readonly trackTimestamp?: boolean;
+  getTimestampUID(context: THREE.ComputeNode): string;
+  getTimestamp(uid: string): number;
+}
+
+export interface GpuCapeKernelTiming {
+  readonly index: number;
+  readonly name: string;
+  readonly averageMilliseconds: number;
+  readonly minimumMilliseconds: number;
+  readonly maximumMilliseconds: number;
+  readonly estimatedArithmeticMilliseconds: number;
+}
+
+export interface GpuCapeKernelProfile {
+  readonly samples: number;
+  readonly noOpMilliseconds: number;
+  readonly separatePassTotalMilliseconds: number;
+  readonly estimatedArithmeticTotalMilliseconds: number;
+  readonly kernels: readonly GpuCapeKernelTiming[];
+  readonly projectionComponents: {
+    readonly fullMilliseconds: number;
+    readonly contactsMilliseconds: number;
+    readonly selfCollisionMilliseconds: number;
+    readonly constraintsAndFoldMilliseconds: number;
+  };
+}
+
 const PARTICLE_COUNT = CAPE.columns * CAPE.rows;
 const ACTIVE_DRAG_PER_SECOND = 2.05;
 const IDLE_DRAG_PER_SECOND = 2.8;
@@ -131,6 +160,8 @@ export class GpuCapeSimulation {
   private readonly rockCountUniform = uniform(0, 'uint');
   private readonly computeSequence: THREE.ComputeNode[] = [];
   private readonly sleepKernel: THREE.ComputeNode;
+  private readonly profileNoOpKernel: THREE.ComputeNode;
+  private readonly profileProjectionKernels: readonly THREE.ComputeNode[];
   private readonly anchorCenter = new THREE.Vector3();
   private readonly anchorTarget = new THREE.Vector3();
   private readonly worldCandidateCenter = new THREE.Vector3(
@@ -190,6 +221,22 @@ export class GpuCapeSimulation {
       false,
       'Cape project position to scratch',
     );
+    const structuralScratchToPosition = this.createProjectionKernel(
+      this.scratchBuffer,
+      this.positionBuffer,
+      false,
+      'Cape structural scratch to position',
+      false,
+      false,
+    );
+    const structuralPositionToScratch = this.createProjectionKernel(
+      this.positionBuffer,
+      this.scratchBuffer,
+      false,
+      'Cape structural position to scratch',
+      false,
+      false,
+    );
     const hardScratchToPosition = this.createProjectionKernel(
       this.scratchBuffer,
       this.positionBuffer,
@@ -227,13 +274,22 @@ export class GpuCapeSimulation {
     // watchdogs, but batch the complete schedule into one compute pass and
     // one queue submission. Ping-pong projection also avoids a snapshot
     // dispatch between Jacobi passes.
+    // Profiling shows that collision discovery, not constraint projection,
+    // dominates this fixed grid. Project structure on every Jacobi iteration,
+    // refresh contacts at the midpoint and endpoint, then preserve continuous
+    // swept entry plus exact final face recovery around hard reconciliation.
     let currentBufferIsPosition = false;
     for (let iteration = 0; iteration < CAPE.solverIterations; iteration += 1) {
+      const refreshContacts = iteration === 4 || iteration === 9;
       this.computeSequence.push(
-        currentBufferIsPosition ? positionToScratch : scratchToPosition,
+        refreshContacts
+          ? currentBufferIsPosition ? positionToScratch : scratchToPosition
+          : currentBufferIsPosition
+            ? structuralPositionToScratch
+            : structuralScratchToPosition,
       );
       currentBufferIsPosition = !currentBufferIsPosition;
-      if (iteration >= CAPE.solverIterations - 6) {
+      if (refreshContacts && iteration === CAPE.solverIterations - 1) {
         this.computeSequence.push(
           currentBufferIsPosition ? positionBodyFaces : scratchBodyFaces,
         );
@@ -244,19 +300,31 @@ export class GpuCapeSimulation {
         currentBufferIsPosition ? hardPositionToScratch : hardScratchToPosition,
       );
       currentBufferIsPosition = !currentBufferIsPosition;
-      if (reconciliation > 0) {
+      if (reconciliation === 2) {
         this.computeSequence.push(
           currentBufferIsPosition ? positionBodyFaces : scratchBodyFaces,
         );
       }
-      this.computeSequence.push(reconciliation === 0
-        ? positionSweptRockFaces
-        : currentBufferIsPosition ? positionRockFaces : scratchRockFaces);
+      if (reconciliation === 0) {
+        this.computeSequence.push(positionSweptRockFaces);
+      } else if (reconciliation === 2) {
+        this.computeSequence.push(
+          currentBufferIsPosition ? positionRockFaces : scratchRockFaces,
+        );
+      }
     }
     if (!currentBufferIsPosition) {
       throw new Error('GPU cape projection schedule must finish in the render position buffer.');
     }
     this.sleepKernel = this.createSleepKernel();
+    this.profileNoOpKernel = Fn(() => {})()
+      .compute(PARTICLE_COUNT, [PARTICLE_COUNT])
+      .setName('Cape profile no-op');
+    this.profileProjectionKernels = [
+      this.createProjectionFeatureKernel(true, true, 'Cape profile projection full'),
+      this.createProjectionFeatureKernel(true, false, 'Cape profile projection no contacts'),
+      this.createProjectionFeatureKernel(false, false, 'Cape profile constraints and fold'),
+    ];
 
     const geometry = this.diagnosticMirror.mesh.geometry;
     geometry.setAttribute(
@@ -510,6 +578,94 @@ export class GpuCapeSimulation {
     };
   }
 
+  /**
+   * Profiling-only path: isolates every production dispatch in its own timed
+   * compute pass. The matching no-op pass estimates fixed pass/dispatch cost.
+   */
+  public async profileKernelBreakdown(requestedSamples = 4): Promise<GpuCapeKernelProfile> {
+    const backend = this.renderer.backend as unknown as KernelTimestampBackend;
+    if (backend.trackTimestamp !== true) {
+      throw new Error('GPU kernel profiling requires timestamp queries.');
+    }
+    const samples = THREE.MathUtils.clamp(Math.round(requestedSamples), 1, 16);
+    await this.renderer.resolveTimestampsAsync(THREE.TimestampQuery.COMPUTE);
+    const kernelDurations = this.computeSequence.map(() => [] as number[]);
+    const noOpDurations: number[] = [];
+    const pending: { readonly index: number; readonly uid: string }[] = [];
+    const pendingNoOps: string[] = [];
+    const projectionDurations = this.profileProjectionKernels.map(() => [] as number[]);
+    const pendingProjections: { readonly index: number; readonly uid: string }[] = [];
+
+    for (let sample = 0; sample < samples; sample += 1) {
+      for (let index = 0; index < this.computeSequence.length; index += 1) {
+        const kernel = this.computeSequence[index]!;
+        this.renderer.compute(kernel);
+        pending.push({ index, uid: backend.getTimestampUID(kernel) });
+      }
+      this.renderer.compute(this.profileNoOpKernel);
+      pendingNoOps.push(backend.getTimestampUID(this.profileNoOpKernel));
+      for (let index = 0; index < this.profileProjectionKernels.length; index += 1) {
+        const kernel = this.profileProjectionKernels[index]!;
+        this.renderer.compute(kernel);
+        pendingProjections.push({ index, uid: backend.getTimestampUID(kernel) });
+      }
+    }
+    await this.renderer.resolveTimestampsAsync(THREE.TimestampQuery.COMPUTE);
+
+    for (const measurement of pending) {
+      kernelDurations[measurement.index]!.push(backend.getTimestamp(measurement.uid));
+    }
+    for (const uid of pendingNoOps) noOpDurations.push(backend.getTimestamp(uid));
+    for (const measurement of pendingProjections) {
+      projectionDurations[measurement.index]!.push(backend.getTimestamp(measurement.uid));
+    }
+
+    const average = (values: readonly number[]): number => (
+      values.reduce((sum, value) => sum + value, 0) / Math.max(1, values.length)
+    );
+    const noOpMilliseconds = average(noOpDurations);
+    const fullProjectionMilliseconds = average(projectionDurations[0]!);
+    const noContactsMilliseconds = average(projectionDurations[1]!);
+    const constraintsAndFoldMilliseconds = average(projectionDurations[2]!);
+    const kernels = this.computeSequence.map((kernel, index): GpuCapeKernelTiming => {
+      const durations = kernelDurations[index]!;
+      const averageMilliseconds = average(durations);
+      return {
+        index,
+        name: kernel.name || `Kernel ${index}`,
+        averageMilliseconds,
+        minimumMilliseconds: Math.min(...durations),
+        maximumMilliseconds: Math.max(...durations),
+        estimatedArithmeticMilliseconds: Math.max(0, averageMilliseconds - noOpMilliseconds),
+      };
+    });
+    return {
+      samples,
+      noOpMilliseconds,
+      separatePassTotalMilliseconds: kernels.reduce(
+        (sum, kernel) => sum + kernel.averageMilliseconds,
+        0,
+      ),
+      estimatedArithmeticTotalMilliseconds: kernels.reduce(
+        (sum, kernel) => sum + kernel.estimatedArithmeticMilliseconds,
+        0,
+      ),
+      kernels,
+      projectionComponents: {
+        fullMilliseconds: fullProjectionMilliseconds,
+        contactsMilliseconds: Math.max(0, fullProjectionMilliseconds - noContactsMilliseconds),
+        selfCollisionMilliseconds: Math.max(
+          0,
+          noContactsMilliseconds - constraintsAndFoldMilliseconds,
+        ),
+        constraintsAndFoldMilliseconds: Math.max(
+          0,
+          constraintsAndFoldMilliseconds - noOpMilliseconds,
+        ),
+      },
+    };
+  }
+
   public getClosestActiveRockSurfaceContact(worldColliders?: readonly WorldCollider[]) {
     return this.diagnosticMirror.getClosestActiveRockSurfaceContact(
       worldColliders ?? this.worldColliderSource ?? [],
@@ -581,11 +737,37 @@ export class GpuCapeSimulation {
     target: typeof this.positionBuffer,
     hardRockRecovery: boolean,
     name: string,
+    includeSelfCollision = true,
+    includeContacts = true,
   ): THREE.ComputeNode {
-    const project = this.createProjectionFunction(source, target, name.replaceAll(' ', ''));
+    const project = this.createProjectionFunction(
+      source,
+      target,
+      name.replaceAll(' ', ''),
+      includeSelfCollision,
+      includeContacts,
+    );
     return Fn(() => {
       const passResult = float(0).toVar('projectionPassResult');
       passResult.assign(project(instanceIndex, bool(hardRockRecovery)));
+    })().compute(PARTICLE_COUNT, [PARTICLE_COUNT]).setName(name);
+  }
+
+  private createProjectionFeatureKernel(
+    includeSelfCollision: boolean,
+    includeContacts: boolean,
+    name: string,
+  ): THREE.ComputeNode {
+    const project = this.createProjectionFunction(
+      this.positionBuffer,
+      this.scratchBuffer,
+      name.replaceAll(' ', ''),
+      includeSelfCollision,
+      includeContacts,
+    );
+    return Fn(() => {
+      const passResult = float(0).toVar('profileProjectionPassResult');
+      passResult.assign(project(instanceIndex, bool(false)));
     })().compute(PARTICLE_COUNT, [PARTICLE_COUNT]).setName(name);
   }
 
@@ -606,6 +788,8 @@ export class GpuCapeSimulation {
     source: typeof this.positionBuffer,
     target: typeof this.positionBuffer,
     passName: string,
+    includeSelfCollision = true,
+    includeContacts = true,
   ) {
     return Fn<
       readonly [THREE.Node<'uint'>, THREE.Node<'bool'>],
@@ -664,6 +848,7 @@ export class GpuCapeSimulation {
       });
       previousPosition.addAssign(position.sub(foldStart));
 
+      if (includeSelfCollision) {
       const selfStart = position.toVar('selfStart');
       const selfCorrection = vec3(0).toVar('selfCorrection');
       const selfContacts = float(0).toVar('selfContacts');
@@ -712,7 +897,9 @@ export class GpuCapeSimulation {
       });
       position.addAssign(selfCorrection.div(selfContacts.max(1)));
       previousPosition.addAssign(position.sub(selfStart));
+      }
 
+      if (includeContacts) {
       const contactStart = position.toVar('contactStart');
       Loop(
         { start: uint(0), end: uint(this.bodyCountUniform), type: 'uint', condition: '<' },
@@ -1252,6 +1439,7 @@ export class GpuCapeSimulation {
           .toVar('contactInwardMotion');
         previousPosition.addAssign(contactNormal.mul(inwardMotion));
       });
+      }
       this.previousBuffer.element(index).assign(vec4(
         previousPosition,
         rockCorrectionUsed.add(select(rockSweepResolved, 1, 0)),
