@@ -9,10 +9,10 @@
     />
     <meta name="theme-color" content="#05080a" />
     <title>Cape Physics — The Veiled Deep</title>
-    <script type="module" crossorigin src="/cape-physics/assets/index-BmnRYQyR.js"></script>
+    <script type="module" crossorigin src="/cape-physics/assets/index-72YRntUZ.js"></script>
     <link rel="modulepreload" crossorigin href="/cape-physics/assets/three.core-caSNtrlo.js">
-    <link rel="modulepreload" crossorigin href="/cape-physics/assets/caveProfile-vzQLRLXH.js">
-    <link rel="stylesheet" crossorigin href="/cape-physics/assets/index-CDWZ9Ywn.css">
+    <link rel="modulepreload" crossorigin href="/cape-physics/assets/caveProfile-eedwewZm.js">
+    <link rel="stylesheet" crossorigin href="/cape-physics/assets/index-le2Z7jCn.css">
   </head>
   <body>
     <main class="app" data-app>
@@ -57,6 +57,84 @@
         <p>Realtime cloth · reactive water · living stone</p>
       </header>
 
+      <aside class="customization" data-customization aria-label="Cape customization">
+        <button
+          class="customization__toggle"
+          type="button"
+          data-customization-toggle
+          aria-controls="customization-panel"
+          aria-expanded="true"
+          aria-label="Collapse cape customization"
+        >
+          <span>CUSTOMIZE</span>
+          <strong>CAPE &amp; SCENE</strong>
+          <i aria-hidden="true"></i>
+        </button>
+        <div
+          class="customization__panel"
+          id="customization-panel"
+          data-customization-panel
+        >
+          <fieldset>
+            <legend>CAPE PHYSICS</legend>
+            <label class="customization__range">
+              <span>Length <output data-customization-value="length">1.68 m</output></span>
+              <input type="range" data-customization-setting="length" aria-label="Cape length" />
+            </label>
+            <label class="customization__range">
+              <span>Width <output data-customization-value="width">0.98 m</output></span>
+              <input type="range" data-customization-setting="width" aria-label="Cape width" />
+            </label>
+            <label class="customization__range">
+              <span>Stiffness <output data-customization-value="stiffness">1.00×</output></span>
+              <input type="range" data-customization-setting="stiffness" aria-label="Cloth stiffness" />
+            </label>
+            <label class="customization__range">
+              <span>Damping <output data-customization-value="damping">1.00×</output></span>
+              <input type="range" data-customization-setting="damping" aria-label="Cloth damping" />
+            </label>
+            <label class="customization__range">
+              <span>Weight <output data-customization-value="weight">1.00×</output></span>
+              <input type="range" data-customization-setting="weight" aria-label="Cape weight and gravity response" />
+            </label>
+          </fieldset>
+
+          <fieldset class="customization__scene">
+            <legend>SCENE</legend>
+            <label class="customization__switch">
+              <span>Lights</span>
+              <input type="checkbox" role="switch" data-customization-setting="lights" checked />
+              <i aria-hidden="true"></i>
+            </label>
+            <label class="customization__switch">
+              <span>Shadows</span>
+              <input type="checkbox" role="switch" data-customization-setting="shadows" checked />
+              <i aria-hidden="true"></i>
+            </label>
+            <label class="customization__switch">
+              <span>Reflections</span>
+              <input type="checkbox" role="switch" data-customization-setting="reflections" checked />
+              <i aria-hidden="true"></i>
+            </label>
+            <div
+              class="renderer-switch"
+              data-renderer-switch
+              role="group"
+              aria-label="Graphics renderer. Changing renderer reloads the demo."
+            >
+              <span>RENDERER</span>
+              <button type="button" data-renderer-option="webgpu" aria-pressed="false" title="Experimental renderer; WebGL is recommended">WEBGPU EXP</button>
+              <button type="button" data-renderer-option="webgl" aria-pressed="false">WEBGL</button>
+            </div>
+          </fieldset>
+
+          <div class="customization__footer">
+            <button type="button" data-customization-reset>RESET DEFAULTS</button>
+            <span data-customization-status aria-live="polite">Defaults active</span>
+          </div>
+        </div>
+      </aside>
+
       <section class="controls" aria-label="Controls">
         <div class="controls__eyebrow">TRAVERSE</div>
         <div class="controls__row">
@@ -78,17 +156,6 @@
       <div class="quality-badge" data-quality-badge>
         <span class="quality-badge__pulse"></span>
         <span data-quality-label>ADAPTIVE ULTRA</span>
-      </div>
-
-      <div
-        class="renderer-switch"
-        data-renderer-switch
-        role="group"
-        aria-label="Graphics renderer. Changing renderer reloads the demo."
-      >
-        <span>RENDERER</span>
-        <button type="button" data-renderer-option="webgpu" aria-pressed="false" title="Experimental renderer; WebGL is recommended">WEBGPU EXP</button>
-        <button type="button" data-renderer-option="webgl" aria-pressed="false">WEBGL</button>
       </div>
 
       <div class="onboarding" data-onboarding role="status">
