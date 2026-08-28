@@ -106,7 +106,7 @@ const IDLE_DRAG_PER_SECOND = 2.8;
 // Parallel constraint colors preserve the CPU solver's invariants but cancel
 // some of its order-dependent lateral bias. Restore that lost airflow response
 // without changing the shared force or introducing a rest-shape spring.
-const GPU_PARALLEL_FLUTTER_COMPENSATION = 5;
+const GPU_PARALLEL_FLUTTER_COMPENSATION = 10;
 // A graph-colored sweep converges overlapping long-range bend links much more
 // completely per iteration than the CPU's authored serial order. Normalize
 // their per-pass relaxation so both backends retain comparable fabric curl.
