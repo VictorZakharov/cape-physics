@@ -826,6 +826,7 @@ export class CapeDemo {
         hemDrop: this.cape.getHemDrop(),
         minimumLowerCapeDrop: this.cape.getMinimumLowerCapeDrop(),
         maximumLowerCapeLateralOffset: this.cape.getMaximumLowerCapeLateralOffset(capeAnchors),
+        averageLowerCapeSpanRatio: this.cape.getAverageLowerCapeSpanRatio(capeAnchors),
         hemBackOffset: this.cape.getHemBackOffset(capeAnchors),
         minimumHemGroundClearance: this.cape.getMinimumHemGroundClearance(),
         minimumActiveRockSurfaceDistance: closestRockSurfaceContact?.distance ?? null,

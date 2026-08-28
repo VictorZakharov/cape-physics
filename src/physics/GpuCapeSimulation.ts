@@ -57,15 +57,11 @@ interface ConstraintDefinition {
   readonly second: number;
   readonly restLength: number;
   readonly stiffness: number;
-  readonly structural: boolean;
 }
 
-interface ConstraintLink {
-  readonly neighbor: number;
-  readonly restLength: number;
-  readonly stiffness: number;
-  readonly massShare: number;
-  readonly structural: boolean;
+interface ColoredConstraintRange {
+  readonly offset: number;
+  readonly count: number;
 }
 
 interface KernelTimestampBackend {
@@ -143,6 +139,8 @@ export class GpuCapeSimulation {
   private readonly previousBuffer;
   private readonly anchorBuffer;
   private readonly topologyBuffer;
+  private readonly constraintBuffer;
+  private readonly coloredConstraintRanges: readonly ColoredConstraintRange[];
   private readonly bodyBuffer;
   private readonly caveShellBuffer;
   private readonly worldSphereBuffer;
@@ -154,6 +152,8 @@ export class GpuCapeSimulation {
   private readonly stiffnessUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.stiffness);
   private readonly dampingUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.damping);
   private readonly weightUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.weight);
+  private readonly capeLengthUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.length);
+  private readonly anchorCenterYUniform = uniform(0);
   private readonly bodyCountUniform = uniform(0, 'uint');
   private readonly backUniform = uniform(new THREE.Vector3(0, 0, 1));
   private readonly worldSphereCountUniform = uniform(0, 'uint');
@@ -196,6 +196,8 @@ export class GpuCapeSimulation {
 
     const topology = this.createTopology(initialState);
     this.topologyBuffer = instancedArray(topology.packed, 'vec4');
+    this.constraintBuffer = instancedArray(topology.coloredConstraints, 'vec4');
+    this.coloredConstraintRanges = topology.coloredConstraintRanges;
     this.bodyBuffer = instancedArray(MAX_BODY_COLLIDERS * BODY_BUFFER_STRIDE, 'vec4');
     const caveSamples = getCaveShellSampleData();
     const packedCaveSamples = new Float32Array(caveSamples.x.length * 2);
@@ -209,6 +211,14 @@ export class GpuCapeSimulation {
     this.updateAnchorBuffer(initialAnchors);
 
     this.computeSequence.push(this.createPredictionKernel());
+    const constrainPosition = this.createColoredConstraintKernel(
+      this.positionBuffer,
+      'Cape constrain position',
+    );
+    const constrainScratch = this.createColoredConstraintKernel(
+      this.scratchBuffer,
+      'Cape constrain scratch',
+    );
     const scratchToPosition = this.createProjectionKernel(
       this.scratchBuffer,
       this.positionBuffer,
@@ -220,22 +230,6 @@ export class GpuCapeSimulation {
       this.scratchBuffer,
       false,
       'Cape project position to scratch',
-    );
-    const structuralScratchToPosition = this.createProjectionKernel(
-      this.scratchBuffer,
-      this.positionBuffer,
-      false,
-      'Cape structural scratch to position',
-      false,
-      false,
-    );
-    const structuralPositionToScratch = this.createProjectionKernel(
-      this.positionBuffer,
-      this.scratchBuffer,
-      false,
-      'Cape structural position to scratch',
-      false,
-      false,
     );
     const hardScratchToPosition = this.createProjectionKernel(
       this.scratchBuffer,
@@ -270,26 +264,18 @@ export class GpuCapeSimulation {
       'Cape rock faces in scratch',
     );
 
-    // Keep every dispatch short enough for conservative browser/driver
-    // watchdogs, but batch the complete schedule into one compute pass and
-    // one queue submission. Ping-pong projection also avoids a snapshot
-    // dispatch between Jacobi passes.
-    // Profiling shows that collision discovery, not constraint projection,
-    // dominates this fixed grid. Project structure on every Jacobi iteration,
-    // refresh contacts at the midpoint and endpoint, then preserve continuous
-    // swept entry plus exact final face recovery around hard reconciliation.
+    // Edge coloring partitions distance links into race-free matchings. Each
+    // color updates both endpoints in parallel, then a workgroup barrier makes
+    // those corrections visible to the next color. Explicit curl and gravity
+    // constraints below preserve cloth shape without relying on serial order.
     let currentBufferIsPosition = false;
     for (let iteration = 0; iteration < CAPE.solverIterations; iteration += 1) {
-      const refreshContacts = iteration === 4 || iteration === 9;
       this.computeSequence.push(
-        refreshContacts
-          ? currentBufferIsPosition ? positionToScratch : scratchToPosition
-          : currentBufferIsPosition
-            ? structuralPositionToScratch
-            : structuralScratchToPosition,
+        currentBufferIsPosition ? constrainPosition : constrainScratch,
+        currentBufferIsPosition ? positionToScratch : scratchToPosition,
       );
       currentBufferIsPosition = !currentBufferIsPosition;
-      if (refreshContacts && iteration === CAPE.solverIterations - 1) {
+      if (iteration >= CAPE.solverIterations - 6) {
         this.computeSequence.push(
           currentBufferIsPosition ? positionBodyFaces : scratchBodyFaces,
         );
@@ -300,14 +286,14 @@ export class GpuCapeSimulation {
         currentBufferIsPosition ? hardPositionToScratch : hardScratchToPosition,
       );
       currentBufferIsPosition = !currentBufferIsPosition;
-      if (reconciliation === 2) {
+      if (reconciliation > 0) {
         this.computeSequence.push(
           currentBufferIsPosition ? positionBodyFaces : scratchBodyFaces,
         );
       }
       if (reconciliation === 0) {
         this.computeSequence.push(positionSweptRockFaces);
-      } else if (reconciliation === 2) {
+      } else {
         this.computeSequence.push(
           currentBufferIsPosition ? positionRockFaces : scratchRockFaces,
         );
@@ -323,7 +309,11 @@ export class GpuCapeSimulation {
     this.profileProjectionKernels = [
       this.createProjectionFeatureKernel(true, true, 'Cape profile projection full'),
       this.createProjectionFeatureKernel(true, false, 'Cape profile projection no contacts'),
-      this.createProjectionFeatureKernel(false, false, 'Cape profile constraints and fold'),
+      this.createProjectionFeatureKernel(false, false, 'Cape profile fold only'),
+      this.createColoredConstraintKernel(
+        this.scratchBuffer,
+        'Cape profile colored constraints',
+      ),
     ];
 
     const geometry = this.diagnosticMirror.mesh.geometry;
@@ -456,6 +446,7 @@ export class GpuCapeSimulation {
     this.writeStorage(this.scratchBuffer.value, state);
     this.writeStorage(this.previousBuffer.value, state);
     this.writeStorage(this.topologyBuffer.value, topology.packed);
+    this.writeStorage(this.constraintBuffer.value, topology.coloredConstraints);
     this.updateAnchorBuffer(anchors);
     this.submittedSteps = 0;
     this.worldContactsLastStep = 0;
@@ -542,6 +533,10 @@ export class GpuCapeSimulation {
     return this.diagnosticMirror.getMaximumLowerCapeLateralOffset(anchors);
   }
 
+  public getAverageLowerCapeSpanRatio(anchors: CapeAnchors): number {
+    return this.diagnosticMirror.getAverageLowerCapeSpanRatio(anchors);
+  }
+
   public getHemBackOffset(anchors: CapeAnchors): number {
     return this.diagnosticMirror.getHemBackOffset(anchors);
   }
@@ -626,7 +621,8 @@ export class GpuCapeSimulation {
     const noOpMilliseconds = average(noOpDurations);
     const fullProjectionMilliseconds = average(projectionDurations[0]!);
     const noContactsMilliseconds = average(projectionDurations[1]!);
-    const constraintsAndFoldMilliseconds = average(projectionDurations[2]!);
+    const foldMilliseconds = average(projectionDurations[2]!);
+    const constraintMilliseconds = average(projectionDurations[3]!);
     const kernels = this.computeSequence.map((kernel, index): GpuCapeKernelTiming => {
       const durations = kernelDurations[index]!;
       const averageMilliseconds = average(durations);
@@ -652,16 +648,15 @@ export class GpuCapeSimulation {
       ),
       kernels,
       projectionComponents: {
-        fullMilliseconds: fullProjectionMilliseconds,
+        fullMilliseconds: fullProjectionMilliseconds + constraintMilliseconds,
         contactsMilliseconds: Math.max(0, fullProjectionMilliseconds - noContactsMilliseconds),
         selfCollisionMilliseconds: Math.max(
           0,
-          noContactsMilliseconds - constraintsAndFoldMilliseconds,
+          noContactsMilliseconds - foldMilliseconds,
         ),
-        constraintsAndFoldMilliseconds: Math.max(
-          0,
-          constraintsAndFoldMilliseconds - noOpMilliseconds,
-        ),
+        constraintsAndFoldMilliseconds:
+          Math.max(0, foldMilliseconds - noOpMilliseconds)
+          + Math.max(0, constraintMilliseconds - noOpMilliseconds),
       },
     };
   }
@@ -729,7 +724,50 @@ export class GpuCapeSimulation {
       // contacts that begin and end between explicit diagnostic readbacks are
       // still observable without a new storage binding or a GPU fence.
       target.assign(vec4(predicted, current.w));
-    })().compute(PARTICLE_COUNT, [PARTICLE_COUNT]).setName('Cape predict');
+    })().compute(PARTICLE_COUNT).setName('Cape predict');
+  }
+
+  private createColoredConstraintKernel(
+    buffer: typeof this.positionBuffer,
+    name: string,
+  ): THREE.ComputeNode {
+    return Fn(() => {
+      const constraintIndex = instanceIndex;
+      for (const range of this.coloredConstraintRanges) {
+        If(constraintIndex.lessThan(uint(range.count)), () => {
+          const definition = this.constraintBuffer.element(
+            uint(range.offset).add(constraintIndex),
+          );
+          const firstIndex = uint(definition.x);
+          const secondIndex = uint(definition.y);
+          const firstState = buffer.element(firstIndex);
+          const secondState = buffer.element(secondIndex);
+          const first = firstState.xyz.toVar();
+          const second = secondState.xyz.toVar();
+          const delta = second.sub(first).toVar();
+          const length = delta.length().toVar();
+          const firstWeight = select(firstIndex.lessThan(uint(CAPE.columns)), 0, 1);
+          const secondWeight = select(secondIndex.lessThan(uint(CAPE.columns)), 0, 1);
+          const totalWeight = firstWeight.add(secondWeight);
+          If(
+            length.greaterThan(0.000_001).and(totalWeight.greaterThan(0)),
+            () => {
+              const stiffness = definition.w.mul(this.stiffnessUniform).min(0.999);
+              const correction = delta.mul(
+                length.sub(definition.z).div(length).mul(stiffness),
+              );
+              const firstCorrection = correction.mul(firstWeight.div(totalWeight));
+              const secondCorrection = correction.mul(secondWeight.div(totalWeight));
+              first.addAssign(firstCorrection);
+              second.subAssign(secondCorrection);
+              buffer.element(firstIndex).assign(vec4(first, firstState.w));
+              buffer.element(secondIndex).assign(vec4(second, secondState.w));
+            },
+          );
+        });
+        storageBarrier();
+      }
+    })().compute(PARTICLE_COUNT, [PARTICLE_COUNT]).setName(name);
   }
 
   private createProjectionKernel(
@@ -750,7 +788,7 @@ export class GpuCapeSimulation {
     return Fn(() => {
       const passResult = float(0).toVar('projectionPassResult');
       passResult.assign(project(instanceIndex, bool(hardRockRecovery)));
-    })().compute(PARTICLE_COUNT, [PARTICLE_COUNT]).setName(name);
+    })().compute(PARTICLE_COUNT).setName(name);
   }
 
   private createProjectionFeatureKernel(
@@ -768,7 +806,7 @@ export class GpuCapeSimulation {
     return Fn(() => {
       const passResult = float(0).toVar('profileProjectionPassResult');
       passResult.assign(project(instanceIndex, bool(false)));
-    })().compute(PARTICLE_COUNT, [PARTICLE_COUNT]).setName(name);
+    })().compute(PARTICLE_COUNT).setName(name);
   }
 
   private createFaceSweepKernel(
@@ -809,28 +847,29 @@ export class GpuCapeSimulation {
         previousState.w.sub(1),
         previousState.w,
       ).toVar('rockCorrectionUsed');
-      const correction = vec3(0).toVar('constraintCorrection');
-      const correctionWeight = float(0).toVar('constraintWeight');
-      const topologyMetadata = this.topologyBuffer.element(
-        index.mul(uint(TOPOLOGY_METADATA_STRIDE)),
+      const particleRow = index.div(uint(CAPE.columns));
+      const particleColumn = index.mod(uint(CAPE.columns));
+
+      // Prevent inertial/airflow lift from holding the entire sheet horizontal.
+      // The CPU Gauss-Seidel sweep naturally retains this gravity-aligned sag;
+      // the split GPU projection needs the same unilateral envelope explicitly.
+      // Later body/world projection remains authoritative when cloth rests on
+      // a formation, so this does not create hidden collision geometry.
+      const down = float(particleRow).div(CAPE.rows - 1);
+      const dropProfile = down.mul(down).mul(float(3).sub(down.mul(2)));
+      const minimumDropRatio = mix(0.58, 0.28, this.movementBlendUniform);
+      const maximumHeight = this.anchorCenterYUniform.sub(
+        this.capeLengthUniform.mul(dropProfile).mul(minimumDropRatio),
       );
-      Loop({ start: uint(0), end: uint(topologyMetadata.y), type: 'uint', condition: '<' }, ({ i }) => {
-        const link = this.topologyBuffer.element(uint(topologyMetadata.x).add(i));
-        const neighborPosition = source.element(uint(link.x)).xyz;
-        const delta = neighborPosition.sub(position).toVar('constraintDelta');
-        const length = delta.length().max(0.000_001).toVar('constraintLength');
-        const baseWeight = link.z.abs().mul(link.w);
-        correction.addAssign(
-          delta
-            .mul(length.sub(link.y).div(length))
-            .mul(baseWeight)
-            .mul(this.stiffnessUniform),
-        );
-        correctionWeight.addAssign(baseWeight);
-      });
-      position.addAssign(
-        correction.div(correctionWeight.max(1)),
+      const sagStart = position.toVar('sagStart');
+      position.y.subAssign(
+        position.y
+          .sub(maximumHeight)
+          .max(0)
+          .mul(smoothstep(0.05, 0.35, down))
+          .mul(0.46),
       );
+      previousPosition.addAssign(position.sub(sagStart));
 
       const topologyNeighbors = this.topologyBuffer.element(
         index.mul(uint(TOPOLOGY_METADATA_STRIDE)).add(1),
@@ -852,8 +891,6 @@ export class GpuCapeSimulation {
       const selfStart = position.toVar('selfStart');
       const selfCorrection = vec3(0).toVar('selfCorrection');
       const selfContacts = float(0).toVar('selfContacts');
-      const particleRow = index.div(uint(CAPE.columns));
-      const particleColumn = index.mod(uint(CAPE.columns));
       Loop({ start: uint(0), end: uint(PARTICLE_COUNT), type: 'uint', condition: '<' }, ({ i }) => {
         If(i.notEqual(index), () => {
           const otherRow = i.div(uint(CAPE.columns));
@@ -1878,7 +1915,6 @@ export class GpuCapeSimulation {
           { start: uint(0), end: uint(this.rockCountUniform), type: 'uint', condition: '<' },
           ({ i: rockIndex }) => {
             const rockBase = rockIndex.mul(uint(ROCK_BUFFER_STRIDE));
-            const rockCenterLimit = this.rockBuffer.element(rockBase);
             const rockMinimum = this.rockBuffer.element(rockBase.add(1));
             const rockMaximum = this.rockBuffer.element(rockBase.add(2));
             const overlapsRock = faceTriangleMaximum.x.greaterThanEqual(rockMinimum.x)
@@ -2008,7 +2044,9 @@ export class GpuCapeSimulation {
               If(triangleIntersects, () => {
                 const centroid = first.add(second).add(third).div(3)
                   .toVar('rockFaceCentroid');
-                const resolvedNormal = centroid.sub(rockCenterLimit.xyz)
+                const resolvedNormal = centroid.sub(
+                  this.rockBuffer.element(rockBase).xyz,
+                )
                   .toVar('rockFaceResolvedNormal');
                 If(resolvedNormal.dot(resolvedNormal).greaterThan(0.000_001), () => {
                   resolvedNormal.assign(resolvedNormal.normalize());
@@ -2338,7 +2376,7 @@ export class GpuCapeSimulation {
       const index = instanceIndex;
       const position = this.positionBuffer.element(index);
       this.previousBuffer.element(index).assign(vec4(position.xyz, 0));
-    })().compute(PARTICLE_COUNT, [PARTICLE_COUNT]).setName('Cape sleep');
+    })().compute(PARTICLE_COUNT).setName('Cape sleep');
   }
 
   private createInitialState(): Float32Array {
@@ -2359,6 +2397,8 @@ export class GpuCapeSimulation {
   private createTopology(initialState: Float32Array): {
     readonly packed: Float32Array;
     readonly normalNeighbors: Uint32Array;
+    readonly coloredConstraints: Float32Array;
+    readonly coloredConstraintRanges: readonly ColoredConstraintRange[];
   } {
     const constraints: ConstraintDefinition[] = [];
     const readPosition = (index: number): THREE.Vector3 => new THREE.Vector3(
@@ -2372,7 +2412,6 @@ export class GpuCapeSimulation {
       secondColumn: number,
       secondRow: number,
       stiffness: number,
-      structural: boolean,
     ): void => {
       const first = firstRow * CAPE.columns + firstColumn;
       const second = secondRow * CAPE.columns + secondColumn;
@@ -2381,44 +2420,29 @@ export class GpuCapeSimulation {
         second,
         restLength: readPosition(first).distanceTo(readPosition(second)),
         stiffness,
-        structural,
       });
     };
     for (let row = 0; row < CAPE.rows; row += 1) {
       for (let column = 0; column < CAPE.columns; column += 1) {
-        if (column + 1 < CAPE.columns) addConstraint(column, row, column + 1, row, 0.93, true);
-        if (row + 1 < CAPE.rows) addConstraint(column, row, column, row + 1, 0.96, true);
+        if (column + 1 < CAPE.columns) addConstraint(column, row, column + 1, row, 0.93);
+        if (row + 1 < CAPE.rows) addConstraint(column, row, column, row + 1, 0.96);
         if (column + 1 < CAPE.columns && row + 1 < CAPE.rows) {
-          addConstraint(column, row, column + 1, row + 1, 0.8, false);
-          addConstraint(column + 1, row, column, row + 1, 0.8, false);
+          addConstraint(column, row, column + 1, row + 1, 0.8);
+          addConstraint(column + 1, row, column, row + 1, 0.8);
         }
-        if (column + 2 < CAPE.columns) addConstraint(column, row, column + 2, row, 0.58, false);
-        if (row + 2 < CAPE.rows) addConstraint(column, row, column, row + 2, 0.82, false);
-        if (column + 3 < CAPE.columns) addConstraint(column, row, column + 3, row, 0.16, false);
-        if (row + 3 < CAPE.rows) addConstraint(column, row, column, row + 3, 0.38, false);
+        if (column + 2 < CAPE.columns) addConstraint(column, row, column + 2, row, 0.58);
+        if (row + 2 < CAPE.rows) addConstraint(column, row, column, row + 2, 0.82);
+        if (column + 3 < CAPE.columns) addConstraint(column, row, column + 3, row, 0.16);
+        if (row + 3 < CAPE.rows) addConstraint(column, row, column, row + 3, 0.38);
       }
     }
-
-    const adjacency: ConstraintLink[][] = Array.from({ length: PARTICLE_COUNT }, () => []);
-    for (const constraint of constraints) {
-      const firstMass = constraint.first < CAPE.columns ? 0 : 1;
-      const secondMass = constraint.second < CAPE.columns ? 0 : 1;
-      const totalMass = firstMass + secondMass;
-      adjacency[constraint.first]?.push({
-        neighbor: constraint.second,
-        restLength: constraint.restLength,
-        stiffness: constraint.stiffness,
-        massShare: totalMass > 0 ? firstMass / totalMass : 0,
-        structural: constraint.structural,
-      });
-      adjacency[constraint.second]?.push({
-        neighbor: constraint.first,
-        restLength: constraint.restLength,
-        stiffness: constraint.stiffness,
-        massShare: totalMass > 0 ? secondMass / totalMass : 0,
-        structural: constraint.structural,
-      });
+    // Local links preserve arc length but permit an entire row to curl into a
+    // tube. This loose endpoint chord is rotation-invariant and only resists
+    // severe row curl; normal waves and formation contact remain free.
+    for (let row = 1; row < CAPE.rows; row += 1) {
+      addConstraint(0, row, CAPE.columns - 1, row, 0.36);
     }
+
     const normalNeighbors = new Uint32Array(PARTICLE_COUNT * 4);
     for (let row = 0; row < CAPE.rows; row += 1) {
       for (let column = 0; column < CAPE.columns; column += 1) {
@@ -2430,33 +2454,56 @@ export class GpuCapeSimulation {
       }
     }
 
-    const flatLinks = adjacency.flat();
-    const linkBase = PARTICLE_COUNT * TOPOLOGY_METADATA_STRIDE;
-    const packed = new Float32Array((linkBase + flatLinks.length) * 4);
-    let pointer = 0;
-    adjacency.forEach((particleLinks, particleIndex) => {
+    const packed = new Float32Array(PARTICLE_COUNT * TOPOLOGY_METADATA_STRIDE * 4);
+    for (let particleIndex = 0; particleIndex < PARTICLE_COUNT; particleIndex += 1) {
       const metadataOffset = particleIndex * TOPOLOGY_METADATA_STRIDE * 4;
       const neighborOffset = particleIndex * 4;
-      packed[metadataOffset] = linkBase + pointer;
-      packed[metadataOffset + 1] = particleLinks.length;
       packed[metadataOffset + 2] = normalNeighbors[neighborOffset] ?? particleIndex;
       packed[metadataOffset + 3] = normalNeighbors[neighborOffset + 1] ?? particleIndex;
       packed[metadataOffset + 4] = normalNeighbors[neighborOffset + 2] ?? particleIndex;
       packed[metadataOffset + 5] = normalNeighbors[neighborOffset + 3] ?? particleIndex;
-      for (const link of particleLinks) {
-        const linkOffset = (linkBase + pointer) * 4;
-        packed[linkOffset] = link.neighbor;
-        packed[linkOffset + 1] = link.restLength;
-        packed[linkOffset + 2] = link.structural ? -link.stiffness : link.stiffness;
-        packed[linkOffset + 3] = link.massShare;
-        pointer += 1;
+    }
+
+    const colors: ConstraintDefinition[][] = [];
+    const occupiedByColor: Set<number>[] = [];
+    for (const constraint of constraints) {
+      let color = occupiedByColor.findIndex(
+        (occupied) => !occupied.has(constraint.first) && !occupied.has(constraint.second),
+      );
+      if (color < 0) {
+        color = colors.length;
+        colors.push([]);
+        occupiedByColor.push(new Set<number>());
       }
-    });
-    return { packed, normalNeighbors };
+      colors[color]?.push(constraint);
+      occupiedByColor[color]?.add(constraint.first);
+      occupiedByColor[color]?.add(constraint.second);
+    }
+    const coloredConstraints = new Float32Array(constraints.length * 4);
+    const coloredConstraintRanges: ColoredConstraintRange[] = [];
+    let constraintOffset = 0;
+    for (const color of colors) {
+      coloredConstraintRanges.push({ offset: constraintOffset, count: color.length });
+      for (const constraint of color) {
+        const offset = constraintOffset * 4;
+        coloredConstraints[offset] = constraint.first;
+        coloredConstraints[offset + 1] = constraint.second;
+        coloredConstraints[offset + 2] = constraint.restLength;
+        coloredConstraints[offset + 3] = constraint.stiffness;
+        constraintOffset += 1;
+      }
+    }
+    return {
+      packed,
+      normalNeighbors,
+      coloredConstraints,
+      coloredConstraintRanges,
+    };
   }
 
   private updateAnchorBuffer(anchors: CapeAnchors): void {
     this.anchorCenter.copy(anchors.left).add(anchors.right).multiplyScalar(0.5);
+    this.anchorCenterYUniform.value = this.anchorCenter.y;
     const array = this.anchorBuffer.value.array as Float32Array;
     for (let column = 0; column < CAPE.columns; column += 1) {
       const progress = column / (CAPE.columns - 1);
@@ -2482,6 +2529,7 @@ export class GpuCapeSimulation {
     this.stiffnessUniform.value = this.settings.stiffness;
     this.dampingUniform.value = this.settings.damping;
     this.weightUniform.value = this.settings.weight;
+    this.capeLengthUniform.value = this.settings.length;
   }
 
   private updateBodyBuffers(

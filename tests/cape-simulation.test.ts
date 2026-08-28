@@ -39,6 +39,7 @@ describe('CapeSimulation', () => {
     expect(cape.getParticlePosition(0, 0).distanceTo(anchors.left)).toBeLessThan(0.000_001);
     expect(cape.getParticlePosition(CAPE.columns - 1, 0).distanceTo(anchors.right)).toBeLessThan(0.000_001);
     expect(cape.getMaximumStructuralError()).toBeLessThan(0.035);
+    expect(cape.getAverageLowerCapeSpanRatio(anchors)).toBeGreaterThan(0.45);
     expect(Number.isFinite(cape.getParticlePosition(6, CAPE.rows - 1).lengthSq())).toBe(true);
   });
 

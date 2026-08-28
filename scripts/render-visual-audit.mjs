@@ -188,6 +188,11 @@ try {
     return frame;
   };
   const diagnostics = () => evaluate(command, 'window.__CAPE_DEMO__.getDiagnostics()');
+  const assertCapeNotRolled = (state, label) => assert(
+    state.cape.averageLowerCapeSpanRatio > 0.3,
+    `${label} rolled the cape into a tube (`
+      + `${state.cape.averageLowerCapeSpanRatio.toFixed(4)} lower-row lateral-span ratio)`,
+  );
   const setView = (yaw, pitch, distance) => evaluate(
     command,
     `window.__CAPE_DEMO__.setView(${JSON.stringify({ yaw, pitch, distance })})`,
@@ -252,6 +257,7 @@ try {
         && state.cape.maximumEnvironmentFacePenetration < 0.002
         && state.cape.maximumUpwardFold <= 0.055_05
         && state.cape.maximumStructuralError < 0.055
+        && state.cape.averageLowerCapeSpanRatio > 0.3
       ) return state;
     }
     throw new Error(
@@ -663,6 +669,7 @@ try {
     `cape penetrated the cave during visual traversal (${afterWalk.cape.maximumEnvironmentPenetration} m; ${JSON.stringify({ penetration: afterWalk.cape.environmentPenetrationByKind, beforeHem: beforeWalk.cape.hemCenter, afterHem: afterWalk.cape.hemCenter, beforePlayer: beforeWalk.player.position, afterPlayer: afterWalk.player.position })})`,
   );
   assert(afterWalk.cape.maximumEnvironmentFacePenetration < 0.002, 'a cave object pierced a cape triangle during visual traversal');
+  assertCapeNotRolled(afterWalk, 'walking');
   assert(afterWalk.cape.hemBackOffset < 0.75, 'walking pulled the cape into a running-length trail');
   assert(
     Math.abs(afterWalk.cape.hemCenter[2] - beforeWalk.cape.hemCenter[2]) > 1,
@@ -721,6 +728,7 @@ try {
     runState.cape.hemBackOffset > afterWalk.cape.hemBackOffset + 0.5,
     'running did not produce a materially stronger cape trail than walking',
   );
+  assertCapeNotRolled(runState, 'running');
   await setView(1.18, 0.12, 4.1);
   await capture('character-running');
   let frameProfile = null;
@@ -746,6 +754,7 @@ try {
     );
     assert(frameProfile.diagnostics.cape.maximumBodyPenetration < 0.002, 'cape penetrated the body during profiled traversal');
     assert(frameProfile.diagnostics.cape.maximumEnvironmentFacePenetration < 0.002, 'a formation pierced a cape face during profiled traversal');
+    assertCapeNotRolled(frameProfile.diagnostics, 'profiled traversal');
   } else {
     console.log('144 Hz wall-clock profile: SKIPPED (deterministic CI mode)');
   }
@@ -774,6 +783,7 @@ try {
       + `(${JSON.stringify(wrapState.cape.bodyPenetrationByKind)}; `
       + `${JSON.stringify(wrapState.cape.bodyPenetrationByCollider)})`,
   );
+  assertCapeNotRolled(wrapState, 'reversal');
   await capture('cape-wrap-reversal');
 
   await setPlayerPose([-2.38, 0, -15], 0);
@@ -788,6 +798,7 @@ try {
   assert(settledCape.cape.maximumEnvironmentPenetration < 0.002, 'settled cape penetrated cave geometry');
   assert(settledCape.cape.minimumSelfSeparation > 0.05, 'settled cape collapsed through itself');
   assert(settledCape.cape.maximumUpwardFold <= 0.055_05, 'settled cape retained an impossible upward fold');
+  assertCapeNotRolled(settledCape, 'settling');
   assert(settledCape.cape.hemDrop > 0.72, 'cape retained a physically impossible inverted resting pose');
   assert(settledCape.cape.minimumLowerCapeDrop > 0.48, 'a lower cape panel remained suspended in mid-air');
   assert(

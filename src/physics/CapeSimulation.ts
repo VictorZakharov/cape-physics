@@ -487,6 +487,32 @@ export class CapeSimulation {
     return maximum;
   }
 
+  /**
+   * Detects a cape that has rolled its rows into a tube while retaining valid
+   * edge lengths. A healthy lower cape keeps most of each row aligned with the
+   * character's shoulder axis even while it trails, folds, or contacts rocks.
+   */
+  public getAverageLowerCapeSpanRatio(anchors: CapeAnchors): number {
+    this.rightAxis.copy(anchors.right).sub(anchors.left).normalize();
+    const anchorWidth = anchors.right.distanceTo(anchors.left);
+    const firstLowerRow = Math.floor(CAPE.rows * 0.58);
+    let ratioTotal = 0;
+    let rowCount = 0;
+    for (let row = firstLowerRow; row < CAPE.rows; row += 1) {
+      const left = this.positions[this.index(0, row)];
+      const right = this.positions[this.index(CAPE.columns - 1, row)];
+      if (!left || !right) continue;
+      const down = row / (CAPE.rows - 1);
+      const restWidth = getCapeRestWidth(anchorWidth, down, this.settings.width);
+      const lateralSpan = Math.abs(
+        this.drapeDelta.copy(right).sub(left).dot(this.rightAxis),
+      );
+      ratioTotal += lateralSpan / Math.max(0.000_001, restWidth);
+      rowCount += 1;
+    }
+    return rowCount > 0 ? ratioTotal / rowCount : 0;
+  }
+
   public getHemBackOffset(anchors: CapeAnchors): number {
     this.getRowCenter(CAPE.rows - 1, this.rowCenter);
     return this.drapeDelta.copy(this.rowCenter).sub(this.anchorCenter).dot(anchors.back);
