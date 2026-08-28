@@ -101,7 +101,7 @@ $env:CAPE_PROFILE_RENDERER = "webgl" # or "webgpu"
 bun run profile:render
 ```
 
-Timing budgets are never CI merge gates. Deterministic tests and visual audits enforce correctness instead.
+Timing budgets are never CI merge gates. CI uses deterministic tests plus short renderer smoke checks; the full 37-view audit remains available locally with `bun run audit:visual`.
 
 ## Run locally
 
