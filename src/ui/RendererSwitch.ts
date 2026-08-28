@@ -1,12 +1,10 @@
 import {
-  RENDERER_STORAGE_KEY,
   rendererPreferenceUrl,
   type RendererPreference,
 } from '../core/RendererPreference';
 import { invariant } from '../utils/assert';
 
 export interface RendererSwitchEnvironment {
-  readonly storage: Pick<Storage, 'setItem'>;
   readonly location: Pick<Location, 'href' | 'replace'>;
 }
 
@@ -18,7 +16,6 @@ export class RendererSwitch {
     requested: RendererPreference,
     webGPUAvailable: boolean,
     private readonly environment: RendererSwitchEnvironment = {
-      storage: window.localStorage,
       location: window.location,
     },
   ) {
@@ -70,11 +67,6 @@ export class RendererSwitch {
     const button = event.currentTarget as HTMLButtonElement;
     const preference = button.dataset.rendererOption;
     if ((preference !== 'webgpu' && preference !== 'webgl') || button.disabled) return;
-    try {
-      this.environment.storage.setItem(RENDERER_STORAGE_KEY, preference);
-    } catch {
-      // A private or locked-down context can still switch for this URL.
-    }
     this.environment.location.replace(
       rendererPreferenceUrl(this.environment.location.href, preference),
     );

@@ -28,11 +28,9 @@ const NUMERIC_SETTINGS: readonly NumericSetting[] = [
   'stiffness',
   'damping',
   'weight',
-  'wind',
 ];
 
 const TOGGLE_SETTINGS: readonly ToggleSetting[] = ['lights', 'shadows', 'reflections'];
-const DIMENSION_UPDATE_DELAY = 140;
 
 export class CustomizationPanel {
   private readonly root: HTMLElement;
@@ -44,10 +42,12 @@ export class CustomizationPanel {
   private readonly toggleInputs = new Map<ToggleSetting, HTMLInputElement>();
   private readonly outputElements = new Map<NumericSetting, HTMLOutputElement>();
   private settings: CustomizationSettings = { ...DEFAULT_CUSTOMIZATION_SETTINGS };
-  private dimensionUpdateTimer: number | null = null;
 
   public constructor(
-    private readonly onChange: (settings: CustomizationSettings) => void,
+    private readonly onChange: (
+      settings: CustomizationSettings,
+      settleDimensions: boolean,
+    ) => void,
   ) {
     this.root = invariant(
       document.querySelector<HTMLElement>('[data-customization]'),
@@ -84,6 +84,9 @@ export class CustomizationPanel {
       input.max = String(range.max);
       input.step = String(range.step);
       input.addEventListener('input', this.handleNumericInput);
+      if (name === 'length' || name === 'width') {
+        input.addEventListener('change', this.handleDimensionCommit);
+      }
       this.numericInputs.set(name, input);
       this.outputElements.set(name, output);
     }
@@ -109,12 +112,9 @@ export class CustomizationPanel {
   }
 
   public dispose(): void {
-    if (this.dimensionUpdateTimer !== null) {
-      window.clearTimeout(this.dimensionUpdateTimer);
-      this.dimensionUpdateTimer = null;
-    }
     this.numericInputs.forEach((input) => {
       input.removeEventListener('input', this.handleNumericInput);
+      input.removeEventListener('change', this.handleDimensionCommit);
     });
     this.toggleInputs.forEach((input) => {
       input.removeEventListener('change', this.handleToggleInput);
@@ -137,15 +137,11 @@ export class CustomizationPanel {
     this.updateOutput(name);
     this.status.textContent = 'Custom settings active';
 
-    if (name === 'length' || name === 'width') {
-      if (this.dimensionUpdateTimer !== null) window.clearTimeout(this.dimensionUpdateTimer);
-      this.dimensionUpdateTimer = window.setTimeout(() => {
-        this.dimensionUpdateTimer = null;
-        this.emitChange();
-      }, DIMENSION_UPDATE_DELAY);
-      return;
-    }
     this.emitChange();
+  };
+
+  private readonly handleDimensionCommit = (): void => {
+    this.emitChange(true);
   };
 
   private readonly handleToggleInput = (event: Event): void => {
@@ -164,18 +160,14 @@ export class CustomizationPanel {
   };
 
   private readonly handleReset = (): void => {
-    if (this.dimensionUpdateTimer !== null) {
-      window.clearTimeout(this.dimensionUpdateTimer);
-      this.dimensionUpdateTimer = null;
-    }
     this.settings = { ...DEFAULT_CUSTOMIZATION_SETTINGS };
     this.syncControls();
     this.status.textContent = 'Defaults restored';
-    this.emitChange();
+    this.emitChange(true);
   };
 
-  private emitChange(): void {
-    this.onChange({ ...this.settings });
+  private emitChange(settleDimensions = false): void {
+    this.onChange({ ...this.settings }, settleDimensions);
   }
 
   private syncControls(): void {

@@ -111,7 +111,6 @@ export class GpuCapeSimulation {
   private readonly stiffnessUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.stiffness);
   private readonly dampingUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.damping);
   private readonly weightUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.weight);
-  private readonly windUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.wind);
   private readonly bodyCountUniform = uniform(0, 'uint');
   private readonly backUniform = uniform(new THREE.Vector3(0, 0, 1));
   private readonly worldSphereCountUniform = uniform(0, 'uint');
@@ -298,8 +297,7 @@ export class GpuCapeSimulation {
     time: number,
   ): void {
     const characterSpeed = characterVelocity.length();
-    const windActive = this.settings.wind > 1.01;
-    if (characterSpeed > WAKE_SPEED || windActive) {
+    if (characterSpeed > WAKE_SPEED) {
       this.settledSeconds = 0;
       this.sleeping = false;
     } else {
@@ -319,7 +317,7 @@ export class GpuCapeSimulation {
       Math.sin(time * 0.47) * 0.38 + Math.sin(time * 1.91) * 0.16,
       0.08 + Math.sin(time * 0.71) * 0.05,
       0.62 + Math.cos(time * 0.31) * 0.24,
-    ).multiplyScalar(THREE.MathUtils.lerp(0.45, locomotionAirflow, movementBlend))
+    ).multiplyScalar(THREE.MathUtils.lerp(0.025, locomotionAirflow, movementBlend))
       .addScaledVector(characterVelocity, -velocityAirflow);
     this.deltaTimeUniform.value = deltaTime;
     this.timeUniform.value = time;
@@ -546,12 +544,11 @@ export class GpuCapeSimulation {
       const predicted = currentPosition.add(velocity).toVar('predicted');
       predicted.y.subAssign(deltaSquared.mul(9.81).mul(this.weightUniform));
       predicted.addAssign(normal.mul(
-        pressure.mul(pressure.abs()).mul(0.026).mul(this.windUniform).mul(deltaSquared),
+        pressure.mul(pressure.abs()).mul(0.026).mul(deltaSquared),
       ));
       predicted.addAssign(
         this.airflowUniform
           .mul(float(0.048).add(turbulence.mul(0.011)))
-          .mul(this.windUniform)
           .mul(deltaSquared),
       );
       // Keep a monotonic event count in the otherwise-unused state lane so
@@ -1986,7 +1983,6 @@ export class GpuCapeSimulation {
     this.stiffnessUniform.value = this.settings.stiffness;
     this.dampingUniform.value = this.settings.damping;
     this.weightUniform.value = this.settings.weight;
-    this.windUniform.value = this.settings.wind;
   }
 
   private updateBodyBuffers(

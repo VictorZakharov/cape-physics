@@ -84,14 +84,12 @@ describe('cape customization', () => {
       stiffness: 5,
       damping: Number.NaN,
       weight: -2,
-      wind: 99,
     })).toEqual({
       length: DEFAULT_CAPE_PHYSICS_SETTINGS.length,
       width: CAPE_PHYSICS_SETTING_RANGES.width.min,
       stiffness: CAPE_PHYSICS_SETTING_RANGES.stiffness.max,
       damping: DEFAULT_CAPE_PHYSICS_SETTINGS.damping,
       weight: CAPE_PHYSICS_SETTING_RANGES.weight.min,
-      wind: CAPE_PHYSICS_SETTING_RANGES.wind.max,
     });
   });
 
@@ -168,30 +166,6 @@ describe('cape customization', () => {
     ).toBeLessThan(0.000_001);
   });
 
-  test('wind produces a persistent visible response while zero wind stays still', () => {
-    const character = new Character();
-    character.root.updateMatrixWorld(true);
-    const anchors = character.getCapeAnchors();
-    const stillCape = new CapeSimulation(anchors, {
-      ...DEFAULT_CAPE_PHYSICS_SETTINGS,
-      wind: CAPE_PHYSICS_SETTING_RANGES.wind.min,
-    });
-    const windyCape = new CapeSimulation(anchors, {
-      ...DEFAULT_CAPE_PHYSICS_SETTINGS,
-      wind: CAPE_PHYSICS_SETTING_RANGES.wind.max,
-    });
-    const velocity = new THREE.Vector3();
-
-    for (let step = 0; step < 360; step += 1) {
-      const time = step * PHYSICS_STEP;
-      stillCape.step(PHYSICS_STEP, anchors, [], [], velocity, time);
-      windyCape.step(PHYSICS_STEP, anchors, [], [], velocity, time);
-    }
-
-    expect(getHemCenter(windyCape).distanceTo(getHemCenter(stillCape))).toBeGreaterThan(0.01);
-    expect(windyCape.isSleeping()).toBe(false);
-  });
-
   test('keeps a long heavy flexible cape outside formations and the cave shell', () => {
     const character = new Character();
     character.root.updateMatrixWorld(true);
@@ -202,7 +176,6 @@ describe('cape customization', () => {
       width: CAPE_PHYSICS_SETTING_RANGES.width.max,
       stiffness: CAPE_PHYSICS_SETTING_RANGES.stiffness.min,
       weight: CAPE_PHYSICS_SETTING_RANGES.weight.max,
-      wind: CAPE_PHYSICS_SETTING_RANGES.wind.max,
     };
     const cape = new CapeSimulation(anchors, settings);
     const initialHem = getHemCenter(cape);
@@ -258,7 +231,6 @@ describe('cape customization', () => {
       length: CAPE_PHYSICS_SETTING_RANGES.length.min,
       stiffness: CAPE_PHYSICS_SETTING_RANGES.stiffness.min,
       weight: CAPE_PHYSICS_SETTING_RANGES.weight.max,
-      wind: 0,
     });
     const baseY = character.root.position.y;
     const previousRoot = character.root.position.clone();

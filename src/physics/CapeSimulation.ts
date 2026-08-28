@@ -125,15 +125,14 @@ export class CapeSimulation {
     time: number,
   ): void {
     const characterSpeed = characterVelocity.length();
-    const windActive = this.settings.wind > 1.01;
     const profileActive = this.profiler.beginStep(
-      !this.sleeping || characterSpeed > WAKE_SPEED || windActive,
+      !this.sleeping || characterSpeed > WAKE_SPEED,
     );
     const profileStepStart = profileActive ? performance.now() : 0;
     let profilePhaseStart = profileStepStart;
     this.captureStepStart();
     const planarSpeed = Math.hypot(characterVelocity.x, characterVelocity.z);
-    if (characterSpeed > WAKE_SPEED || windActive) {
+    if (characterSpeed > WAKE_SPEED) {
       this.settledSeconds = 0;
       this.sleeping = false;
     }
@@ -165,7 +164,7 @@ export class CapeSimulation {
       Math.sin(time * 0.47) * 0.38 + Math.sin(time * 1.91) * 0.16,
       0.08 + Math.sin(time * 0.71) * 0.05,
       0.62 + Math.cos(time * 0.31) * 0.24,
-    ).multiplyScalar(THREE.MathUtils.lerp(0.45, locomotionAirflow, movementBlend))
+    ).multiplyScalar(THREE.MathUtils.lerp(0.025, locomotionAirflow, movementBlend))
       .addScaledVector(characterVelocity, -velocityAirflow);
 
     const deltaSquared = deltaTime * deltaTime;
@@ -190,11 +189,11 @@ export class CapeSimulation {
         position.y -= 9.81 * this.settings.weight * deltaSquared;
         position.addScaledVector(
           this.normal,
-          pressure * Math.abs(pressure) * 0.026 * this.settings.wind * deltaSquared,
+          pressure * Math.abs(pressure) * 0.026 * deltaSquared,
         );
         position.addScaledVector(
           this.airflow,
-          (0.048 + turbulence * 0.011) * this.settings.wind * deltaSquared,
+          (0.048 + turbulence * 0.011) * deltaSquared,
         );
       }
     }

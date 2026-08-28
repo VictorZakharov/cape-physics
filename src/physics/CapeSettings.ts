@@ -7,7 +7,6 @@ export interface CapePhysicsSettings {
   readonly stiffness: number;
   readonly damping: number;
   readonly weight: number;
-  readonly wind: number;
 }
 
 export const CAPE_PHYSICS_SETTING_RANGES = {
@@ -16,7 +15,6 @@ export const CAPE_PHYSICS_SETTING_RANGES = {
   stiffness: { min: 0.55, max: 1.04, step: 0.01 },
   damping: { min: 0.5, max: 1.8, step: 0.05 },
   weight: { min: 0.5, max: 1.5, step: 0.05 },
-  wind: { min: 0, max: 1.8, step: 0.05 },
 } as const;
 
 export const DEFAULT_CAPE_PHYSICS_SETTINGS: CapePhysicsSettings = Object.freeze({
@@ -25,7 +23,6 @@ export const DEFAULT_CAPE_PHYSICS_SETTINGS: CapePhysicsSettings = Object.freeze(
   stiffness: 1,
   damping: 1,
   weight: 1,
-  wind: 1,
 });
 
 function finiteOrDefault(value: number | undefined, fallback: number): number {
@@ -60,11 +57,6 @@ export function normalizeCapePhysicsSettings(
       finiteOrDefault(settings.weight, DEFAULT_CAPE_PHYSICS_SETTINGS.weight),
       CAPE_PHYSICS_SETTING_RANGES.weight.min,
       CAPE_PHYSICS_SETTING_RANGES.weight.max,
-    ),
-    wind: THREE.MathUtils.clamp(
-      finiteOrDefault(settings.wind, DEFAULT_CAPE_PHYSICS_SETTINGS.wind),
-      CAPE_PHYSICS_SETTING_RANGES.wind.min,
-      CAPE_PHYSICS_SETTING_RANGES.wind.max,
     ),
   };
 }

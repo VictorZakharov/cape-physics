@@ -319,6 +319,11 @@ try {
 
   const initial = await diagnostics();
   assert(initial.ready, 'demo harness did not report ready');
+  const consumedRendererSelection = await evaluate(
+    command,
+    'new URL(location.href).searchParams.has("renderer")',
+  );
+  assert(!consumedRendererSelection, 'renderer selection persisted after the one-time reload handoff');
   assert(
     initial.renderer.actual === rendererPreference,
     `${rendererPreference.toUpperCase()} was requested but ${initial.renderer.actual.toUpperCase()} is active`,
@@ -370,6 +375,59 @@ try {
   assert(initial.water.surfaceAlphaRange[1] <= 0.6, 'water surface is too opaque');
   assert(initial.water.minimumInteriorDepth > 0.04, 'water is not seated inside a terrain basin');
   assert(initial.water.minimumRimClearance > 0.02, 'water surface rises above its containing rim');
+
+  await evaluate(command, `(() => {
+    const input = document.querySelector('[data-customization-setting="shadows"]');
+    if (!(input instanceof HTMLInputElement)) throw new Error('shadow toggle is missing');
+    input.checked = false;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  })()`);
+  const shadowsDisabled = await diagnostics();
+  assert(!shadowsDisabled.cape.settings.shadows, 'shadow toggle did not disable shadows');
+  assert(
+    shadowsDisabled.renderer.programs === initial.renderer.programs,
+    'disabling shadows compiled new renderer programs',
+  );
+  await evaluate(command, `(() => {
+    const input = document.querySelector('[data-customization-setting="shadows"]');
+    if (!(input instanceof HTMLInputElement)) throw new Error('shadow toggle is missing');
+    input.checked = true;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  })()`);
+  const shadowsRestored = await diagnostics();
+  assert(shadowsRestored.cape.settings.shadows, 'shadow toggle did not restore shadows');
+  assert(
+    shadowsRestored.renderer.programs === initial.renderer.programs,
+    'restoring shadows compiled new renderer programs',
+  );
+
+  const liveLength = 1.31;
+  await evaluate(command, `(() => {
+    const input = document.querySelector('[data-customization-setting="length"]');
+    if (!(input instanceof HTMLInputElement)) throw new Error('length slider is missing');
+    input.value = ${liveLength};
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
+  })()`);
+  const liveLengthDiagnostics = await diagnostics();
+  assert(
+    Math.abs(liveLengthDiagnostics.cape.settings.length - liveLength) < 0.000_001,
+    'length slider did not update cape physics during input',
+  );
+  await evaluate(command, `(() => {
+    const input = document.querySelector('[data-customization-setting="length"]');
+    if (!(input instanceof HTMLInputElement)) throw new Error('length slider is missing');
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    document.querySelector('[data-customization-reset]')?.click();
+    return true;
+  })()`);
+  const resetCustomization = await diagnostics();
+  assert(
+    Math.abs(resetCustomization.cape.settings.length - initial.cape.settings.length) < 0.000_001,
+    'customization reset did not restore the default cape length',
+  );
 
   await command('Emulation.setDeviceMetricsOverride', {
     width: 3840,

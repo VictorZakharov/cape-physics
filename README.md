@@ -39,12 +39,12 @@ Everything is generated at runtime. There are no downloaded models, textures, or
 | Two-finger pinch | Zoom on touch devices |
 | Click the FPS graph | Copy a rolling 15-second performance report |
 | `CAPE & SCENE` panel | Tune cape physics or toggle lights, shadows, and reflections; reload or Reset Defaults restores the defaults |
-| `WEBGPU EXP` / `WEBGL` | Reload with the selected renderer; WebGL is recommended and the choice is remembered |
+| `WEBGPU EXP` / `WEBGL` | Reload once with the selected renderer; the next ordinary reload returns to WebGL |
 | `Esc` | Release pointer interaction |
 
 ## Rendering backends
 
-The demo defaults to native WebGL 2 on every device. The lower-right switch exposes WebGPU as an explicit experimental option and remembers a player's choice. WebGPU renderer, TSL material, and compute-solver chunks are loaded only after that option is selected, so they do not inflate the normal WebGL download.
+The demo defaults to native WebGL 2 on every device and every ordinary reload. The renderer row in the customization panel exposes WebGPU as a one-time experimental option without persisting the choice. WebGPU renderer, TSL material, and compute-solver chunks are loaded only after that option is selected, so they do not inflate the normal WebGL download.
 
 WebGPU handles both rendering and cape simulation. WebGL uses the mature `WebGLRenderer` pipeline and the CPU cloth solver. Performance reports show both the requested and active backend, and a lost or stalled WebGPU device restarts with WebGL instead of leaving the loading screen stuck.
 

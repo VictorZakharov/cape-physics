@@ -13,7 +13,7 @@ import type { PerformanceReportDetails } from './core/PerformanceReport';
 import { RenderPipeline } from './core/RenderPipeline';
 import {
   browserSupportsWebGPU,
-  RENDERER_STORAGE_KEY,
+  rendererDefaultUrl,
   rendererPreferenceUrl,
   resolveRendererPreference,
   type RendererPreference,
@@ -109,8 +109,7 @@ export class CapeDemo {
   private customizationSettings: CustomizationSettings;
   private readonly stabilizationVelocity = new THREE.Vector3();
   private readonly savedLightIntensities = new Map<THREE.Light, number>();
-  private readonly savedShadowCasters = new Map<THREE.Object3D, boolean>();
-  private readonly savedShadowReceivers = new Map<THREE.Object3D, boolean>();
+  private readonly savedShadowIntensities = new Map<THREE.Light, number>();
   private shadowsEnabled = true;
 
   public constructor() {
@@ -118,17 +117,13 @@ export class CapeDemo {
     this.scene.background = new THREE.Color(0x050a0c);
     this.scene.fog = new THREE.FogExp2(0x071012, 0.034);
     this.webGPUAvailable = browserSupportsWebGPU();
-    let storedRendererPreference: string | null = null;
-    try {
-      storedRendererPreference = window.localStorage.getItem(RENDERER_STORAGE_KEY);
-    } catch {
-      // Storage can be disabled without preventing the demo from rendering.
-    }
     this.rendererPreference = resolveRendererPreference({
       search: window.location.search,
-      storedPreference: storedRendererPreference,
-      webGPUAvailable: this.webGPUAvailable,
     });
+    const defaultUrl = rendererDefaultUrl(window.location.href);
+    if (defaultUrl !== window.location.href) {
+      window.history.replaceState(window.history.state, '', defaultUrl);
+    }
     this.pipeline = new RenderPipeline(
       this.canvas,
       this.scene,
@@ -399,13 +394,14 @@ export class CapeDemo {
     this.qualityLabel.textContent = state.label;
   }
 
-  private readonly handleCustomizationChange = (settings: CustomizationSettings): void => {
-    const dimensionsChanged = settings.length !== this.customizationSettings.length
-      || settings.width !== this.customizationSettings.width;
+  private readonly handleCustomizationChange = (
+    settings: CustomizationSettings,
+    settleDimensions: boolean,
+  ): void => {
     this.customizationSettings = settings;
     if (!this.cape || !this.character) return;
     this.cape.updateSettings(settings, this.character.getCapeAnchors());
-    if (dimensionsChanged) this.stabilizeCape();
+    if (settleDimensions) this.stabilizeCape();
     this.applySceneCustomization(settings);
     if (this.ready) this.pipeline.renderManual(0);
   };
@@ -454,47 +450,21 @@ export class CapeDemo {
     this.shadowsEnabled = enabled;
 
     this.scene.traverse((object) => {
-      if (enabled) {
-        const castShadow = this.savedShadowCasters.get(object);
-        const receiveShadow = this.savedShadowReceivers.get(object);
-        if (castShadow !== undefined) object.castShadow = castShadow;
-        if (receiveShadow !== undefined) object.receiveShadow = receiveShadow;
-      } else {
-        this.savedShadowCasters.set(object, object.castShadow);
-        this.savedShadowReceivers.set(object, object.receiveShadow);
-        object.castShadow = false;
-        object.receiveShadow = false;
-      }
-
-      if (object instanceof THREE.Mesh) {
-        const materials = Array.isArray(object.material) ? object.material : [object.material];
-        materials.forEach((material) => {
-          material.needsUpdate = true;
-        });
-      }
-
       if (
-        !enabled
-        && (
-          object instanceof THREE.DirectionalLight
-          || object instanceof THREE.PointLight
-          || object instanceof THREE.SpotLight
-        )
-      ) {
-        object.shadow.map?.dispose();
-        object.shadow.map = null;
-        object.shadow.mapPass?.dispose();
-        object.shadow.mapPass = null;
+        !(object instanceof THREE.DirectionalLight)
+        && !(object instanceof THREE.PointLight)
+        && !(object instanceof THREE.SpotLight)
+      ) return;
+      if (enabled) {
+        const intensity = this.savedShadowIntensities.get(object);
+        if (intensity !== undefined) object.shadow.intensity = intensity;
+      } else {
+        this.savedShadowIntensities.set(object, object.shadow.intensity);
+        object.shadow.intensity = 0;
       }
     });
 
-    const shadowMap = this.pipeline.renderer.shadowMap;
-    shadowMap.enabled = enabled;
-    if ('needsUpdate' in shadowMap) shadowMap.needsUpdate = true;
-    if (enabled) {
-      this.savedShadowCasters.clear();
-      this.savedShadowReceivers.clear();
-    }
+    if (enabled) this.savedShadowIntensities.clear();
   }
 
   private installHarness(): void {
