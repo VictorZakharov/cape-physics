@@ -9,10 +9,10 @@
     />
     <meta name="theme-color" content="#05080a" />
     <title>Cape Physics — The Veiled Deep</title>
-    <script type="module" crossorigin src="/cape-physics/pr-preview/pr-15/assets/index-8QuxwE-_.js"></script>
+    <script type="module" crossorigin src="/cape-physics/pr-preview/pr-15/assets/index-BBX9UcgY.js"></script>
     <link rel="modulepreload" crossorigin href="/cape-physics/pr-preview/pr-15/assets/three.core-caSNtrlo.js">
     <link rel="modulepreload" crossorigin href="/cape-physics/pr-preview/pr-15/assets/caveProfile-eedwewZm.js">
-    <link rel="stylesheet" crossorigin href="/cape-physics/pr-preview/pr-15/assets/index-DOa50ewz.css">
+    <link rel="stylesheet" crossorigin href="/cape-physics/pr-preview/pr-15/assets/index-le2Z7jCn.css">
   </head>
   <body>
     <main class="app" data-app>
@@ -120,6 +120,16 @@
               <input type="checkbox" role="switch" data-customization-setting="reflections" checked />
               <i aria-hidden="true"></i>
             </label>
+            <div
+              class="renderer-switch"
+              data-renderer-switch
+              role="group"
+              aria-label="Graphics renderer. Changing renderer reloads the demo."
+            >
+              <span>RENDERER</span>
+              <button type="button" data-renderer-option="webgpu" aria-pressed="false" title="Experimental renderer; WebGL is recommended">WEBGPU EXP</button>
+              <button type="button" data-renderer-option="webgl" aria-pressed="false">WEBGL</button>
+            </div>
           </fieldset>
 
           <div class="customization__footer">
@@ -150,17 +160,6 @@
       <div class="quality-badge" data-quality-badge>
         <span class="quality-badge__pulse"></span>
         <span data-quality-label>ADAPTIVE ULTRA</span>
-      </div>
-
-      <div
-        class="renderer-switch"
-        data-renderer-switch
-        role="group"
-        aria-label="Graphics renderer. Changing renderer reloads the demo."
-      >
-        <span>RENDERER</span>
-        <button type="button" data-renderer-option="webgpu" aria-pressed="false" title="Experimental renderer; WebGL is recommended">WEBGPU EXP</button>
-        <button type="button" data-renderer-option="webgl" aria-pressed="false">WEBGL</button>
       </div>
 
       <div class="onboarding" data-onboarding role="status">
