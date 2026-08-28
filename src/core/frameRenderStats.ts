@@ -6,7 +6,8 @@ export interface FrameRenderStats {
 }
 
 interface RenderInfoLike {
-  readonly calls: number;
+  readonly calls?: number;
+  readonly drawCalls?: number;
   readonly triangles: number;
   readonly points: number;
   readonly lines: number;
@@ -21,7 +22,7 @@ export const EMPTY_FRAME_RENDER_STATS: FrameRenderStats = Object.freeze({
 
 export function captureFrameRenderStats(render: RenderInfoLike): FrameRenderStats {
   return {
-    calls: render.calls,
+    calls: render.drawCalls ?? render.calls ?? 0,
     triangles: render.triangles,
     points: render.points,
     lines: render.lines,

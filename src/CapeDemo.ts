@@ -11,26 +11,49 @@ import { FixedStepClock } from './core/FixedStepClock';
 import { PerformanceMonitor } from './core/PerformanceMonitor';
 import type { PerformanceReportDetails } from './core/PerformanceReport';
 import { RenderPipeline } from './core/RenderPipeline';
+import {
+  browserSupportsWebGPU,
+  RENDERER_STORAGE_KEY,
+  rendererPreferenceUrl,
+  resolveRendererPreference,
+  type RendererPreference,
+} from './core/RendererPreference';
 import { CHARACTER_RENDER_LAYER } from './core/renderLayers';
 import { configureTextureFiltering, createRockTextures } from './graphics/proceduralTextures';
 import { InputController } from './input/InputController';
 import { MobileControls } from './input/MobileControls';
 import { CinematicLighting } from './lighting/CinematicLighting';
+import type { WebGpuCinematicLighting } from './lighting/WebGpuCinematicLighting';
 import { CapeSimulation } from './physics/CapeSimulation';
+import type { GpuCapeSimulation } from './physics/GpuCapeSimulation';
 import type { WorldCollider } from './physics/colliders';
 import { Character } from './player/Character';
 import { CharacterController } from './player/CharacterController';
 import { runDepthOcclusionProbe } from './testing/DepthOcclusionProbe';
 import { runShadowLayerProbe } from './testing/ShadowLayerProbe';
 import { LoadingScreen } from './ui/LoadingScreen';
+import { RendererSwitch } from './ui/RendererSwitch';
 import { invariant } from './utils/assert';
+import { percentile } from './utils/math';
 import { CaveAtmosphere } from './world/CaveAtmosphere';
+import type { WebGpuCaveAtmosphere } from './world/WebGpuCaveAtmosphere';
 import { CaveWorld } from './world/CaveWorld';
 import { caveCenterX, caveGroundHeightAt } from './world/caveProfile';
 import { MineralVeins } from './world/MineralVeins';
 import { TorchSystem } from './world/TorchSystem';
+import type { WebGpuTorchSystem } from './world/WebGpuTorchSystem';
 import { WaterSystem } from './world/WaterSystem';
+import type { WebGpuWaterSystem } from './world/WebGpuWaterSystem';
 import { WorldCollisionResolver } from './world/WorldCollisionResolver';
+
+function averageOrNull(values: readonly number[]): number | null {
+  if (values.length === 0) return null;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function percentileOrNull(values: readonly number[], ratio: number): number | null {
+  return values.length > 0 ? percentile(values, ratio) : null;
+}
 
 export class CapeDemo {
   private readonly canvas: HTMLCanvasElement;
@@ -48,34 +71,64 @@ export class CapeDemo {
   private readonly initialProjectionAspect = this.camera.aspect;
   private readonly loading = new LoadingScreen();
   private readonly pipeline: RenderPipeline;
+  private readonly rendererPreference: RendererPreference;
+  private readonly rendererSwitch: RendererSwitch;
+  private readonly webGPUAvailable: boolean;
   private readonly performance: PerformanceMonitor;
   private readonly clock = new FixedStepClock();
   private readonly quality: AdaptiveQuality;
   private readonly qualityLabel: HTMLElement;
-  private readonly harnessMode = new URLSearchParams(window.location.search).get('harness') === '1';
+  private readonly urlParameters = new URLSearchParams(window.location.search);
+  private readonly harnessMode = this.urlParameters.get('harness') === '1';
+  private readonly gpuTimestampProfile = this.urlParameters.get('gpuTimestamps') === '1';
   private input!: InputController;
   private mobileControls!: MobileControls;
   private character!: Character;
   private characterController!: CharacterController;
   private thirdPersonCamera!: ThirdPersonCamera;
-  private cape!: CapeSimulation;
+  private cape!: CapeSimulation | GpuCapeSimulation;
   private cave!: CaveWorld;
-  private water!: WaterSystem;
-  private torches!: TorchSystem;
+  private water!: WaterSystem | WebGpuWaterSystem;
+  private torches!: TorchSystem | WebGpuTorchSystem;
   private veins!: MineralVeins;
-  private atmosphere!: CaveAtmosphere;
-  private lighting!: CinematicLighting;
+  private atmosphere!: CaveAtmosphere | WebGpuCaveAtmosphere;
+  private lighting!: CinematicLighting | WebGpuCinematicLighting;
   private worldCollision!: WorldCollisionResolver;
   private worldColliders: readonly WorldCollider[] = [];
   private fixedTime = 0;
   private harnessAccumulator = 0;
   private ready = false;
+  private webGpuRecoveryStarted = false;
+  private webGpuStartupTimer: number | null = null;
+  private stopDeviceLossWatch: (() => void) | null = null;
 
   public constructor() {
     this.canvas = invariant(document.querySelector<HTMLCanvasElement>('#scene-canvas'), 'Scene canvas is missing.');
     this.scene.background = new THREE.Color(0x050a0c);
     this.scene.fog = new THREE.FogExp2(0x071012, 0.034);
-    this.pipeline = new RenderPipeline(this.canvas, this.scene, this.camera);
+    this.webGPUAvailable = browserSupportsWebGPU();
+    let storedRendererPreference: string | null = null;
+    try {
+      storedRendererPreference = window.localStorage.getItem(RENDERER_STORAGE_KEY);
+    } catch {
+      // Storage can be disabled without preventing the demo from rendering.
+    }
+    this.rendererPreference = resolveRendererPreference({
+      search: window.location.search,
+      storedPreference: storedRendererPreference,
+      webGPUAvailable: this.webGPUAvailable,
+    });
+    this.pipeline = new RenderPipeline(
+      this.canvas,
+      this.scene,
+      this.camera,
+      this.rendererPreference,
+      this.gpuTimestampProfile,
+    );
+    this.rendererSwitch = new RendererSwitch(
+      this.rendererPreference,
+      this.webGPUAvailable,
+    );
     this.qualityLabel = invariant(document.querySelector<HTMLElement>('[data-quality-label]'), 'Quality label is missing.');
     this.quality = new AdaptiveQuality((state) => this.applyQuality(state));
     this.performance = new PerformanceMonitor(this.getPerformanceReportDetails);
@@ -83,20 +136,62 @@ export class CapeDemo {
   }
 
   public async start(): Promise<void> {
+    if (this.rendererPreference === 'webgpu' && !this.harnessMode) {
+      this.webGpuStartupTimer = window.setTimeout(() => {
+        this.recoverWithWebGL('WebGPU startup stalled; restarting with WebGL');
+      }, 20_000);
+    }
+    await this.loading.update(0.03, 'Selecting the graphics backend');
+    try {
+      await this.pipeline.init();
+    } catch (error) {
+      if (this.rendererPreference !== 'webgpu') throw error;
+      this.recoverWithWebGL('WebGPU unavailable; restarting with WebGL');
+      return;
+    }
+    if (this.pipeline.getActualBackend() === 'webgpu') {
+      this.stopDeviceLossWatch = this.pipeline.onDeviceLost((info) => {
+        const detail = info.message || info.reason || 'unknown device error';
+        console.warn(`WebGPU device lost: ${detail}`);
+        this.recoverWithWebGL('WebGPU stopped responding; restarting with WebGL');
+      });
+    } else {
+      this.clearWebGpuStartupTimer();
+    }
+    this.rendererSwitch.setActive(
+      this.pipeline.getActualBackend(),
+      this.rendererPreference,
+    );
     await this.loading.update(0.08, 'Shaping ancient stone');
     const rockTextures = createRockTextures(512);
     configureTextureFiltering(
       rockTextures,
-      Math.min(8, this.pipeline.renderer.capabilities.getMaxAnisotropy()),
+      Math.min(8, this.pipeline.getMaxAnisotropy()),
     );
     this.cave = new CaveWorld(rockTextures);
     this.scene.add(this.cave.group);
 
     await this.loading.update(0.3, 'Awakening mineral light');
     this.veins = new MineralVeins();
-    this.torches = new TorchSystem();
-    this.water = new WaterSystem();
-    this.atmosphere = new CaveAtmosphere();
+    const usesNodeRenderer = this.pipeline.usesNodeRenderer();
+    if (usesNodeRenderer) {
+      const [
+        { WebGpuTorchSystem },
+        { WebGpuWaterSystem },
+        { WebGpuCaveAtmosphere },
+      ] = await Promise.all([
+        import('./world/WebGpuTorchSystem'),
+        import('./world/WebGpuWaterSystem'),
+        import('./world/WebGpuCaveAtmosphere'),
+      ]);
+      this.torches = new WebGpuTorchSystem();
+      this.water = new WebGpuWaterSystem();
+      this.atmosphere = new WebGpuCaveAtmosphere();
+    } else {
+      this.torches = new TorchSystem();
+      this.water = new WaterSystem();
+      this.atmosphere = new CaveAtmosphere();
+    }
     this.scene.add(this.veins.group, this.torches.group, this.water.group, this.atmosphere.points);
     this.worldColliders = [
       ...this.cave.worldColliders,
@@ -112,23 +207,48 @@ export class CapeDemo {
     this.character.root.position.set(startX, this.worldCollision.getPlayerRootHeight(startX, startZ), startZ);
     this.character.root.updateMatrixWorld(true);
     this.scene.add(this.character.root);
-    this.cape = new CapeSimulation(this.character.getCapeAnchors());
+    const gpuRenderer = this.pipeline.getWebGpuRenderer();
+    if (gpuRenderer) {
+      const { GpuCapeSimulation } = await import('./physics/GpuCapeSimulation');
+      this.cape = new GpuCapeSimulation(gpuRenderer, this.character.getCapeAnchors());
+    } else {
+      this.cape = new CapeSimulation(this.character.getCapeAnchors());
+    }
     this.scene.add(this.cape.mesh);
     this.character.root.traverse((object) => {
       object.layers.set(CHARACTER_RENDER_LAYER);
       if (object instanceof THREE.Mesh && object.castShadow) {
-        enableCameraIndependentShadowCaster(object);
+        enableCameraIndependentShadowCaster(
+          object,
+          usesNodeRenderer ? 'webgpu' : 'webgl',
+        );
       }
     });
     this.cape.mesh.layers.set(CHARACTER_RENDER_LAYER);
-    enableCameraIndependentShadowCaster(this.cape.mesh);
+    enableCameraIndependentShadowCaster(
+      this.cape.mesh,
+      usesNodeRenderer ? 'webgpu' : 'webgl',
+    );
 
     this.input = new InputController(this.canvas, this.dismissOnboarding);
     this.mobileControls = new MobileControls(this.canvas, this.input);
     this.characterController = new CharacterController(this.character, this.input, this.worldCollision);
     this.thirdPersonCamera = new ThirdPersonCamera(this.camera, this.input, this.cave.cameraColliders);
     this.thirdPersonCamera.snapTo(this.character.root.position);
-    this.lighting = new CinematicLighting(this.scene, this.pipeline.renderer);
+    if (usesNodeRenderer) {
+      const { WebGpuCinematicLighting } = await import('./lighting/WebGpuCinematicLighting');
+      const nodeRenderer = invariant(
+        this.pipeline.getNodeRenderer(),
+        'WebGPU node renderer is missing.',
+      );
+      this.lighting = new WebGpuCinematicLighting(this.scene, nodeRenderer);
+    } else {
+      const webGlRenderer = invariant(
+        this.pipeline.getWebGlRenderer(),
+        'Native WebGL renderer is missing.',
+      );
+      this.lighting = new CinematicLighting(this.scene, webGlRenderer);
+    }
     this.scene.add(this.lighting.group);
     this.enableCharacterLighting();
     this.lighting.update(this.character.root.position, 0);
@@ -138,10 +258,9 @@ export class CapeDemo {
 
     await this.loading.update(0.76, 'Compiling cloth and water shaders');
     await this.pipeline.compile(this.scene, this.camera);
-    this.pipeline.render(0);
+    this.pipeline.renderManual(0);
     await this.loading.update(0.94, 'Warming the torchlight');
-    this.pipeline.renderer.shadowMap.needsUpdate = true;
-    this.pipeline.render(0);
+    this.pipeline.renderManual(0);
 
     window.addEventListener('resize', this.handleResize);
     document.addEventListener('visibilitychange', this.handleVisibilityChange);
@@ -150,12 +269,13 @@ export class CapeDemo {
     this.installHarness();
     await this.loading.reveal();
     this.ready = true;
+    this.clearWebGpuStartupTimer();
     if (window.__CAPE_DEMO__) window.__CAPE_DEMO__.ready = true;
     if (this.harnessMode) {
       this.updateScene(0);
-      this.pipeline.render(0);
+      this.pipeline.renderManual(0);
     } else {
-      this.pipeline.renderer.setAnimationLoop(this.frame);
+      void this.pipeline.renderer.setAnimationLoop(this.frame);
     }
   }
 
@@ -232,6 +352,25 @@ export class CapeDemo {
     document.querySelector<HTMLElement>('[data-onboarding]')?.classList.add('is-dismissed');
   };
 
+  private clearWebGpuStartupTimer(): void {
+    if (this.webGpuStartupTimer === null) return;
+    window.clearTimeout(this.webGpuStartupTimer);
+    this.webGpuStartupTimer = null;
+  }
+
+  private recoverWithWebGL(message: string): void {
+    if (this.webGpuRecoveryStarted) return;
+    this.webGpuRecoveryStarted = true;
+    this.ready = false;
+    if (window.__CAPE_DEMO__) window.__CAPE_DEMO__.ready = false;
+    this.clearWebGpuStartupTimer();
+    this.stopDeviceLossWatch?.();
+    this.stopDeviceLossWatch = null;
+    document.body.classList.remove('is-ready');
+    void this.loading.update(0.04, message);
+    window.location.replace(rendererPreferenceUrl(window.location.href, 'webgl'));
+  }
+
   private applyQuality(state: QualityState): void {
     this.pipeline.setResolutionScale(state.scale);
     this.qualityLabel.textContent = state.label;
@@ -240,23 +379,23 @@ export class CapeDemo {
   private installHarness(): void {
     window.__CAPE_DEMO__ = {
       ready: false,
-      getDiagnostics: () => this.getDiagnostics(),
-      setView: ({ yaw, pitch, distance }) => {
+      getDiagnostics: () => this.getDiagnosticsAfterReadback(),
+      setView: async ({ yaw, pitch, distance }) => {
         this.thirdPersonCamera.setOrbit(yaw, pitch, distance, this.character.root.position);
         this.updateScene(0);
-        this.pipeline.render(0);
-        return this.getDiagnostics();
+        this.pipeline.renderManual(0);
+        return this.getDiagnosticsAfterReadback();
       },
-      setCameraPose: ({ position, target }) => {
+      setCameraPose: async ({ position, target }) => {
         this.thirdPersonCamera.setPose(
           new THREE.Vector3().fromArray(position),
           new THREE.Vector3().fromArray(target),
         );
         this.updateCameraFade();
-        this.pipeline.render(0);
-        return this.getDiagnostics();
+        this.pipeline.renderManual(0);
+        return this.getDiagnosticsAfterReadback();
       },
-      setPlayerPose: ({ position, yaw = this.character.root.rotation.y }) => {
+      setPlayerPose: async ({ position, yaw = this.character.root.rotation.y }) => {
         this.character.root.position.fromArray(position);
         this.worldCollision.resolvePlayer(this.character.root.position);
         this.character.root.rotation.y = yaw;
@@ -267,8 +406,8 @@ export class CapeDemo {
         this.cape.syncGeometry();
         this.thirdPersonCamera.snapTo(this.character.root.position);
         this.updateCameraFade();
-        this.pipeline.render(0);
-        return this.getDiagnostics();
+        this.pipeline.renderManual(0);
+        return this.getDiagnosticsAfterReadback();
       },
       setMovement: (horizontal, forward) => {
         this.input.setVirtualMovement(horizontal, forward);
@@ -283,7 +422,9 @@ export class CapeDemo {
         this.input.queueVirtualJump();
       },
       advance: ({ duration, frameStep = 1 / 60 }) => this.advanceHarness(duration, frameStep),
-      profile: ({ duration, frameStep = 1 / 60 }) => this.profileHarness(duration, frameStep),
+      profile: ({ duration, frameStep = 1 / 60, synchronizationInterval = 1 }) => (
+        this.profileHarness(duration, frameStep, synchronizationInterval)
+      ),
       runDepthOcclusionProbe: () => runDepthOcclusionProbe(
         this.scene,
         this.camera,
@@ -293,7 +434,10 @@ export class CapeDemo {
     };
   }
 
-  private advanceHarness(duration: number, requestedFrameStep: number): ReturnType<CapeDemo['getDiagnostics']> {
+  private async advanceHarness(
+    duration: number,
+    requestedFrameStep: number,
+  ): Promise<ReturnType<CapeDemo['getDiagnostics']>> {
     const frameStep = THREE.MathUtils.clamp(requestedFrameStep, 1 / 144, 1 / 30);
     let remaining = THREE.MathUtils.clamp(duration, 0, 30);
     let lastDelta = 0;
@@ -303,45 +447,101 @@ export class CapeDemo {
       remaining -= delta;
       this.advanceHarnessFrame(delta);
     }
-    this.pipeline.render(lastDelta);
-    return this.getDiagnostics();
+    this.pipeline.renderManual(lastDelta);
+    return this.getDiagnosticsAfterReadback();
   }
 
-  private profileHarness(duration: number, requestedFrameStep: number) {
+  private async profileHarness(
+    duration: number,
+    requestedFrameStep: number,
+    requestedSynchronizationInterval: number,
+  ) {
     const frameStep = THREE.MathUtils.clamp(requestedFrameStep, 1 / 144, 1 / 30);
     let remaining = THREE.MathUtils.clamp(duration, 0, 12);
-    const frameDurations: number[] = [];
-    const programsBefore = this.pipeline.renderer.info.programs?.length ?? 0;
-    const context = this.pipeline.renderer.getContext();
+    const synchronizationInterval = THREE.MathUtils.clamp(
+      Math.round(requestedSynchronizationInterval),
+      1,
+      120,
+    );
+    const amortizedBatchFrameDurations: number[] = [];
+    const physicsDurations: number[] = [];
+    const sceneDurations: number[] = [];
+    const submissionDurations: number[] = [];
+    const gpuRenderDurations: number[] = [];
+    const gpuComputeDurations: number[] = [];
+    const gpuTotalDurations: number[] = [];
+    const programsBefore = this.pipeline.getProgramCount();
+    const profileStart = performance.now();
+    let batchStart = profileStart;
+    let batchFrames = 0;
+    let frames = 0;
 
     while (remaining > 0.000_001) {
       const delta = Math.min(frameStep, remaining);
       remaining -= delta;
-      const frameStart = performance.now();
-      this.advanceHarnessFrame(delta);
-      this.pipeline.render(delta);
-      context.finish();
-      frameDurations.push(performance.now() - frameStart);
+      const framePhases = this.advanceHarnessFrame(delta);
+      physicsDurations.push(framePhases.physicsMilliseconds);
+      sceneDurations.push(framePhases.sceneMilliseconds);
+      const renderStart = performance.now();
+      this.pipeline.renderManual(delta);
+      submissionDurations.push(performance.now() - renderStart);
+      frames += 1;
+      batchFrames += 1;
+
+      if (batchFrames >= synchronizationInterval || remaining <= 0.000_001) {
+        const gpuFrameTime = await this.pipeline.resolveGpuFrameTimeForLocalProfile();
+        if (gpuFrameTime === null) {
+          await this.pipeline.synchronizeForLocalProfile();
+        } else {
+          gpuRenderDurations.push(gpuFrameTime.renderMilliseconds);
+          gpuComputeDurations.push(gpuFrameTime.computeMilliseconds);
+          gpuTotalDurations.push(gpuFrameTime.totalMilliseconds);
+        }
+        const batchEnd = performance.now();
+        amortizedBatchFrameDurations.push((batchEnd - batchStart) / batchFrames);
+        batchStart = batchEnd;
+        batchFrames = 0;
+      }
     }
 
-    frameDurations.sort((first, second) => first - second);
-    const total = frameDurations.reduce((sum, value) => sum + value, 0);
-    const p95Index = Math.min(
-      frameDurations.length - 1,
-      Math.floor(frameDurations.length * 0.95),
-    );
+    const totalMilliseconds = performance.now() - profileStart;
+    const physicsTotal = physicsDurations.reduce((sum, value) => sum + value, 0);
+    const sceneTotal = sceneDurations.reduce((sum, value) => sum + value, 0);
+    const submissionTotal = submissionDurations.reduce((sum, value) => sum + value, 0);
     return {
-      frames: frameDurations.length,
-      averageFrameMilliseconds: frameDurations.length > 0 ? total / frameDurations.length : 0,
-      p95FrameMilliseconds: frameDurations[p95Index] ?? 0,
-      maximumFrameMilliseconds: frameDurations.at(-1) ?? 0,
+      frames,
+      synchronizationInterval,
+      averageFrameMilliseconds: frames > 0 ? totalMilliseconds / frames : 0,
+      p95FrameMilliseconds: percentile(amortizedBatchFrameDurations, 0.95),
+      maximumFrameMilliseconds: Math.max(0, ...amortizedBatchFrameDurations),
+      averagePhysicsMilliseconds: frames > 0 ? physicsTotal / frames : 0,
+      averageSceneMilliseconds: frames > 0 ? sceneTotal / frames : 0,
+      averageSubmissionMilliseconds: frames > 0 ? submissionTotal / frames : 0,
+      p95SubmissionMilliseconds: percentile(submissionDurations, 0.95),
+      maximumSubmissionMilliseconds: Math.max(0, ...submissionDurations),
+      averageGpuRenderMilliseconds: averageOrNull(gpuRenderDurations),
+      p95GpuRenderMilliseconds: percentileOrNull(gpuRenderDurations, 0.95),
+      averageGpuComputeMilliseconds: averageOrNull(gpuComputeDurations),
+      p95GpuComputeMilliseconds: percentileOrNull(gpuComputeDurations, 0.95),
+      averageGpuTotalMilliseconds: averageOrNull(gpuTotalDurations),
+      p95GpuTotalMilliseconds: percentileOrNull(gpuTotalDurations, 0.95),
+      gpuTimestampSamples: gpuTotalDurations.length,
       programsBefore,
-      programsAfter: this.pipeline.renderer.info.programs?.length ?? 0,
-      diagnostics: this.getDiagnostics(),
+      programsAfter: this.pipeline.getProgramCount(),
+      diagnostics: await this.getDiagnosticsAfterReadback(),
     };
   }
 
-  private advanceHarnessFrame(delta: number): void {
+  private async getDiagnosticsAfterReadback(): Promise<ReturnType<CapeDemo['getDiagnostics']>> {
+    await this.cape.refreshDiagnostics();
+    return this.getDiagnostics();
+  }
+
+  private advanceHarnessFrame(delta: number): {
+    readonly physicsMilliseconds: number;
+    readonly sceneMilliseconds: number;
+  } {
+    const physicsStart = performance.now();
     this.harnessAccumulator += delta;
     let simulated = false;
     while (this.harnessAccumulator + 0.000_000_1 >= PHYSICS_STEP) {
@@ -350,13 +550,20 @@ export class CapeDemo {
       simulated = true;
     }
     if (simulated) this.cape.syncGeometry();
+    const sceneStart = performance.now();
     this.updateScene(delta);
+    return {
+      physicsMilliseconds: sceneStart - physicsStart,
+      sceneMilliseconds: performance.now() - sceneStart,
+    };
   }
 
   private getDiagnostics() {
     const capeAnchors = this.character.getCapeAnchors();
     const capeColliders = this.character.getCapeColliders();
-    const closestRockSurfaceContact = this.cape.getClosestActiveRockSurfaceContact();
+    const closestRockSurfaceContact = this.cape.getClosestActiveRockSurfaceContact(
+      this.worldColliders,
+    );
     const bodyPenetrationByCollider = Object.fromEntries(
       capeColliders.map((collider) => [
         collider.name,
@@ -371,10 +578,11 @@ export class CapeDemo {
       quality: this.quality.getState(),
       workload: this.performance.getWorkloadSnapshot(),
       renderer: {
+        ...this.pipeline.getBackendDiagnostics(),
         calls: frameRenderStats.calls,
         triangles: frameRenderStats.triangles,
         pixelRatio: this.pipeline.renderer.getPixelRatio(),
-        programs: this.pipeline.renderer.info.programs?.length ?? 0,
+        programs: this.pipeline.getProgramCount(),
         sizing: this.pipeline.getSizingDiagnostics(),
         depthComposite: this.pipeline.getDepthCompositeDiagnostics(),
       },
@@ -416,8 +624,15 @@ export class CapeDemo {
           capeColliders,
           capeAnchors.back,
         ),
+        bodyPenetrationByKind: this.cape.getBodyPenetrationDiagnostics(
+          capeColliders,
+          capeAnchors.back,
+        ),
         bodyPenetrationByCollider,
         maximumEnvironmentPenetration: this.cape.getMaximumEnvironmentPenetration(this.worldColliders),
+        environmentPenetrationByKind: this.cape.getEnvironmentPenetrationDiagnostics(
+          this.worldColliders,
+        ),
         maximumEnvironmentFacePenetration: this.cape.getMaximumEnvironmentFacePenetration(this.worldColliders),
         maximumParticleMotion: this.cape.getMaximumParticleMotion(),
         maximumParticleVerticalMotion: this.cape.getMaximumParticleVerticalMotion(),
@@ -458,11 +673,7 @@ export class CapeDemo {
   }
 
   private readonly getPerformanceReportDetails = (): PerformanceReportDetails => {
-    const renderer = this.pipeline.renderer;
-    const context = renderer.getContext();
-    const debugInfo = context.getExtension('WEBGL_debug_renderer_info');
-    const vendor = String(context.getParameter(debugInfo?.UNMASKED_VENDOR_WEBGL ?? context.VENDOR));
-    const device = String(context.getParameter(debugInfo?.UNMASKED_RENDERER_WEBGL ?? context.RENDERER));
+    const backend = this.pipeline.getBackendDiagnostics();
     const sizing = this.pipeline.getSizingDiagnostics();
     const frameRenderStats = this.pipeline.getLastFrameRenderStats();
     const screenWithTopology = window.screen as Screen & { readonly isExtended?: boolean };
@@ -472,12 +683,15 @@ export class CapeDemo {
 
     return {
       renderer: {
-        backend: String(context.getParameter(context.VERSION)),
-        vendor,
-        device,
+        backend: backend.backend,
+        vendor: backend.vendor,
+        device: backend.device,
+        preference: backend.preference,
+        actual: backend.actual,
+        fallback: backend.fallback,
         drawCalls: frameRenderStats.calls,
         triangles: frameRenderStats.triangles,
-        programs: renderer.info.programs?.length ?? 0,
+        programs: this.pipeline.getProgramCount(),
       },
       canvas: {
         drawingBufferWidth: sizing.drawingBufferWidth,
@@ -527,7 +741,11 @@ export class CapeDemo {
   }
 
   private readonly dispose = (): void => {
-    this.pipeline.renderer.setAnimationLoop(null);
+    this.clearWebGpuStartupTimer();
+    this.stopDeviceLossWatch?.();
+    this.stopDeviceLossWatch = null;
+    void this.pipeline.renderer.setAnimationLoop(null);
+    this.rendererSwitch.dispose();
     this.mobileControls?.dispose();
     this.input?.dispose();
     this.lighting?.dispose();

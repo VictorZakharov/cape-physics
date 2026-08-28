@@ -70,6 +70,31 @@ export interface RockSurfaceContactDiagnostics {
   readonly center: readonly [number, number, number];
 }
 
+export interface EnvironmentPenetrationDiagnostics {
+  readonly sphere: number;
+  readonly rock: number;
+  readonly floor: number;
+  readonly wall: number;
+  readonly sphereFace: number;
+  readonly rockFace: number;
+  readonly maximum: number;
+  readonly floorParticleIndex: number | null;
+  readonly floorPosition: readonly [number, number, number] | null;
+  readonly floorHeight: number | null;
+  readonly rockFaceDetail: {
+    readonly triangle: readonly [number, number, number] | null;
+    readonly positions: readonly [number, number, number][] | null;
+    readonly previous: readonly [number, number, number][] | null;
+    readonly rockCenter: readonly [number, number, number] | null;
+  };
+}
+
+export interface BodyPenetrationDiagnostics {
+  readonly point: number;
+  readonly face: number;
+  readonly maximum: number;
+}
+
 export class CapeContactSolver {
   private readonly nearbyWorldColliders: WorldCollider[] = [];
   private readonly activeWorldColliders: WorldCollider[] = [];
@@ -284,20 +309,40 @@ export class CapeContactSolver {
     colliders: readonly CapsuleCollider[],
     back: THREE.Vector3,
   ): number {
+    return this.getBodyPenetrationDiagnostics(colliders, back).maximum;
+  }
+
+  public getBodyPenetrationDiagnostics(
+    colliders: readonly CapsuleCollider[],
+    back: THREE.Vector3,
+  ): BodyPenetrationDiagnostics {
     this.prepareBodyColliders(colliders, back);
-    let maximum = 0;
+    let point = 0;
     for (let index = 0; index < this.positions.length; index += 1) {
       const position = this.positions[index];
       if (!position) continue;
       for (const collider of this.preparedBodyColliders) {
-        maximum = Math.max(maximum, this.getCapsulePenetration(position, collider, back));
+        point = Math.max(point, this.getCapsulePenetration(position, collider, back));
       }
     }
-    return Math.max(maximum, this.bodyFaceCollision.getMaximumPenetration(colliders, back));
+    const face = this.bodyFaceCollision.getMaximumPenetration(colliders, back);
+    return { point, face, maximum: Math.max(point, face) };
   }
 
   public getMaximumEnvironmentPenetration(colliders: readonly WorldCollider[]): number {
-    let maximum = 0;
+    return this.getEnvironmentPenetrationDiagnostics(colliders).maximum;
+  }
+
+  public getEnvironmentPenetrationDiagnostics(
+    colliders: readonly WorldCollider[],
+  ): EnvironmentPenetrationDiagnostics {
+    let sphere = 0;
+    let rock = 0;
+    let floor = 0;
+    let wall = 0;
+    let floorParticleIndex: number | null = null;
+    let floorPosition: readonly [number, number, number] | null = null;
+    let floorHeight: number | null = null;
     for (let index = CAPE.columns; index < this.positions.length; index += 1) {
       const position = this.positions[index];
       if (!position) continue;
@@ -308,30 +353,54 @@ export class CapeContactSolver {
           : collider.radius
             + getClothWorldClearance(collider)
             - position.distanceTo(collider.center);
-        maximum = Math.max(maximum, penetration);
+        if (isWorldRockCollider(collider)) rock = Math.max(rock, penetration);
+        else sphere = Math.max(sphere, penetration);
       }
-      maximum = Math.max(maximum, caveGroundHeightAt(position.x, position.z) + CLOTH_WORLD_CLEARANCE - position.y);
+      const expectedFloor = caveGroundHeightAt(position.x, position.z) + CLOTH_WORLD_CLEARANCE;
+      const floorPenetration = expectedFloor - position.y;
+      if (floorPenetration > floor) {
+        floor = floorPenetration;
+        floorParticleIndex = index;
+        floorPosition = [position.x, position.y, position.z];
+        floorHeight = expectedFloor;
+      }
       caveInteriorBoundsAtHeight(
         position.y,
         position.z,
         CLOTH_WORLD_CLEARANCE,
         this.caveBounds,
       );
-      maximum = Math.max(
-        maximum,
+      wall = Math.max(
+        wall,
         this.caveBounds.minimum - position.x,
         position.x - this.caveBounds.maximum,
       );
     }
-    return Math.max(
-      maximum,
-      this.faceCollision.getMaximumPenetration(
-        colliders.filter((collider): collider is WorldSphereCollider => !isWorldRockCollider(collider)),
-      ),
-      this.rockFaceCollision.getMaximumPenetration(
-        colliders.filter(isWorldRockCollider),
-      ),
+    const sphereFace = this.faceCollision.getMaximumPenetration(
+      colliders.filter((collider): collider is WorldSphereCollider => !isWorldRockCollider(collider)),
     );
+    const rockFaceDiagnostics = this.rockFaceCollision.getMaximumPenetrationDiagnostics(
+      colliders.filter(isWorldRockCollider),
+    );
+    const rockFace = rockFaceDiagnostics.maximum;
+    return {
+      sphere,
+      rock,
+      floor,
+      wall,
+      sphereFace,
+      rockFace,
+      maximum: Math.max(sphere, rock, floor, wall, sphereFace, rockFace),
+      floorParticleIndex,
+      floorPosition,
+      floorHeight,
+      rockFaceDetail: {
+        triangle: rockFaceDiagnostics.triangle,
+        positions: rockFaceDiagnostics.positions,
+        previous: rockFaceDiagnostics.previous,
+        rockCenter: rockFaceDiagnostics.rockCenter,
+      },
+    };
   }
 
   public getMaximumEnvironmentFacePenetration(colliders: readonly WorldCollider[]): number {
@@ -343,8 +412,12 @@ export class CapeContactSolver {
     );
   }
 
-  public getClosestActiveRockSurfaceContact(): RockSurfaceContactDiagnostics | null {
-    const contact = this.rockFaceCollision.getClosestSurfaceContact(this.activeRocks);
+  public getClosestActiveRockSurfaceContact(
+    colliders: readonly WorldCollider[] = this.activeRocks,
+  ): RockSurfaceContactDiagnostics | null {
+    const contact = this.rockFaceCollision.getClosestSurfaceContact(
+      colliders.filter(isWorldRockCollider),
+    );
     if (!contact) return null;
     const { center } = contact.collider;
     return {

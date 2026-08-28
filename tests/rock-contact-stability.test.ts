@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
 import { CAPE, PHYSICS_STEP, PLAYER } from '../src/config';
 import { createRockTextures } from '../src/graphics/proceduralTextures';
 import { CapeSimulation } from '../src/physics/CapeSimulation';

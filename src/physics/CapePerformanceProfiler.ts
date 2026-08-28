@@ -14,6 +14,7 @@ export const CAPE_PROFILE_PHASES = [
 export type CapeProfilePhase = typeof CAPE_PROFILE_PHASES[number];
 
 export interface CapePerformanceDiagnostics {
+  readonly implementation: 'cpu-pbd' | 'webgpu-compute';
   readonly sampleIntervalSteps: number;
   readonly totalSteps: number;
   readonly activeSteps: number;
@@ -92,6 +93,7 @@ export class CapePerformanceProfiler {
       phases[phase] = this.phaseTotals[phase] / divisor;
     }
     return {
+      implementation: 'cpu-pbd',
       sampleIntervalSteps: this.sampleIntervalSteps,
       totalSteps: this.totalSteps,
       activeSteps: this.activeSteps,

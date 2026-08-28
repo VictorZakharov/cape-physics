@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
 import { ThirdPersonCamera } from '../src/camera/ThirdPersonCamera';
 import type { InputController } from '../src/input/InputController';
 import { caveCenterX, caveGroundHeightAt } from '../src/world/caveProfile';

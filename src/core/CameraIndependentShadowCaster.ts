@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import type { RendererPreference } from './RendererPreference';
 import {
   CHARACTER_RENDER_LAYER,
   WORLD_RENDER_LAYER,
@@ -13,17 +14,23 @@ interface MaterialWriteState {
 }
 
 /**
- * Keeps a character-layer mesh in the world shadow traversal even while the
- * close-camera fade renders its color in an isolated pass. Three.js filters
- * shadow casters with the main camera's layer mask, so the mesh must belong to
- * the world layer; normal world-pass color/depth writes are suppressed here.
+ * WebGPU shadow passes can opt directly into the character layer. The native
+ * WebGL renderer filters casters through the color camera mask, so its path
+ * also exposes the caster on the world layer while suppressing color/depth
+ * writes during world-camera renders.
  */
-export function enableCameraIndependentShadowCaster(mesh: THREE.Mesh): void {
+export function enableCameraIndependentShadowCaster(
+  mesh: THREE.Mesh,
+  backend: RendererPreference = 'webgpu',
+): void {
   if (mesh.userData[CONFIGURED_KEY] === true) return;
   mesh.userData[CONFIGURED_KEY] = true;
-  mesh.layers.enable(WORLD_RENDER_LAYER);
-  mesh.layers.enable(CHARACTER_RENDER_LAYER);
+  mesh.castShadow = true;
+  mesh.layers.set(CHARACTER_RENDER_LAYER);
 
+  if (backend === 'webgpu') return;
+
+  mesh.layers.enable(WORLD_RENDER_LAYER);
   const originalBeforeRender = mesh.onBeforeRender;
   const originalAfterRender = mesh.onAfterRender;
   const materialStates: MaterialWriteState[] = [];

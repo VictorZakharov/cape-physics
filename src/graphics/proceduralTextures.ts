@@ -28,6 +28,15 @@ function writePixel(target: Uint8Array, index: number, r: number, g: number, b: 
   target[index + 3] = 255;
 }
 
+function smoothstep(minimum: number, maximum: number, value: number): number {
+  const normalized = THREE.MathUtils.clamp(
+    (value - minimum) / (maximum - minimum),
+    0,
+    1,
+  );
+  return normalized * normalized * (3 - 2 * normalized);
+}
+
 export function createRockTextures(size = 512): SurfaceTextures {
   const color = new Uint8Array(size * size * 4);
   const height = new Uint8Array(size * size * 4);
@@ -91,7 +100,21 @@ export function createCapeFabricTextures(size = 256): Pick<SurfaceTextures, 'col
       const weave = threadX * 0.52 + threadY * 0.48;
       const shade = 0.76 + noise * 0.24 + weave * 0.13;
       const ageVariation = 0.92 + periodicFbm((x / size) * 3, (y / size) * 3, 3, 0x71f4) * 0.08;
-      writePixel(color, index, 148 * shade * ageVariation, 10 * shade, 19 * shade);
+      const u = (x + 0.5) / size;
+      const v = (y + 0.5) / size;
+      const sideTrim = 1 - smoothstep(0.018, 0.052, Math.min(u, 1 - u));
+      const hemTrim = 1 - smoothstep(0.018, 0.052, v);
+      const trim = Math.max(sideTrim, hemTrim) * 0.72;
+      const fabricRed = 148 * shade * ageVariation;
+      const fabricGreen = 10 * shade;
+      const fabricBlue = 19 * shade;
+      writePixel(
+        color,
+        index,
+        THREE.MathUtils.lerp(fabricRed, 158, trim),
+        THREE.MathUtils.lerp(fabricGreen, 73, trim),
+        THREE.MathUtils.lerp(fabricBlue, 28, trim),
+      );
       writePixel(normal, index, 128 + (threadX - threadY) * 18, 128 + (threadY - threadX) * 18, 249);
       const rough = 188 + noise * 35 - weave * 18;
       writePixel(roughness, index, rough, rough, rough);

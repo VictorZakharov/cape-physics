@@ -30,11 +30,11 @@ export function maximumPixelDelta(
   );
 }
 
-export function runDepthOcclusionProbe(
+export async function runDepthOcclusionProbe(
   scene: THREE.Scene,
   camera: THREE.PerspectiveCamera,
   pipeline: RenderPipeline,
-): DepthOcclusionProbeResult {
+): Promise<DepthOcclusionProbeResult> {
   const savedOpacity = pipeline.getCharacterOpacity();
   const direction = camera.getWorldDirection(new THREE.Vector3());
   const geometry = new THREE.PlaneGeometry(PROBE_SIZE, PROBE_SIZE);
@@ -71,18 +71,18 @@ export function runDepthOcclusionProbe(
   try {
     pipeline.setCharacterOpacity(0);
     pipeline.render(0);
-    const visibleWorldPixel = pipeline.readScreenCenterPixel();
+    const visibleWorldPixel = await pipeline.readScreenCenterPixel();
     pipeline.setCharacterOpacity(savedOpacity);
     pipeline.render(0);
-    const visibleLayerPixel = pipeline.readScreenCenterPixel();
+    const visibleLayerPixel = await pipeline.readScreenCenterPixel();
 
     scene.add(worldProbe);
     pipeline.setCharacterOpacity(0);
     pipeline.render(0);
-    const occludedWorldPixel = pipeline.readScreenCenterPixel();
+    const occludedWorldPixel = await pipeline.readScreenCenterPixel();
     pipeline.setCharacterOpacity(savedOpacity);
     pipeline.render(0);
-    const occludedLayerPixel = pipeline.readScreenCenterPixel();
+    const occludedLayerPixel = await pipeline.readScreenCenterPixel();
 
     return {
       visibleWorldPixel,

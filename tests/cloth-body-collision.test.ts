@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
 import { ClothBodyCollision } from '../src/physics/ClothBodyCollision';
 import type { CapsuleCollider } from '../src/physics/colliders';
 

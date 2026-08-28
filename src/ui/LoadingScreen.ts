@@ -24,6 +24,6 @@ export class LoadingScreen {
 
   public fail(): void {
     this.root.classList.add('has-error');
-    this.status.textContent = 'WebGL initialization failed — see console for details';
+    this.status.textContent = 'Graphics initialization failed — see console for details';
   }
 }

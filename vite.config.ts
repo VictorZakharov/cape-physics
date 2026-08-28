@@ -6,9 +6,9 @@ export default defineConfig({
     sourcemap: true,
     cssMinify: 'lightningcss',
     reportCompressedSize: true,
-    // Three.js is deliberately shipped as one cacheable engine chunk. The
-    // compressed production payload remains small; this avoids a noisy warning.
-    chunkSizeWarningLimit: 700,
+    // WebGPU and its node/compute modules are lazy chunks; keep the warning
+    // focused on unexpected growth in either renderer path.
+    chunkSizeWarningLimit: 1_100,
   },
   server: {
     strictPort: true,

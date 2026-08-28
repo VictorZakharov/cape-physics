@@ -5,6 +5,8 @@ import type { CapeAnchors } from '../player/Character';
 import { caveGroundHeightAt } from '../world/caveProfile';
 import {
   CapeContactSolver,
+  type BodyPenetrationDiagnostics,
+  type EnvironmentPenetrationDiagnostics,
   type RockSurfaceContactDiagnostics,
   type WorldContactDiagnostics,
 } from './CapeContactSolver';
@@ -97,17 +99,6 @@ export class CapeSimulation {
       transparent: false,
       depthWrite: true,
     });
-    material.onBeforeCompile = (shader) => {
-      shader.fragmentShader = shader.fragmentShader.replace(
-        '#include <map_fragment>',
-        `#include <map_fragment>
-        float capeSideTrim = 1.0 - smoothstep(0.018, 0.052, min(vMapUv.x, 1.0 - vMapUv.x));
-        float capeHemTrim = 1.0 - smoothstep(0.018, 0.052, vMapUv.y);
-        float capeTrim = max(capeSideTrim, capeHemTrim);
-        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.34, 0.12, 0.035), capeTrim * 0.72);`,
-      );
-    };
-    material.customProgramCacheKey = () => 'cape-fabric-trim-v2';
     material.name = 'Woven crimson cape';
     this.mesh = new THREE.Mesh(geometry, material);
     this.mesh.name = 'PBD cape';
@@ -310,6 +301,37 @@ export class CapeSimulation {
     if (normalAttribute) normalAttribute.needsUpdate = true;
   }
 
+  /**
+   * CPU simulations already own authoritative particle data. The WebGPU
+   * implementation exposes the same hook and uses it for explicit diagnostic
+   * readback, so browser audits never add a fence to the animation loop.
+   */
+  public async refreshDiagnostics(): Promise<void> {}
+
+  /** Updates the CPU diagnostic mirror from tightly packed vec4 GPU buffers. */
+  public overwriteStateFromGpu(
+    positionData: Float32Array,
+    previousData: Float32Array,
+  ): void {
+    const expectedLength = this.positions.length * 4;
+    if (positionData.length < expectedLength || previousData.length < expectedLength) {
+      throw new RangeError('GPU cape state is smaller than the simulation grid.');
+    }
+    this.positions.forEach((position, index) => {
+      const offset = index * 4;
+      position.set(
+        positionData[offset] ?? 0,
+        positionData[offset + 1] ?? 0,
+        positionData[offset + 2] ?? 0,
+      );
+      this.previous[index]?.set(
+        previousData[offset] ?? 0,
+        previousData[offset + 1] ?? 0,
+        previousData[offset + 2] ?? 0,
+      );
+    });
+  }
+
   public reset(anchors: CapeAnchors): void {
     this.positions.length = 0;
     this.previous.length = 0;
@@ -357,8 +379,21 @@ export class CapeSimulation {
     return this.contactSolver.getMaximumBodyPenetration(bodyColliders, back);
   }
 
+  public getBodyPenetrationDiagnostics(
+    bodyColliders: readonly CapsuleCollider[],
+    back: THREE.Vector3,
+  ): BodyPenetrationDiagnostics {
+    return this.contactSolver.getBodyPenetrationDiagnostics(bodyColliders, back);
+  }
+
   public getMaximumEnvironmentPenetration(worldColliders: readonly WorldCollider[]): number {
     return this.contactSolver.getMaximumEnvironmentPenetration(worldColliders);
+  }
+
+  public getEnvironmentPenetrationDiagnostics(
+    worldColliders: readonly WorldCollider[],
+  ): EnvironmentPenetrationDiagnostics {
+    return this.contactSolver.getEnvironmentPenetrationDiagnostics(worldColliders);
   }
 
   public getMaximumEnvironmentFacePenetration(worldColliders: readonly WorldCollider[]): number {
@@ -446,8 +481,10 @@ export class CapeSimulation {
     return this.profiler.getDiagnostics();
   }
 
-  public getClosestActiveRockSurfaceContact(): RockSurfaceContactDiagnostics | null {
-    return this.contactSolver.getClosestActiveRockSurfaceContact();
+  public getClosestActiveRockSurfaceContact(
+    worldColliders?: readonly WorldCollider[],
+  ): RockSurfaceContactDiagnostics | null {
+    return this.contactSolver.getClosestActiveRockSurfaceContact(worldColliders);
   }
 
   private initializeParticles(anchors: CapeAnchors): void {
