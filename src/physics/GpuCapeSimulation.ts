@@ -197,7 +197,7 @@ export class GpuCapeSimulation {
       'Cape body faces in scratch',
     );
     const positionRockFaces = this.createFaceSweepKernel(
-      this.createRockFaceColorFunction(this.positionBuffer, 'Position'),
+      this.createRockFaceColorFunction(this.positionBuffer, 'Position', false, true),
       'Cape rock faces in position',
     );
     const positionSweptRockFaces = this.createFaceSweepKernel(
@@ -1266,6 +1266,7 @@ export class GpuCapeSimulation {
     buffer: typeof this.positionBuffer,
     passName: string,
     allowSweptFaceRecovery = false,
+    includeCaveFaceRecovery = false,
   ) {
     const intersectsSegmentTriangle = Fn<
       readonly [
@@ -1452,7 +1453,7 @@ export class GpuCapeSimulation {
         { name: 'third', type: 'vec3' },
       ],
     });
-    const getCaveWallCorrection = Fn<
+    const getCaveWallCorrection = includeCaveFaceRecovery ? Fn<
       readonly [THREE.Node<'vec3'>],
       THREE.Node<'float'>
     >(([sample]) => {
@@ -1541,7 +1542,7 @@ export class GpuCapeSimulation {
       name: `capeCaveFaceSample${passName}`,
       type: 'float',
       inputs: [{ name: 'sample', type: 'vec3' }],
-    });
+    }) : null;
 
     return Fn<readonly [THREE.Node<'uint'>], THREE.Node<'float'>>(([color]) => {
       const orientation = color.mod(uint(2));
@@ -1831,27 +1832,26 @@ export class GpuCapeSimulation {
             });
           },
         );
-        const caveFaceCorrection = getCaveWallCorrection(
-          first.add(second).add(third).div(3),
-        ).toVar('caveFaceCorrection');
-        const keepLargerCaveCorrection = (candidate: THREE.Node<'float'>): void => {
-          If(candidate.abs().greaterThan(caveFaceCorrection.abs()), () => {
-            caveFaceCorrection.assign(candidate);
+        if (getCaveWallCorrection) {
+          const caveFaceCorrection = getCaveWallCorrection(
+            first.add(second).add(third).div(3),
+          ).toVar('caveFaceCorrection');
+          const keepLargerCaveCorrection = (candidate: THREE.Node<'float'>): void => {
+            If(candidate.abs().greaterThan(caveFaceCorrection.abs()), () => {
+              caveFaceCorrection.assign(candidate);
+            });
+          };
+          keepLargerCaveCorrection(getCaveWallCorrection(first.add(second).mul(0.5)));
+          keepLargerCaveCorrection(getCaveWallCorrection(first.add(third).mul(0.5)));
+          keepLargerCaveCorrection(getCaveWallCorrection(second.add(third).mul(0.5)));
+          If(caveFaceCorrection.abs().greaterThan(0.000_001), () => {
+            faceCorrection.x.addAssign(caveFaceCorrection.clamp(-0.015, 0.015));
+            hadFaceContact.assign(bool(true));
+            // A previous cloth face can pierce the same curved wall, so cave
+            // recovery must use the sampled separating correction, not rollback.
+            previousTriangleSafe.assign(bool(false));
           });
-        };
-        keepLargerCaveCorrection(getCaveWallCorrection(first.add(second).mul(0.5)));
-        keepLargerCaveCorrection(getCaveWallCorrection(first.add(third).mul(0.5)));
-        keepLargerCaveCorrection(getCaveWallCorrection(second.add(third).mul(0.5)));
-        If(caveFaceCorrection.abs().greaterThan(0.000_001), () => {
-          faceCorrection.x.addAssign(caveFaceCorrection.clamp(
-            -CLOTH_ROCK_CLEARANCE * 1.5,
-            CLOTH_ROCK_CLEARANCE * 1.5,
-          ));
-          hadFaceContact.assign(bool(true));
-          // A previous cloth face can pierce the same curved wall, so cave
-          // recovery must use the sampled separating correction, not rollback.
-          previousTriangleSafe.assign(bool(false));
-        });
+        }
         const correctionLength = faceCorrection.length().toVar('rockFaceCorrectionLength');
         If(correctionLength.greaterThan(0.015), () => {
           faceCorrection.mulAssign(float(0.015).div(correctionLength));
