@@ -43,6 +43,10 @@ import {
   type CapePhysicsSettings,
 } from './CapeSettings';
 import {
+  calculateGpuCapeSphereQueryRadius,
+  GPU_WORLD_CANDIDATE_REFRESH_DISTANCE,
+} from './GpuCapeBroadphase';
+import {
   CAVE_SHELL_CONTACT_SKIN,
   getCaveShellSampleData,
   WATER_BASINS,
@@ -79,7 +83,17 @@ const ROCK_SWEEP_TANGENTIAL_DAMPING = 0.76;
 const BODY_BUFFER_STRIDE = 5;
 const ROCK_BUFFER_STRIDE = 4 + ROCK_FACES_PER_COLLIDER * 4;
 const TOPOLOGY_METADATA_STRIDE = 2;
-const WORLD_QUERY_RADIUS = CAPE.lengthRange.max + 2.2;
+// A particle cannot travel farther from the neckline than the cape's maximum
+// length plus half its width. Include one full refresh interval so a static
+// collider cannot enter reach before the next candidate-buffer update. The
+// helper also retains adjacent formation clusters for simultaneous contacts.
+const WORLD_SPHERE_QUERY_RADIUS = calculateGpuCapeSphereQueryRadius(
+  CAPE.lengthRange.max,
+  CAPE.widthRange.max,
+);
+// Exact rock faces can pin the cape between adjacent formations, so retain
+// the wider legacy rock set while culling the much larger sphere-proxy set.
+const WORLD_ROCK_QUERY_RADIUS = CAPE.lengthRange.max + 2.2;
 const CAVE_LOWER_RADIAL_START = Math.floor(CAVE.radialSegments / 2);
 
 /**
@@ -2338,12 +2352,16 @@ export class GpuCapeSimulation {
   private updateWorldBuffers(colliders: readonly WorldCollider[]): void {
     if (
       this.worldColliderSource === colliders
-      && this.worldCandidateCenter.distanceToSquared(this.anchorCenter) < 0.35 ** 2
+      && this.worldCandidateCenter.distanceToSquared(this.anchorCenter)
+        < GPU_WORLD_CANDIDATE_REFRESH_DISTANCE ** 2
     ) return;
     this.worldColliderSource = colliders;
     this.worldCandidateCenter.copy(this.anchorCenter);
     const nearby = colliders.filter((collider) => {
-      const range = WORLD_QUERY_RADIUS + collider.radius;
+      const queryRadius = isWorldRockCollider(collider)
+        ? WORLD_ROCK_QUERY_RADIUS
+        : WORLD_SPHERE_QUERY_RADIUS;
+      const range = queryRadius + collider.radius;
       return collider.center.distanceToSquared(this.anchorCenter) <= range * range;
     });
     const spheres = nearby.filter((collider) => !isWorldRockCollider(collider));
