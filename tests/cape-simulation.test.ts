@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import * as THREE from 'three/webgpu';
 import { CAPE, PHYSICS_STEP, PLAYER } from '../src/config';
+import { createRockTextures } from '../src/graphics/proceduralTextures';
 import { CapeSimulation } from '../src/physics/CapeSimulation';
 import { CLOTH_BODY_CLEARANCE } from '../src/physics/ClothBodyCollision';
 import {
@@ -15,7 +16,9 @@ import {
 import { RockColliderQuery } from '../src/physics/RockCollider';
 import type { CapeAnchors } from '../src/player/Character';
 import { Character } from '../src/player/Character';
+import { CAPE_CONTACT_ROCKS, getCapeContactRockX } from '../src/world/CapeContactCourse';
 import { CaveColliderBuilder } from '../src/world/CaveColliderBuilder';
+import { CaveWorld } from '../src/world/CaveWorld';
 import { caveCenterX, floorHeightAt } from '../src/world/caveProfile';
 import { createRockGeometry } from '../src/world/RockGeometry';
 import { WorldCollisionResolver } from '../src/world/WorldCollisionResolver';
@@ -255,6 +258,112 @@ describe('CapeSimulation', () => {
     expect(maximumBootPenetration).toBeLessThan(0.002);
     expect(maximumBodyPenetration).toBeLessThan(0.002);
     expect(maximumRockPenetration).toBeLessThan(0.002);
+  });
+
+  test('keeps a maximum-length walking cape outside floor rocks every step', () => {
+    const spec = CAPE_CONTACT_ROCKS[0];
+    if (!spec) throw new Error('Cape contact course has no large test rock.');
+    const geometry = createRockGeometry();
+    const positions = geometry.getAttribute('position');
+    const rockX = getCapeContactRockX(spec);
+    const rockPosition = new THREE.Vector3(rockX, 0, spec.z);
+    const rotation = new THREE.Quaternion().setFromEuler(new THREE.Euler(...spec.rotation));
+    const scale = new THREE.Vector3(...spec.scale);
+    const matrix = new THREE.Matrix4().compose(rockPosition, rotation, scale);
+    const transformed = new THREE.Vector3();
+    let minimumRelativeY = Number.POSITIVE_INFINITY;
+    for (let index = 0; index < positions.count; index += 1) {
+      transformed.fromBufferAttribute(positions, index).applyMatrix4(matrix);
+      minimumRelativeY = Math.min(minimumRelativeY, transformed.y);
+    }
+    rockPosition.y = floorHeightAt(rockX, spec.z) - minimumRelativeY - spec.embedDepth;
+    matrix.compose(rockPosition, rotation, scale);
+    const builder = new CaveColliderBuilder();
+    builder.addRock(geometry, matrix, false);
+    const rock = builder.colliders[0];
+    if (!rock || !isWorldRockCollider(rock)) throw new Error('Exact test rock is missing.');
+
+    const character = new Character();
+    const collision = new WorldCollisionResolver([rock]);
+    character.root.position.set(
+      rock.bounds.max.x + PLAYER.radius + 0.12,
+      0,
+      spec.z - 0.7,
+    );
+    collision.resolvePlayer(character.root.position);
+    character.root.updateMatrixWorld(true);
+    let characterAnchors = character.getCapeAnchors();
+    const cape = new CapeSimulation(characterAnchors, { length: CAPE.lengthRange.max });
+    const walkingVelocity = new THREE.Vector3(0, 0, -PLAYER.walkSpeed);
+    let maximumPointPenetration = 0;
+    let maximumFacePenetration = 0;
+
+    for (let tick = 0; tick < 300; tick += 1) {
+      character.root.position.addScaledVector(walkingVelocity, PHYSICS_STEP);
+      collision.resolvePlayer(character.root.position);
+      character.updateAnimation(PHYSICS_STEP, PLAYER.walkSpeed, true, 0);
+      character.root.updateMatrixWorld(true);
+      characterAnchors = character.getCapeAnchors();
+      cape.step(
+        PHYSICS_STEP,
+        characterAnchors,
+        character.getCapeColliders(),
+        [rock],
+        walkingVelocity,
+        tick * PHYSICS_STEP,
+      );
+      const penetration = cape.getEnvironmentPenetrationDiagnostics([rock]);
+      maximumPointPenetration = Math.max(maximumPointPenetration, penetration.rock);
+      maximumFacePenetration = Math.max(maximumFacePenetration, penetration.rockFace);
+    }
+
+    expect(cape.getWorldContactDiagnostics().total).toBeGreaterThan(0);
+    expect(maximumPointPenetration).toBeLessThan(0.002);
+    expect(maximumFacePenetration).toBeLessThan(0.002);
+  });
+
+  test('keeps a maximum-length walking cape outside floor formations every step', () => {
+    const cave = new CaveWorld(createRockTextures(16));
+    const character = new Character();
+    const collision = new WorldCollisionResolver(cave.worldColliders);
+    character.root.position.set(1.68, 0, -31.6);
+    collision.resolvePlayer(character.root.position);
+    character.root.updateMatrixWorld(true);
+    let characterAnchors = character.getCapeAnchors();
+    const cape = new CapeSimulation(characterAnchors, { length: CAPE.lengthRange.max });
+    const walkingVelocity = new THREE.Vector3(0, 0, -PLAYER.walkSpeed);
+    let maximumEnvironmentPenetration = 0;
+    let maximumFacePenetration = 0;
+
+    for (let tick = 0; tick < 240; tick += 1) {
+      character.root.position.addScaledVector(walkingVelocity, PHYSICS_STEP);
+      collision.resolvePlayer(character.root.position);
+      character.updateAnimation(PHYSICS_STEP, PLAYER.walkSpeed, true, 0);
+      character.root.updateMatrixWorld(true);
+      characterAnchors = character.getCapeAnchors();
+      cape.step(
+        PHYSICS_STEP,
+        characterAnchors,
+        character.getCapeColliders(),
+        cave.worldColliders,
+        walkingVelocity,
+        tick * PHYSICS_STEP,
+      );
+      const penetration = cape.getEnvironmentPenetrationDiagnostics(cave.worldColliders);
+      maximumEnvironmentPenetration = Math.max(
+        maximumEnvironmentPenetration,
+        penetration.maximum,
+      );
+      maximumFacePenetration = Math.max(
+        maximumFacePenetration,
+        penetration.sphereFace,
+        penetration.rockFace,
+      );
+    }
+
+    expect(cape.getWorldContactDiagnostics().total).toBeGreaterThan(0);
+    expect(maximumEnvironmentPenetration).toBeLessThan(0.002);
+    expect(maximumFacePenetration).toBeLessThan(0.002);
   });
 
   test('grazes an exact small-rock surface without launching or folding the cape', () => {

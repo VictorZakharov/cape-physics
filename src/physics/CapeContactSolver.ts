@@ -180,6 +180,7 @@ export class CapeContactSolver {
     this.prepareBodyColliders(bodyColliders, back);
     this.rockCorrectionUsed.fill(0);
     this.rockSweepResolved.fill(0);
+    this.faceCollision.beginStep();
     this.rockFaceCollision.beginStep();
     this.nearbyWorldColliders.length = 0;
     for (const collider of colliders) {

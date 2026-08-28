@@ -1393,6 +1393,54 @@ try {
   const oppositeDepthOcclusion = await depthOcclusionProbe();
   assertDepthOcclusion(oppositeDepthOcclusion, 'character-facing rock angle');
 
+  const maximumCapeLength = 2.05;
+  await evaluate(command, `(() => {
+    const input = document.querySelector('[data-customization-setting="length"]');
+    if (!(input instanceof HTMLInputElement)) throw new Error('length slider is missing');
+    input.value = ${maximumCapeLength};
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  })()`);
+  await setPlayerPose([coursePathX, 0, courseFirst.position[2] + 1.15], 0);
+  await setView(0, 0.18, 4.3);
+  await setMovement(0, 1);
+  const longCapeTraversal = {
+    maximumEnvironmentPenetration: 0,
+    maximumEnvironmentFacePenetration: 0,
+    detail: null,
+  };
+  let longCapeTraversalState = await diagnostics();
+  for (let frame = 0; frame < Math.ceil(3.9 * 120); frame += 1) {
+    longCapeTraversalState = await advance(1 / 120, 1 / 120);
+    if (
+      longCapeTraversalState.cape.maximumEnvironmentPenetration
+      > longCapeTraversal.maximumEnvironmentPenetration
+    ) {
+      longCapeTraversal.maximumEnvironmentPenetration
+        = longCapeTraversalState.cape.maximumEnvironmentPenetration;
+      longCapeTraversal.detail = longCapeTraversalState.cape.environmentPenetrationByKind;
+    }
+    longCapeTraversal.maximumEnvironmentFacePenetration = Math.max(
+      longCapeTraversal.maximumEnvironmentFacePenetration,
+      longCapeTraversalState.cape.maximumEnvironmentFacePenetration,
+    );
+  }
+  await setMovement(0, 0);
+  assert(
+    longCapeTraversalState.player.position[2] < courseLast.position[2] - 0.35,
+    'maximum-length cape traversal did not cross the floor-rock course',
+  );
+  assert(
+    longCapeTraversal.maximumEnvironmentPenetration < 0.002,
+    `maximum-length cape passed through a floor rock (${longCapeTraversal.maximumEnvironmentPenetration} m; ${JSON.stringify(longCapeTraversal.detail)})`,
+  );
+  assert(
+    longCapeTraversal.maximumEnvironmentFacePenetration < 0.002,
+    `floor rock pierced a maximum-length cape triangle (${longCapeTraversal.maximumEnvironmentFacePenetration} m)`,
+  );
+  await capture('cape-long-rock-course-traversal');
+
   const mobileTouch = await runMobileTouchAudit();
 
   const runtimeFailures = events.filter((event) => (
@@ -1434,6 +1482,8 @@ try {
     bankBefore,
     bankAfter,
     courseTraversal,
+    longCapeTraversal,
+    longCapeTraversalState,
     largeRockContact,
     movingFootRockContact,
     smallRockContact,

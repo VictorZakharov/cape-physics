@@ -74,6 +74,33 @@ describe('ClothRockCollision', () => {
       expect(positions[index]!.distanceTo(original[index]!)).toBe(0);
     }
   });
+
+  test('rejects a rock edge swept through the middle of a moving cloth face', () => {
+    const positions = createClothSquare(-0.06);
+    const previous = createClothSquare(0.06);
+    const originalPrevious = previous.map((position) => position.clone());
+    const inverseMass = new Float32Array([1, 1, 1, 1]);
+    const correctionUsed = new Float32Array(positions.length);
+    const rock = createTestRock();
+    const collision = new ClothRockCollision(
+      positions,
+      previous,
+      inverseMass,
+      COLUMNS,
+      ROWS,
+      CLOTH_ROCK_CLEARANCE,
+      correctionUsed,
+      MAXIMUM_CORRECTION,
+    );
+
+    expect(collision.getMaximumPenetration([rock])).toBe(0);
+    collision.beginStep();
+    expect(collision.solve([rock])).toBeGreaterThan(0);
+    for (const index of [0, 1, 2]) {
+      expect(positions[index]!.distanceTo(originalPrevious[index]!)).toBeLessThan(0.000_001);
+    }
+    expect(collision.getMaximumPenetration([rock])).toBeLessThan(0.002);
+  });
 });
 
 function createClothSquare(z: number): THREE.Vector3[] {
