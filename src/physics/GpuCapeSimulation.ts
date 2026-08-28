@@ -573,7 +573,7 @@ export class GpuCapeSimulation {
       // contacts that begin and end between explicit diagnostic readbacks are
       // still observable without a new storage binding or a GPU fence.
       target.assign(vec4(predicted, current.w));
-    })().compute(PARTICLE_COUNT).setName('Cape predict');
+    })().compute(PARTICLE_COUNT, [PARTICLE_COUNT]).setName('Cape predict');
   }
 
   private createProjectionKernel(
@@ -586,7 +586,7 @@ export class GpuCapeSimulation {
     return Fn(() => {
       const passResult = float(0).toVar('projectionPassResult');
       passResult.assign(project(instanceIndex, bool(hardRockRecovery)));
-    })().compute(PARTICLE_COUNT).setName(name);
+    })().compute(PARTICLE_COUNT, [PARTICLE_COUNT]).setName(name);
   }
 
   private createFaceSweepKernel(
@@ -2150,7 +2150,7 @@ export class GpuCapeSimulation {
       const index = instanceIndex;
       const position = this.positionBuffer.element(index);
       this.previousBuffer.element(index).assign(vec4(position.xyz, 0));
-    })().compute(PARTICLE_COUNT).setName('Cape sleep');
+    })().compute(PARTICLE_COUNT, [PARTICLE_COUNT]).setName('Cape sleep');
   }
 
   private createInitialState(): Float32Array {

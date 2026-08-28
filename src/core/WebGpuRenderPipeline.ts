@@ -12,10 +12,12 @@ import { selectCharacterRenderMode, type CharacterRenderMode } from './character
 import { LAYER_DEPTH_EPSILON } from './depthComposite';
 import { calculateRenderSizing, type RenderSizing } from './renderSizing';
 import {
+  addFrameRenderStats,
   captureFrameRenderStats,
   EMPTY_FRAME_RENDER_STATS,
   type FrameRenderStats,
 } from './frameRenderStats';
+import { measureBundledRenderStats } from './bundleRenderStats';
 import {
   CHARACTER_RENDER_LAYER,
   WORLD_RENDER_LAYER,
@@ -82,6 +84,8 @@ export class WebGpuRenderPipeline {
   private targetResizeCount = 0;
   private activeMode: CharacterRenderMode = 'direct-opaque';
   private lastFrameRenderStats: FrameRenderStats = EMPTY_FRAME_RENDER_STATS;
+  private bundledRenderStats: FrameRenderStats = EMPTY_FRAME_RENDER_STATS;
+  private bundlesNeedFirstRecording = false;
 
   public constructor(
     canvas: HTMLCanvasElement,
@@ -166,7 +170,13 @@ export class WebGpuRenderPipeline {
     this.renderer.info.reset();
     this.activateMode(selectCharacterRenderMode(this.opacityNode.value));
     this.renderPipeline.render();
-    this.lastFrameRenderStats = captureFrameRenderStats(this.renderer.info.render);
+    const rendererStats = captureFrameRenderStats(this.renderer.info.render);
+    // Three.js counts bundle commands while initially recording them, but not
+    // when replaying the cached bundle on later frames.
+    this.lastFrameRenderStats = this.bundlesNeedFirstRecording
+      ? rendererStats
+      : addFrameRenderStats(rendererStats, this.bundledRenderStats);
+    this.bundlesNeedFirstRecording = false;
   }
 
   /** Advances TSL FRAME nodes when rendering outside requestAnimationFrame. */
@@ -214,6 +224,20 @@ export class WebGpuRenderPipeline {
 
   public setCharacterOpacity(opacity: number): void {
     this.opacityNode.value = THREE.MathUtils.clamp(opacity, 0, 1);
+  }
+
+  /** Records a fixed object hierarchy once while retaining per-frame binding updates. */
+  public bundleFixedChildren(group: THREE.Group): void {
+    if (group.children.length === 0 || this.getActualBackend() !== 'webgpu') return;
+    this.bundledRenderStats = addFrameRenderStats(
+      this.bundledRenderStats,
+      measureBundledRenderStats(group),
+    );
+    this.bundlesNeedFirstRecording = true;
+    const bundle = new THREE.BundleGroup();
+    bundle.name = `${group.name || 'Fixed hierarchy'} render bundle`;
+    bundle.add(...group.children);
+    group.add(bundle);
   }
 
   public getCharacterOpacity(): number {
