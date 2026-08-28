@@ -94,14 +94,6 @@ export class RenderPipeline {
     this.active.setCharacterOpacity(opacity);
   }
 
-  public bundleFixedChildren(group: THREE.Group): void {
-    this.active.bundleFixedChildren(group);
-  }
-
-  public bundleDynamicChildren(group: THREE.Group): void {
-    this.active.bundleDynamicChildren(group);
-  }
-
   public getCharacterOpacity(): number {
     return this.active.getCharacterOpacity();
   }

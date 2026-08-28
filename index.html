@@ -28,20 +28,20 @@
         aria-label="Rendering diagnostics. Click to copy the last 15 seconds of performance data."
       >
         <strong><b data-fps>--</b><i> FPS</i></strong>
-        <span>RENDER FPS / LAST 15S</span>
+        <span data-fps-caption>DISPLAY FPS / LAST 15S</span>
         <svg
           class="performance-panel__history"
           data-fps-history
           viewBox="0 0 154 32"
           preserveAspectRatio="none"
           role="img"
-          aria-label="Frame-rate history"
+          aria-label="Main-thread work history"
         >
           <line x1="0" y1="1" x2="154" y2="1"></line>
           <line x1="0" y1="16" x2="154" y2="16"></line>
           <path data-fps-history-line d=""></path>
         </svg>
-        <small><b data-frame-time>--</b> MS / <b data-fps-low>--</b> 1% LOW</small>
+        <small><b data-frame-time>--</b> MS MAIN WORK / <b data-fps-low>--</b> P95</small>
         <span class="performance-panel__copy" data-performance-copy aria-live="polite">
           CLICK TO COPY 15S REPORT
         </span>

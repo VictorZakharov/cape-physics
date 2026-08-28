@@ -12,16 +12,10 @@ import { selectCharacterRenderMode, type CharacterRenderMode } from './character
 import { LAYER_DEPTH_EPSILON } from './depthComposite';
 import { calculateRenderSizing, type RenderSizing } from './renderSizing';
 import {
-  addFrameRenderStats,
   captureFrameRenderStats,
   EMPTY_FRAME_RENDER_STATS,
   type FrameRenderStats,
 } from './frameRenderStats';
-import { measureBundledRenderStats } from './bundleRenderStats';
-import {
-  moveChildrenIntoRenderBundle,
-  type RenderBundleTransformMode,
-} from './renderBundle';
 import {
   CHARACTER_RENDER_LAYER,
   WORLD_RENDER_LAYER,
@@ -88,8 +82,6 @@ export class WebGpuRenderPipeline {
   private targetResizeCount = 0;
   private activeMode: CharacterRenderMode = 'direct-opaque';
   private lastFrameRenderStats: FrameRenderStats = EMPTY_FRAME_RENDER_STATS;
-  private bundledRenderStats: FrameRenderStats = EMPTY_FRAME_RENDER_STATS;
-  private bundlesNeedFirstRecording = false;
 
   public constructor(
     canvas: HTMLCanvasElement,
@@ -174,13 +166,7 @@ export class WebGpuRenderPipeline {
     this.renderer.info.reset();
     this.activateMode(selectCharacterRenderMode(this.opacityNode.value));
     this.renderPipeline.render();
-    const rendererStats = captureFrameRenderStats(this.renderer.info.render);
-    // Three.js counts bundle commands while initially recording them, but not
-    // when replaying the cached bundle on later frames.
-    this.lastFrameRenderStats = this.bundlesNeedFirstRecording
-      ? rendererStats
-      : addFrameRenderStats(rendererStats, this.bundledRenderStats);
-    this.bundlesNeedFirstRecording = false;
+    this.lastFrameRenderStats = captureFrameRenderStats(this.renderer.info.render);
   }
 
   /** Advances TSL FRAME nodes when rendering outside requestAnimationFrame. */
@@ -228,28 +214,6 @@ export class WebGpuRenderPipeline {
 
   public setCharacterOpacity(opacity: number): void {
     this.opacityNode.value = THREE.MathUtils.clamp(opacity, 0, 1);
-  }
-
-  /** Records an object hierarchy once, selecting the correct transform refresh mode. */
-  private bundleChildren(
-    group: THREE.Group,
-    transformMode: RenderBundleTransformMode,
-  ): void {
-    if (group.children.length === 0 || this.getActualBackend() !== 'webgpu') return;
-    this.bundledRenderStats = addFrameRenderStats(
-      this.bundledRenderStats,
-      measureBundledRenderStats(group),
-    );
-    this.bundlesNeedFirstRecording = true;
-    moveChildrenIntoRenderBundle(group, transformMode);
-  }
-
-  public bundleFixedChildren(group: THREE.Group): void {
-    this.bundleChildren(group, 'fixed');
-  }
-
-  public bundleDynamicChildren(group: THREE.Group): void {
-    this.bundleChildren(group, 'dynamic');
   }
 
   public getCharacterOpacity(): number {

@@ -88,6 +88,26 @@ describe('PerformanceMonitor', () => {
     expect(snapshot.windowElapsedMilliseconds).toBeLessThanOrEqual(15_000);
   });
 
+  test('calculates 1% low from the average of the slowest one percent of frames', () => {
+    const monitor = createMonitor();
+    let timestamp = 0;
+    monitor.recordFrame(timestamp);
+    for (let frame = 0; frame < 990; frame += 1) {
+      timestamp += 10;
+      monitor.recordFrame(timestamp);
+    }
+    for (let frame = 0; frame < 5; frame += 1) {
+      timestamp += 20;
+      monitor.recordFrame(timestamp);
+    }
+    for (let frame = 0; frame < 5; frame += 1) {
+      timestamp += 50;
+      monitor.recordFrame(timestamp);
+    }
+
+    expect(monitor.getSnapshot().onePercentLow).toBeCloseTo(1_000 / 35, 5);
+  });
+
   test('aggregates measured main-thread phases without treating them as FPS', () => {
     const monitor = createMonitor();
     monitor.recordFrame(0);

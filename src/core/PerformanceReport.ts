@@ -103,7 +103,7 @@ export function formatPerformanceReport(input: PerformanceReportInput): string {
     ...capeSolverLines,
     `Scene: ${metric(scene.simulationSeconds, 2)} s simulated | ${renderer.drawCalls} draw calls | ${renderer.triangles} triangles | ${renderer.programs} programs | ${scene.worldColliders} cape colliders | ${scene.activeRipples} active ripples | cape ${scene.capeSleeping ? 'sleeping' : 'active'}`,
     `Page state: ${page.visibility} | ${page.focused ? 'focused' : 'not focused'} | DPR ${metric(page.devicePixelRatio)} | ${displayTopology}`,
-    'Timing caveat: rendered FPS and browser callback cadence are not physical panel measurements; render submission is main-thread time, not GPU completion',
+    'Timing caveat: display FPS is refresh/vsync capped and therefore cannot compare backend headroom; main-thread render submission is not GPU completion',
     `Page: ${page.url}`,
     `Runtime: ${runtime.platform}`,
     `User agent (raw): ${runtime.userAgent}`,

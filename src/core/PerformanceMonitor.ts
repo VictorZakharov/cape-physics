@@ -54,6 +54,7 @@ export const EMPTY_WORKLOAD_SNAPSHOT: WorkloadSnapshot = Object.freeze({
 export class PerformanceMonitor {
   private readonly panel: HTMLElement;
   private readonly fpsLabel: HTMLElement;
+  private readonly fpsCaption: HTMLElement;
   private readonly frameTimeLabel: HTMLElement;
   private readonly lowLabel: HTMLElement;
   private readonly historyPath: SVGPathElement;
@@ -97,6 +98,7 @@ export class PerformanceMonitor {
   ) {
     this.panel = invariant(root.querySelector<HTMLElement>('[data-performance-panel]'), 'Performance panel is missing.');
     this.fpsLabel = invariant(root.querySelector<HTMLElement>('[data-fps]'), 'FPS label is missing.');
+    this.fpsCaption = invariant(root.querySelector<HTMLElement>('[data-fps-caption]'), 'FPS caption is missing.');
     this.frameTimeLabel = invariant(root.querySelector<HTMLElement>('[data-frame-time]'), 'Frame-time label is missing.');
     this.lowLabel = invariant(root.querySelector<HTMLElement>('[data-fps-low]'), 'Low-FPS label is missing.');
     this.historyPath = invariant(root.querySelector<SVGPathElement>('[data-fps-history-line]'), 'FPS history path is missing.');
@@ -201,7 +203,19 @@ export class PerformanceMonitor {
     const medianFrameTime = this.sortedPercentile(0.5);
     const p95FrameTime = this.sortedPercentile(0.95);
     const p99FrameTime = this.sortedPercentile(0.99);
-    const onePercentLow = p99FrameTime > 0 ? 1_000 / p99FrameTime : 0;
+    // A 1% low is the rate represented by the average of the slowest one
+    // percent of frames, not simply the inverse of the p99 boundary sample.
+    const slowFrameCount = Math.max(1, Math.ceil(this.durationScratch.length * 0.01));
+    let slowFrameTotal = 0;
+    for (
+      let index = Math.max(0, this.durationScratch.length - slowFrameCount);
+      index < this.durationScratch.length;
+      index += 1
+    ) {
+      slowFrameTotal += this.durationScratch[index] ?? 0;
+    }
+    const slowFrameAverage = slowFrameTotal / slowFrameCount;
+    const onePercentLow = slowFrameAverage > 0 ? 1_000 / slowFrameAverage : 0;
     const fastFrame = this.sortedPercentile(0.1);
     const rawRefresh = fastFrame > 0 ? 1_000 / fastFrame : 60;
     const commonRefreshRates = [30, 60, 75, 90, 100, 120, 144, 165, 240];
@@ -233,7 +247,7 @@ export class PerformanceMonitor {
       windowElapsedMilliseconds,
     };
     this.recalculateWorkload();
-    this.history.push(averageFps);
+    this.history.push(this.workloadSnapshot.averageMainThreadMilliseconds);
     if (this.history.length > 78) this.history.shift();
   }
 
@@ -296,22 +310,36 @@ export class PerformanceMonitor {
   }
 
   private paint(): void {
-    const { averageFps, onePercentLow, averageFrameTime, refreshEstimate } = this.snapshot;
+    const { averageFps, onePercentLow, refreshEstimate } = this.snapshot;
+    const {
+      averageMainThreadMilliseconds,
+      p95MainThreadMilliseconds,
+      sampleCount: workloadSampleCount,
+    } = this.workloadSnapshot;
+    const refreshCapped = this.snapshot.sampleCount >= 30
+      && averageFps >= refreshEstimate * 0.97;
     this.fpsLabel.textContent = averageFps > 0 ? Math.round(averageFps).toString() : '--';
-    this.frameTimeLabel.textContent = averageFrameTime > 0 ? averageFrameTime.toFixed(1) : '--';
-    this.lowLabel.textContent = onePercentLow > 0 ? Math.round(onePercentLow).toString() : '--';
+    this.fpsCaption.textContent = refreshCapped
+      ? 'DISPLAY FPS / VSYNC-CAPPED'
+      : 'DISPLAY FPS / LAST 15S';
+    this.frameTimeLabel.textContent = workloadSampleCount > 0
+      ? averageMainThreadMilliseconds.toFixed(1)
+      : '--';
+    this.lowLabel.textContent = workloadSampleCount > 0
+      ? p95MainThreadMilliseconds.toFixed(1)
+      : '--';
     this.historyGraphic.setAttribute(
       'aria-label',
-      `Rendered frame rate over the last ${(this.snapshot.windowElapsedMilliseconds / 1_000).toFixed(1)} seconds: ${Math.round(averageFps)} average, ${Math.round(onePercentLow)} one-percent low`,
+      `Display cadence over the last ${(this.snapshot.windowElapsedMilliseconds / 1_000).toFixed(1)} seconds: ${Math.round(averageFps)} average FPS, ${Math.round(onePercentLow)} one-percent low; main-thread work ${averageMainThreadMilliseconds.toFixed(1)} milliseconds average and ${p95MainThreadMilliseconds.toFixed(1)} milliseconds p95`,
     );
     this.panel.classList.toggle('has-frame-drop', averageFps > 0 && averageFps < Math.min(52, refreshEstimate * 0.78));
 
     const width = 154;
     const height = 31;
-    const ceiling = Math.max(60, refreshEstimate);
-    const path = this.history.map((fps, index) => {
+    const workBudget = Math.max(4, 1_000 / Math.max(1, refreshEstimate));
+    const path = this.history.map((workMilliseconds, index) => {
       const x = this.history.length <= 1 ? 0 : index / (this.history.length - 1) * width;
-      const y = height - Math.min(1, fps / ceiling) * (height - 1);
+      const y = Math.min(1, workMilliseconds / workBudget) * (height - 1);
       return `${index === 0 ? 'M' : 'L'}${x.toFixed(1)} ${y.toFixed(1)}`;
     }).join(' ');
     this.historyPath.setAttribute('d', path);

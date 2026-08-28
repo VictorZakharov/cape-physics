@@ -135,10 +135,6 @@ export class WebGlRenderPipeline {
     this.characterComposite.setOpacity(opacity);
   }
 
-  public bundleFixedChildren(_group: THREE.Group): void {}
-
-  public bundleDynamicChildren(_group: THREE.Group): void {}
-
   public getCharacterOpacity(): number {
     return this.characterComposite.getOpacity();
   }

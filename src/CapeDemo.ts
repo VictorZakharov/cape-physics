@@ -199,7 +199,6 @@ export class CapeDemo {
       Math.min(8, this.pipeline.getMaxAnisotropy()),
     );
     this.cave = new CaveWorld(rockTextures);
-    this.pipeline.bundleFixedChildren(this.cave.group);
     this.scene.add(this.cave.group);
 
     await this.loading.update(0.3, 'Awakening mineral light');
@@ -233,7 +232,6 @@ export class CapeDemo {
 
     await this.loading.update(0.54, 'Forging the traveller');
     this.character = new Character();
-    this.pipeline.bundleDynamicChildren(this.character.root);
     const startZ = 11.8;
     const startX = caveCenterX(startZ);
     this.character.root.position.set(startX, this.worldCollision.getPlayerRootHeight(startX, startZ), startZ);

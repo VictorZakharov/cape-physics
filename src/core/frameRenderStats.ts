@@ -28,15 +28,3 @@ export function captureFrameRenderStats(render: RenderInfoLike): FrameRenderStat
     lines: render.lines,
   };
 }
-
-export function addFrameRenderStats(
-  first: FrameRenderStats,
-  second: FrameRenderStats,
-): FrameRenderStats {
-  return {
-    calls: first.calls + second.calls,
-    triangles: first.triangles + second.triangles,
-    points: first.points + second.points,
-    lines: first.lines + second.lines,
-  };
-}
