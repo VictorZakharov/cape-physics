@@ -111,6 +111,9 @@ interface CapeDemoDiagnostics {
     readonly hemDrop: number;
     readonly minimumLowerCapeDrop: number;
     readonly maximumLowerCapeLateralOffset: number;
+    readonly averageLowerCapeSpanRatio: number;
+    readonly capeRowTwistRange: number;
+    readonly capeCenterlineDeviation: number;
     readonly hemBackOffset: number;
     readonly minimumHemGroundClearance: number;
     readonly minimumActiveRockSurfaceDistance: number | null;

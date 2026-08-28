@@ -827,6 +827,8 @@ export class CapeDemo {
         minimumLowerCapeDrop: this.cape.getMinimumLowerCapeDrop(),
         maximumLowerCapeLateralOffset: this.cape.getMaximumLowerCapeLateralOffset(capeAnchors),
         averageLowerCapeSpanRatio: this.cape.getAverageLowerCapeSpanRatio(capeAnchors),
+        capeRowTwistRange: this.cape.getCapeRowTwistRange(capeAnchors),
+        capeCenterlineDeviation: this.cape.getCapeCenterlineDeviation(),
         hemBackOffset: this.cape.getHemBackOffset(capeAnchors),
         minimumHemGroundClearance: this.cape.getMinimumHemGroundClearance(),
         minimumActiveRockSurfaceDistance: closestRockSurfaceContact?.distance ?? null,

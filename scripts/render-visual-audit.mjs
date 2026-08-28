@@ -193,6 +193,11 @@ try {
     `${label} rolled the cape into a tube (`
       + `${state.cape.averageLowerCapeSpanRatio.toFixed(4)} lower-row lateral-span ratio)`,
   );
+  const assertCapeWavy = (state, label) => assert(
+    state.cape.capeCenterlineDeviation > 0.04,
+    `${label} left the cape as a flat sheet (`
+      + `${state.cape.capeCenterlineDeviation.toFixed(4)} m centerline deviation)`,
+  );
   const setView = (yaw, pitch, distance) => evaluate(
     command,
     `window.__CAPE_DEMO__.setView(${JSON.stringify({ yaw, pitch, distance })})`,
@@ -375,7 +380,11 @@ try {
     initial.cave.contactRocks.every(({ openLaneWidth }) => openLaneWidth > 0.93),
     'cape contact course blocks a player-width traversal lane',
   );
-  assert(initial.cape.maximumBodyPenetration < 0.002, 'pinned cape neckline starts inside the character');
+  assert(
+    initial.cape.maximumBodyPenetration < 0.002,
+    `pinned cape neckline starts inside the character (${initial.cape.maximumBodyPenetration.toFixed(5)} m; `
+      + `${JSON.stringify(initial.cape.bodyPenetrationByCollider)})`,
+  );
   assert(initial.player.capeAttachment.meshes === 2, 'neckline seam or throat ties are missing');
   assert(initial.player.capeAttachment.maximumAnchorGap < 0.001, 'rendered cape attachment does not overlap both simulation anchors');
   assert(initial.water.surfaceAlphaRange[1] <= 0.6, 'water surface is too opaque');
@@ -649,7 +658,10 @@ try {
   await setView(0.08, 0.22, 4.5);
   const beforeWalk = await diagnostics();
   await setMovement(0, 1);
-  await advance(1.72, 1 / 120);
+  const walkMotionState = await advance(1.72, 1 / 120);
+  assertCapeWavy(walkMotionState, 'walking');
+  await setView(1.18, 0.12, 4.1);
+  await capture('character-walking');
   await setMovement(0, 0);
   await advance(0.18, 1 / 120);
   const afterWalk = await setView(0.18, 0.46, 4.65);
@@ -728,9 +740,10 @@ try {
     runState.cape.hemBackOffset > afterWalk.cape.hemBackOffset + 0.5,
     'running did not produce a materially stronger cape trail than walking',
   );
-  assertCapeNotRolled(runState, 'running');
   await setView(1.18, 0.12, 4.1);
   await capture('character-running');
+  assertCapeNotRolled(runState, 'running');
+  assertCapeWavy(runState, 'running');
   let frameProfile = null;
   let expectedProfileFrames = 0;
   if (performanceProfileEnabled) {
@@ -1185,7 +1198,11 @@ try {
       + `fold=${smallRockTraversal.maximumUpwardFold.toFixed(4)}, `
       + `strain=${smallRockTraversal.maximumStructuralError.toFixed(4)})`,
   );
-  assert(smallRockTraversal.maximumUpwardFold < 0.03, 'small stone crossed or straightened lower cape rows');
+  assert(
+    smallRockTraversal.maximumUpwardFold < 0.03,
+    `small stone crossed or straightened lower cape rows (`
+      + `${smallRockTraversal.maximumUpwardFold.toFixed(5)} m)`,
+  );
   assert(
     smallRockTraversal.maximumStructuralError < 0.035,
     `small-stone traversal overstretched the cape (${smallRockTraversal.maximumStructuralError.toFixed(4)} m)`,
@@ -1474,6 +1491,7 @@ try {
     highDensity,
     mobileTouch,
     beforeWalk,
+    walkMotionState,
     afterWalk,
     beforeDrips,
     afterDrips,

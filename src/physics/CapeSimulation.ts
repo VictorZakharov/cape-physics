@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { CAMERA_NEAR_OPACITY, CAPE, PLAYER } from '../config';
 import { createCapeFabricTextures } from '../graphics/proceduralTextures';
 import type { CapeAnchors } from '../player/Character';
+import { CAPE_FLUTTER_ACCELERATION } from './CapeAerodynamics';
 import { caveGroundHeightAt } from '../world/caveProfile';
 import {
   CapeContactSolver,
@@ -14,7 +15,12 @@ import {
   CapePerformanceProfiler,
   type CapePerformanceDiagnostics,
 } from './CapePerformanceProfiler';
-import { getCapeRestBackOffset, getCapeRestWidth } from './CapeRestShape';
+import {
+  CAPE_ROW_SPAN_RELAXATION,
+  getCapeRestBackOffset,
+  getCapeRestWidth,
+  MINIMUM_CAPE_ROW_SPAN_RATIO,
+} from './CapeRestShape';
 import {
   normalizeCapePhysicsSettings,
   type CapePhysicsSettings,
@@ -65,6 +71,9 @@ export class CapeSimulation {
   private readonly rightAxis = new THREE.Vector3();
   private readonly rowCenter = new THREE.Vector3();
   private readonly drapeDelta = new THREE.Vector3();
+  private readonly centerlineStart = new THREE.Vector3();
+  private readonly centerlineEnd = new THREE.Vector3();
+  private readonly centerlinePoint = new THREE.Vector3();
   private readonly stepStart: THREE.Vector3[] = [];
   private opacity = 1;
   private settledSeconds = 0;
@@ -185,11 +194,21 @@ export class CapeSimulation {
         this.estimateNormal(column, row);
         const pressure = this.airflow.dot(this.normal);
         const turbulence = Math.sin(time * 4.3 + row * 0.83 + column * 1.71) * 0.42;
+        const across = column / (CAPE.columns - 1) - 0.5;
+        const flutterEnvelope = Math.sin(Math.PI * row / (CAPE.rows - 1)) ** 2;
+        const flutterProfile = 0.3 + across * 0.4;
+        const fabricFlutter = Math.sin(time * 3.4 + row * 0.28)
+          * flutterProfile
+          * flutterEnvelope;
         position.add(this.velocity);
         position.y -= 9.81 * this.settings.weight * deltaSquared;
         position.addScaledVector(
           this.normal,
           pressure * Math.abs(pressure) * 0.026 * deltaSquared,
+        );
+        position.addScaledVector(
+          this.normal,
+          fabricFlutter * movementBlend * CAPE_FLUTTER_ACCELERATION * deltaSquared,
         );
         position.addScaledVector(
           this.airflow,
@@ -217,6 +236,7 @@ export class CapeSimulation {
         profilePhaseStart = profileNow;
       }
       this.foldGuard.solve(this.positions, this.previous, this.inverseMass);
+      this.solveRowSpanGuard(anchors);
       if (profileActive) {
         const profileNow = performance.now();
         this.profiler.record('foldGuard', profileNow - profilePhaseStart);
@@ -513,6 +533,43 @@ export class CapeSimulation {
     return rowCount > 0 ? ratioTotal / rowCount : 0;
   }
 
+  /**
+   * Measures changing cross-cape orientation down the cloth. A rigid planar
+   * sheet has almost no range, while a naturally waving cape twists successive
+   * rows forward and backward around its centerline.
+   */
+  public getCapeRowTwistRange(anchors: CapeAnchors): number {
+    const anchorWidth = anchors.right.distanceTo(anchors.left);
+    let minimum = Number.POSITIVE_INFINITY;
+    let maximum = Number.NEGATIVE_INFINITY;
+    for (let row = 1; row < CAPE.rows; row += 1) {
+      const left = this.positions[this.index(0, row)];
+      const right = this.positions[this.index(CAPE.columns - 1, row)];
+      if (!left || !right) continue;
+      const down = row / (CAPE.rows - 1);
+      const restWidth = getCapeRestWidth(anchorWidth, down, this.settings.width);
+      const twist = this.drapeDelta.copy(right).sub(left).dot(anchors.back)
+        / Math.max(0.000_001, restWidth);
+      minimum = Math.min(minimum, twist);
+      maximum = Math.max(maximum, twist);
+    }
+    return Number.isFinite(minimum) && Number.isFinite(maximum) ? maximum - minimum : 0;
+  }
+
+  /** Maximum row-center departure from the straight neckline-to-hem chord. */
+  public getCapeCenterlineDeviation(): number {
+    this.getRowCenter(0, this.centerlineStart);
+    this.getRowCenter(CAPE.rows - 1, this.centerlineEnd);
+    let maximum = 0;
+    for (let row = 1; row < CAPE.rows - 1; row += 1) {
+      const down = row / (CAPE.rows - 1);
+      this.getRowCenter(row, this.rowCenter);
+      this.centerlinePoint.lerpVectors(this.centerlineStart, this.centerlineEnd, down);
+      maximum = Math.max(maximum, this.rowCenter.distanceTo(this.centerlinePoint));
+    }
+    return maximum;
+  }
+
   public getHemBackOffset(anchors: CapeAnchors): number {
     this.getRowCenter(CAPE.rows - 1, this.rowCenter);
     return this.drapeDelta.copy(this.rowCenter).sub(this.anchorCenter).dot(anchors.back);
@@ -696,6 +753,32 @@ export class CapeSimulation {
         this.positions[index]?.addScaledVector(this.rightAxis, correction);
         this.previous[index]?.addScaledVector(this.rightAxis, correction);
       }
+    }
+  }
+
+  private solveRowSpanGuard(anchors: CapeAnchors): void {
+    this.rightAxis.copy(anchors.right).sub(anchors.left).normalize();
+    const anchorWidth = anchors.right.distanceTo(anchors.left);
+    for (let row = 1; row < CAPE.rows; row += 1) {
+      const leftIndex = this.index(0, row);
+      const rightIndex = this.index(CAPE.columns - 1, row);
+      const left = this.positions[leftIndex];
+      const right = this.positions[rightIndex];
+      const leftPrevious = this.previous[leftIndex];
+      const rightPrevious = this.previous[rightIndex];
+      if (!left || !right || !leftPrevious || !rightPrevious) continue;
+      const down = row / (CAPE.rows - 1);
+      const minimumSpan = getCapeRestWidth(anchorWidth, down, this.settings.width)
+        * MINIMUM_CAPE_ROW_SPAN_RATIO;
+      const lateralSpan = this.delta.copy(right).sub(left).dot(this.rightAxis);
+      const deficit = minimumSpan - lateralSpan;
+      if (deficit <= 0) continue;
+      this.correction.copy(this.rightAxis)
+        .multiplyScalar(deficit * CAPE_ROW_SPAN_RELAXATION * 0.5);
+      left.sub(this.correction);
+      right.add(this.correction);
+      leftPrevious.sub(this.correction);
+      rightPrevious.add(this.correction);
     }
   }
 

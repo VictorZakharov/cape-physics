@@ -30,8 +30,15 @@ import {
   type CapsuleCollider,
   type WorldCollider,
 } from './colliders';
+import { CAPE_FLUTTER_ACCELERATION } from './CapeAerodynamics';
 import { CapeSimulation } from './CapeSimulation';
+import {
+  CAPE_ROW_SPAN_RELAXATION,
+  MINIMUM_CAPE_ROW_SPAN_RATIO,
+} from './CapeRestShape';
 import { getClothBodyClearance, getClothBodyDepthRadius } from './ClothBodyCollision';
+import { FOLD_RELAXATION, MAXIMUM_LOCAL_UPWARD_FOLD } from './ClothFoldGuard';
+import { CLOTH_THICKNESS } from './ClothSelfCollision';
 import {
   CLOTH_ROCK_CLEARANCE,
   CLOTH_WORLD_CLEARANCE,
@@ -96,6 +103,14 @@ export interface GpuCapeKernelProfile {
 const PARTICLE_COUNT = CAPE.columns * CAPE.rows;
 const ACTIVE_DRAG_PER_SECOND = 2.05;
 const IDLE_DRAG_PER_SECOND = 2.8;
+// Parallel constraint colors preserve the CPU solver's invariants but cancel
+// some of its order-dependent lateral bias. Restore that lost airflow response
+// without changing the shared force or introducing a rest-shape spring.
+const GPU_PARALLEL_FLUTTER_COMPENSATION = 5;
+// A graph-colored sweep converges overlapping long-range bend links much more
+// completely per iteration than the CPU's authored serial order. Normalize
+// their per-pass relaxation so both backends retain comparable fabric curl.
+const GPU_PARALLEL_BEND_RELAXATION = 0.42;
 const WAKE_SPEED = 0.08;
 const GPU_SLEEP_AFTER_IDLE_SECONDS = 1.6;
 const MAX_BODY_COLLIDERS = 32;
@@ -125,10 +140,10 @@ const CAVE_LOWER_RADIAL_START = Math.floor(CAVE.radialSegments / 2);
  * WebGPU cape path. Particle state never leaves storage buffers while the
  * game is running; readback is reserved for explicit harness diagnostics.
  *
- * Constraint projection is position-owned Jacobi: each invocation writes one
- * particle and gathers its immutable neighbor state from the preceding pass.
- * That removes write races without float atomics or hundreds of graph-color
- * dispatches on this small, fixed cape grid.
+ * Distance, self-collision, and fold constraints use race-free pair colors.
+ * Each pair applies the same two-particle PBD correction as the CPU/WebGL
+ * solver, while one workgroup barrier preserves Gauss-Seidel visibility
+ * between colors without requiring hundreds of separate dispatches.
  */
 export class GpuCapeSimulation {
   public readonly mesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshPhysicalNodeMaterial>;
@@ -152,8 +167,6 @@ export class GpuCapeSimulation {
   private readonly stiffnessUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.stiffness);
   private readonly dampingUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.damping);
   private readonly weightUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.weight);
-  private readonly capeLengthUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.length);
-  private readonly anchorCenterYUniform = uniform(0);
   private readonly bodyCountUniform = uniform(0, 'uint');
   private readonly backUniform = uniform(new THREE.Vector3(0, 0, 1));
   private readonly worldSphereCountUniform = uniform(0, 'uint');
@@ -214,34 +227,50 @@ export class GpuCapeSimulation {
     const constrainPosition = this.createColoredConstraintKernel(
       this.positionBuffer,
       'Cape constrain position',
+      true,
+      true,
     );
     const constrainScratch = this.createColoredConstraintKernel(
       this.scratchBuffer,
       'Cape constrain scratch',
+      true,
+      true,
     );
     const scratchToPosition = this.createProjectionKernel(
       this.scratchBuffer,
       this.positionBuffer,
       false,
       'Cape project scratch to position',
+      false,
+      true,
+      true,
     );
     const positionToScratch = this.createProjectionKernel(
       this.positionBuffer,
       this.scratchBuffer,
       false,
       'Cape project position to scratch',
+      false,
+      true,
+      true,
     );
     const hardScratchToPosition = this.createProjectionKernel(
       this.scratchBuffer,
       this.positionBuffer,
       true,
       'Cape reconcile scratch to position',
+      false,
+      true,
+      true,
     );
     const hardPositionToScratch = this.createProjectionKernel(
       this.positionBuffer,
       this.scratchBuffer,
       true,
       'Cape reconcile position to scratch',
+      false,
+      true,
+      true,
     );
     const positionBodyFaces = this.createFaceSweepKernel(
       this.createBodyFaceColorFunction(this.positionBuffer, 'Position'),
@@ -264,10 +293,9 @@ export class GpuCapeSimulation {
       'Cape rock faces in scratch',
     );
 
-    // Edge coloring partitions distance links into race-free matchings. Each
-    // color updates both endpoints in parallel, then a workgroup barrier makes
-    // those corrections visible to the next color. Explicit curl and gravity
-    // constraints below preserve cloth shape without relying on serial order.
+    // One workgroup executes race-free pair colors for the same distance,
+    // self-collision, and fold constraints used by the CPU/WebGL solver. The
+    // following projection pass applies body and environment contacts.
     let currentBufferIsPosition = false;
     for (let iteration = 0; iteration < CAPE.solverIterations; iteration += 1) {
       this.computeSequence.push(
@@ -307,12 +335,20 @@ export class GpuCapeSimulation {
       .compute(PARTICLE_COUNT, [PARTICLE_COUNT])
       .setName('Cape profile no-op');
     this.profileProjectionKernels = [
-      this.createProjectionFeatureKernel(true, true, 'Cape profile projection full'),
-      this.createProjectionFeatureKernel(true, false, 'Cape profile projection no contacts'),
-      this.createProjectionFeatureKernel(false, false, 'Cape profile fold only'),
+      this.createProjectionFeatureKernel(false, true, 'Cape profile contacts and fold', true),
+      this.createProjectionFeatureKernel(false, false, 'Cape profile fold only', true),
+      this.createProjectionFeatureKernel(false, false, 'Cape profile copy only', false),
       this.createColoredConstraintKernel(
         this.scratchBuffer,
-        'Cape profile colored constraints',
+        'Cape profile colored constraints self and fold',
+        true,
+        true,
+      ),
+      this.createColoredConstraintKernel(
+        this.scratchBuffer,
+        'Cape profile colored constraints and fold',
+        false,
+        true,
       ),
     ];
 
@@ -537,6 +573,14 @@ export class GpuCapeSimulation {
     return this.diagnosticMirror.getAverageLowerCapeSpanRatio(anchors);
   }
 
+  public getCapeRowTwistRange(anchors: CapeAnchors): number {
+    return this.diagnosticMirror.getCapeRowTwistRange(anchors);
+  }
+
+  public getCapeCenterlineDeviation(): number {
+    return this.diagnosticMirror.getCapeCenterlineDeviation();
+  }
+
   public getHemBackOffset(anchors: CapeAnchors): number {
     return this.diagnosticMirror.getHemBackOffset(anchors);
   }
@@ -619,10 +663,11 @@ export class GpuCapeSimulation {
       values.reduce((sum, value) => sum + value, 0) / Math.max(1, values.length)
     );
     const noOpMilliseconds = average(noOpDurations);
-    const fullProjectionMilliseconds = average(projectionDurations[0]!);
-    const noContactsMilliseconds = average(projectionDurations[1]!);
-    const foldMilliseconds = average(projectionDurations[2]!);
-    const constraintMilliseconds = average(projectionDurations[3]!);
+    const contactProjectionMilliseconds = average(projectionDurations[0]!);
+    const foldProjectionMilliseconds = average(projectionDurations[1]!);
+    const copyMilliseconds = average(projectionDurations[2]!);
+    const fullConstraintMilliseconds = average(projectionDurations[3]!);
+    const noSelfConstraintMilliseconds = average(projectionDurations[4]!);
     const kernels = this.computeSequence.map((kernel, index): GpuCapeKernelTiming => {
       const durations = kernelDurations[index]!;
       const averageMilliseconds = average(durations);
@@ -648,15 +693,18 @@ export class GpuCapeSimulation {
       ),
       kernels,
       projectionComponents: {
-        fullMilliseconds: fullProjectionMilliseconds + constraintMilliseconds,
-        contactsMilliseconds: Math.max(0, fullProjectionMilliseconds - noContactsMilliseconds),
+        fullMilliseconds: contactProjectionMilliseconds + fullConstraintMilliseconds,
+        contactsMilliseconds: Math.max(
+          0,
+          contactProjectionMilliseconds - foldProjectionMilliseconds,
+        ),
         selfCollisionMilliseconds: Math.max(
           0,
-          noContactsMilliseconds - foldMilliseconds,
+          fullConstraintMilliseconds - noSelfConstraintMilliseconds,
         ),
         constraintsAndFoldMilliseconds:
-          Math.max(0, foldMilliseconds - noOpMilliseconds)
-          + Math.max(0, constraintMilliseconds - noOpMilliseconds),
+          Math.max(0, foldProjectionMilliseconds - copyMilliseconds)
+          + Math.max(0, noSelfConstraintMilliseconds - noOpMilliseconds),
       },
     };
   }
@@ -709,11 +757,32 @@ export class GpuCapeSimulation {
         .add(float(column).mul(1.71))
         .sin()
         .mul(0.42);
+      const across = float(column).div(CAPE.columns - 1).sub(0.5);
+      const flutterEnvelope = float(row)
+        .div(CAPE.rows - 1)
+        .mul(Math.PI)
+        .sin()
+        .pow(2);
+      const flutterProfile = float(0.3).add(across.mul(0.4));
+      const fabricFlutter = this.timeUniform.mul(3.4)
+        .add(float(row).mul(0.28))
+        .sin()
+        .mul(flutterProfile)
+        .mul(flutterEnvelope);
       const deltaSquared = this.deltaTimeUniform.mul(this.deltaTimeUniform);
       const predicted = currentPosition.add(velocity).toVar('predicted');
       predicted.y.subAssign(deltaSquared.mul(9.81).mul(this.weightUniform));
       predicted.addAssign(normal.mul(
         pressure.mul(pressure.abs()).mul(0.026).mul(deltaSquared),
+      ));
+      predicted.addAssign(normal.mul(
+        fabricFlutter
+          .mul(this.movementBlendUniform)
+          // The colored parallel sweep cancels most broad asymmetric motion
+          // that the ordered CPU sweep naturally retains. Compensate the same
+          // physical flutter field here instead of adding a shape constraint.
+          .mul(CAPE_FLUTTER_ACCELERATION * GPU_PARALLEL_FLUTTER_COMPENSATION)
+          .mul(deltaSquared),
       ));
       predicted.addAssign(
         this.airflowUniform
@@ -730,6 +799,8 @@ export class GpuCapeSimulation {
   private createColoredConstraintKernel(
     buffer: typeof this.positionBuffer,
     name: string,
+    includeSelfCollision = true,
+    includeFoldGuard = true,
   ): THREE.ComputeNode {
     return Fn(() => {
       const constraintIndex = instanceIndex;
@@ -749,24 +820,195 @@ export class GpuCapeSimulation {
           const firstWeight = select(firstIndex.lessThan(uint(CAPE.columns)), 0, 1);
           const secondWeight = select(secondIndex.lessThan(uint(CAPE.columns)), 0, 1);
           const totalWeight = firstWeight.add(secondWeight);
-          If(
-            length.greaterThan(0.000_001).and(totalWeight.greaterThan(0)),
-            () => {
-              const stiffness = definition.w.mul(this.stiffnessUniform).min(0.999);
-              const correction = delta.mul(
-                length.sub(definition.z).div(length).mul(stiffness),
-              );
-              const firstCorrection = correction.mul(firstWeight.div(totalWeight));
-              const secondCorrection = correction.mul(secondWeight.div(totalWeight));
-              first.addAssign(firstCorrection);
-              second.subAssign(secondCorrection);
-              buffer.element(firstIndex).assign(vec4(first, firstState.w));
-              buffer.element(secondIndex).assign(vec4(second, secondState.w));
-            },
-          );
+          If(length.greaterThan(0.000_001).and(totalWeight.greaterThan(0)), () => {
+            const stiffness = definition.w.mul(this.stiffnessUniform).min(0.999);
+            const correction = delta.mul(
+              length.sub(definition.z).div(length).mul(stiffness),
+            );
+            first.addAssign(correction.mul(firstWeight.div(totalWeight)));
+            second.subAssign(correction.mul(secondWeight.div(totalWeight)));
+            buffer.element(firstIndex).assign(vec4(first, firstState.w));
+            buffer.element(secondIndex).assign(vec4(second, secondState.w));
+          });
         });
         storageBarrier();
       }
+
+      if (includeSelfCollision) {
+        const rotatingParticleCount = uint(PARTICLE_COUNT - 1);
+        Loop(
+          {
+            start: uint(0),
+            end: rotatingParticleCount,
+            type: 'uint',
+            condition: '<',
+          },
+          ({ i: round }) => {
+            If(constraintIndex.lessThan(uint(PARTICLE_COUNT / 2)), () => {
+              const pairFirst = select(
+                constraintIndex.equal(uint(0)),
+                uint(PARTICLE_COUNT - 1),
+                round.add(constraintIndex).mod(rotatingParticleCount),
+              );
+              const pairSecond = select(
+                constraintIndex.equal(uint(0)),
+                round,
+                round.add(rotatingParticleCount).sub(constraintIndex)
+                  .mod(rotatingParticleCount),
+              );
+              const firstIndex = select(
+                pairFirst.greaterThan(pairSecond),
+                pairFirst,
+                pairSecond,
+              ).toVar('selfFirstIndex');
+              const secondIndex = select(
+                pairFirst.greaterThan(pairSecond),
+                pairSecond,
+                pairFirst,
+              ).toVar('selfSecondIndex');
+              const firstRow = firstIndex.div(uint(CAPE.columns));
+              const secondRow = secondIndex.div(uint(CAPE.columns));
+              const firstColumn = firstIndex.mod(uint(CAPE.columns));
+              const secondColumn = secondIndex.mod(uint(CAPE.columns));
+              const rowDifference = firstRow.sub(secondRow);
+              const columnDifference = select(
+                firstColumn.greaterThan(secondColumn),
+                firstColumn.sub(secondColumn),
+                secondColumn.sub(firstColumn),
+              );
+              const topologicalNeighbor = rowDifference.lessThanEqual(uint(2))
+                .and(columnDifference.lessThanEqual(2));
+              If(topologicalNeighbor.not(), () => {
+                const firstState = buffer.element(firstIndex);
+                const secondState = buffer.element(secondIndex);
+                const first = firstState.xyz.toVar('selfFirst');
+                const second = secondState.xyz.toVar('selfSecond');
+                const separation = first.sub(second).toVar('selfSeparation');
+                const distanceSquared = separation.dot(separation).toVar('selfDistanceSquared');
+                If(distanceSquared.lessThan(CLOTH_THICKNESS ** 2), () => {
+                  const distance = distanceSquared.sqrt().toVar('selfDistance');
+                  const normal = vec3(1, 0, 0).toVar('selfNormal');
+                  If(distance.greaterThan(0.000_001), () => {
+                    normal.assign(separation.div(distance));
+                  }).Else(() => {
+                    const phase = float(firstIndex)
+                      .mul(0.754_877_666)
+                      .add(float(secondIndex).mul(0.569_840_291));
+                    normal.assign(vec3(
+                      phase.sin(),
+                      phase.mul(1.37).cos(),
+                      phase.mul(0.73).add(1.1).sin(),
+                    ).normalize());
+                  });
+                  const firstWeight = select(firstIndex.lessThan(uint(CAPE.columns)), 0, 1);
+                  const secondWeight = select(secondIndex.lessThan(uint(CAPE.columns)), 0, 1);
+                  const totalWeight = firstWeight.add(secondWeight);
+                  If(totalWeight.greaterThan(0), () => {
+                    const correction = normal
+                      .mul(float(CLOTH_THICKNESS).sub(distance).div(totalWeight));
+                    const firstCorrection = correction.mul(firstWeight);
+                    const secondCorrection = correction.mul(secondWeight);
+                    first.addAssign(firstCorrection);
+                    second.subAssign(secondCorrection);
+                    buffer.element(firstIndex).assign(vec4(first, firstState.w));
+                    buffer.element(secondIndex).assign(vec4(second, secondState.w));
+                    const firstPreviousState = this.previousBuffer.element(firstIndex);
+                    const secondPreviousState = this.previousBuffer.element(secondIndex);
+                    this.previousBuffer.element(firstIndex).assign(vec4(
+                      firstPreviousState.xyz.add(firstCorrection),
+                      firstPreviousState.w,
+                    ));
+                    this.previousBuffer.element(secondIndex).assign(vec4(
+                      secondPreviousState.xyz.sub(secondCorrection),
+                      secondPreviousState.w,
+                    ));
+                  });
+                });
+              });
+            });
+            storageBarrier();
+          },
+        );
+      }
+
+      if (includeFoldGuard) {
+      for (let foldColor = 0; foldColor < 2; foldColor += 1) {
+        const foldRowCount = Math.ceil((CAPE.rows - 1 - foldColor) / 2);
+        If(constraintIndex.lessThan(uint(foldRowCount * CAPE.columns)), () => {
+          const pairRow = constraintIndex.div(uint(CAPE.columns));
+          const column = constraintIndex.mod(uint(CAPE.columns));
+          const upperRow = pairRow.mul(uint(2)).add(uint(foldColor));
+          const upperIndex = upperRow.mul(uint(CAPE.columns)).add(column);
+          const lowerIndex = upperIndex.add(uint(CAPE.columns));
+          const upperState = buffer.element(upperIndex);
+          const lowerState = buffer.element(lowerIndex);
+          const upper = upperState.xyz.toVar();
+          const lower = lowerState.xyz.toVar();
+          const excess = lower.y.sub(upper.y).sub(MAXIMUM_LOCAL_UPWARD_FOLD);
+          If(excess.greaterThan(0), () => {
+            const upperWeight = select(upperIndex.lessThan(uint(CAPE.columns)), 0, 1);
+            const lowerWeight = float(1);
+            const totalWeight = upperWeight.add(lowerWeight);
+            const correction = excess.mul(FOLD_RELAXATION);
+            const upperCorrection = correction.mul(upperWeight.div(totalWeight));
+            const lowerCorrection = correction.mul(lowerWeight.div(totalWeight));
+            upper.y.addAssign(upperCorrection);
+            lower.y.subAssign(lowerCorrection);
+            buffer.element(upperIndex).assign(vec4(upper, upperState.w));
+            buffer.element(lowerIndex).assign(vec4(lower, lowerState.w));
+            const upperPreviousState = this.previousBuffer.element(upperIndex);
+            const lowerPreviousState = this.previousBuffer.element(lowerIndex);
+            this.previousBuffer.element(upperIndex).assign(vec4(
+              upperPreviousState.xyz.add(vec3(0, upperCorrection, 0)),
+              upperPreviousState.w,
+            ));
+            this.previousBuffer.element(lowerIndex).assign(vec4(
+              lowerPreviousState.xyz.sub(vec3(0, lowerCorrection, 0)),
+              lowerPreviousState.w,
+            ));
+          });
+        });
+        storageBarrier();
+      }
+      }
+
+      If(constraintIndex.lessThan(uint(CAPE.rows - 1)), () => {
+        const row = constraintIndex.add(1);
+        const leftIndex = row.mul(uint(CAPE.columns));
+        const rightIndex = leftIndex.add(uint(CAPE.columns - 1));
+        const leftState = buffer.element(leftIndex);
+        const rightState = buffer.element(rightIndex);
+        const left = leftState.xyz.toVar('spanLeft');
+        const right = rightState.xyz.toVar('spanRight');
+        const shoulderAxis = this.anchorBuffer.element(uint(CAPE.columns - 1)).xyz
+          .sub(this.anchorBuffer.element(uint(0)).xyz)
+          .normalize();
+        const restSpan = this.topologyBuffer.element(
+          leftIndex.mul(uint(TOPOLOGY_METADATA_STRIDE)),
+        ).x;
+        const lateralSpan = right.sub(left).dot(shoulderAxis);
+        const deficit = restSpan.mul(MINIMUM_CAPE_ROW_SPAN_RATIO)
+          .sub(lateralSpan)
+          .max(0);
+        const correction = shoulderAxis.mul(
+          deficit.mul(CAPE_ROW_SPAN_RELAXATION * 0.5),
+        );
+        left.subAssign(correction);
+        right.addAssign(correction);
+        buffer.element(leftIndex).assign(vec4(left, leftState.w));
+        buffer.element(rightIndex).assign(vec4(right, rightState.w));
+        const leftPreviousState = this.previousBuffer.element(leftIndex);
+        const rightPreviousState = this.previousBuffer.element(rightIndex);
+        this.previousBuffer.element(leftIndex).assign(vec4(
+          leftPreviousState.xyz.sub(correction),
+          leftPreviousState.w,
+        ));
+        this.previousBuffer.element(rightIndex).assign(vec4(
+          rightPreviousState.xyz.add(correction),
+          rightPreviousState.w,
+        ));
+      });
+      storageBarrier();
     })().compute(PARTICLE_COUNT, [PARTICLE_COUNT]).setName(name);
   }
 
@@ -777,6 +1019,7 @@ export class GpuCapeSimulation {
     name: string,
     includeSelfCollision = true,
     includeContacts = true,
+    includeFoldGuard = true,
   ): THREE.ComputeNode {
     const project = this.createProjectionFunction(
       source,
@@ -784,6 +1027,7 @@ export class GpuCapeSimulation {
       name.replaceAll(' ', ''),
       includeSelfCollision,
       includeContacts,
+      includeFoldGuard,
     );
     return Fn(() => {
       const passResult = float(0).toVar('projectionPassResult');
@@ -795,6 +1039,7 @@ export class GpuCapeSimulation {
     includeSelfCollision: boolean,
     includeContacts: boolean,
     name: string,
+    includeFoldGuard = true,
   ): THREE.ComputeNode {
     const project = this.createProjectionFunction(
       this.positionBuffer,
@@ -802,6 +1047,7 @@ export class GpuCapeSimulation {
       name.replaceAll(' ', ''),
       includeSelfCollision,
       includeContacts,
+      includeFoldGuard,
     );
     return Fn(() => {
       const passResult = float(0).toVar('profileProjectionPassResult');
@@ -828,6 +1074,7 @@ export class GpuCapeSimulation {
     passName: string,
     includeSelfCollision = true,
     includeContacts = true,
+    includeFoldGuard = true,
   ) {
     return Fn<
       readonly [THREE.Node<'uint'>, THREE.Node<'bool'>],
@@ -850,27 +1097,7 @@ export class GpuCapeSimulation {
       const particleRow = index.div(uint(CAPE.columns));
       const particleColumn = index.mod(uint(CAPE.columns));
 
-      // Prevent inertial/airflow lift from holding the entire sheet horizontal.
-      // The CPU Gauss-Seidel sweep naturally retains this gravity-aligned sag;
-      // the split GPU projection needs the same unilateral envelope explicitly.
-      // Later body/world projection remains authoritative when cloth rests on
-      // a formation, so this does not create hidden collision geometry.
-      const down = float(particleRow).div(CAPE.rows - 1);
-      const dropProfile = down.mul(down).mul(float(3).sub(down.mul(2)));
-      const minimumDropRatio = mix(0.58, 0.28, this.movementBlendUniform);
-      const maximumHeight = this.anchorCenterYUniform.sub(
-        this.capeLengthUniform.mul(dropProfile).mul(minimumDropRatio),
-      );
-      const sagStart = position.toVar('sagStart');
-      position.y.subAssign(
-        position.y
-          .sub(maximumHeight)
-          .max(0)
-          .mul(smoothstep(0.05, 0.35, down))
-          .mul(0.46),
-      );
-      previousPosition.addAssign(position.sub(sagStart));
-
+      if (includeFoldGuard) {
       const topologyNeighbors = this.topologyBuffer.element(
         index.mul(uint(TOPOLOGY_METADATA_STRIDE)).add(1),
       );
@@ -878,14 +1105,19 @@ export class GpuCapeSimulation {
       const lower = source.element(uint(topologyNeighbors.y)).xyz;
       const foldStart = position.toVar('foldStart');
       If(index.greaterThanEqual(uint(CAPE.columns)), () => {
-        const upwardExcess = position.y.sub(upper.y).sub(0.022).max(0);
-        position.y.subAssign(upwardExcess.mul(0.34));
+        const upwardExcess = position.y.sub(upper.y)
+          .sub(MAXIMUM_LOCAL_UPWARD_FOLD)
+          .max(0);
+        position.y.subAssign(upwardExcess.mul(FOLD_RELAXATION * 0.5));
       });
       If(index.lessThan(uint(PARTICLE_COUNT - CAPE.columns)), () => {
-        const lowerExcess = lower.y.sub(position.y).sub(0.022).max(0);
-        position.y.addAssign(lowerExcess.mul(0.34));
+        const lowerExcess = lower.y.sub(position.y)
+          .sub(MAXIMUM_LOCAL_UPWARD_FOLD)
+          .max(0);
+        position.y.addAssign(lowerExcess.mul(FOLD_RELAXATION * 0.5));
       });
       previousPosition.addAssign(position.sub(foldStart));
+      }
 
       if (includeSelfCollision) {
       const selfStart = position.toVar('selfStart');
@@ -906,17 +1138,19 @@ export class GpuCapeSimulation {
             otherColumn.sub(particleColumn),
           );
           const topologicalNeighbor = rowDifference.lessThanEqual(uint(2))
-            .and(columnDifference.lessThanEqual(uint(2)));
+            .and(columnDifference.lessThanEqual(2));
           If(topologicalNeighbor.not(), () => {
             const separation = position.sub(source.element(i).xyz).toVar('selfSeparation');
             const distanceSquared = separation.dot(separation).toVar('selfDistanceSquared');
-            If(distanceSquared.lessThan(0.058 ** 2), () => {
+            If(distanceSquared.lessThan(CLOTH_THICKNESS ** 2), () => {
               const distance = distanceSquared.sqrt().toVar('selfDistance');
               const normal = vec3(1, 0, 0).toVar('selfNormal');
               If(distance.greaterThan(0.000_001), () => {
                 normal.assign(separation.div(distance));
               }).Else(() => {
-                const phase = float(index).mul(0.754_877_666).add(float(i).mul(0.569_840_291));
+                const phase = float(index)
+                  .mul(0.754_877_666)
+                  .add(float(i).mul(0.569_840_291));
                 normal.assign(vec3(
                   phase.sin(),
                   phase.mul(1.37).cos(),
@@ -925,7 +1159,7 @@ export class GpuCapeSimulation {
               });
               const massShare = select(i.lessThan(uint(CAPE.columns)), 1, 0.5);
               selfCorrection.addAssign(
-                normal.mul(float(0.058).sub(distance)).mul(massShare),
+                normal.mul(float(CLOTH_THICKNESS).sub(distance)).mul(massShare),
               );
               selfContacts.addAssign(1);
             });
@@ -2431,18 +2665,27 @@ export class GpuCapeSimulation {
           addConstraint(column + 1, row, column, row + 1, 0.8);
         }
         if (column + 2 < CAPE.columns) addConstraint(column, row, column + 2, row, 0.58);
-        if (row + 2 < CAPE.rows) addConstraint(column, row, column, row + 2, 0.82);
+        if (row + 2 < CAPE.rows) {
+          addConstraint(
+            column,
+            row,
+            column,
+            row + 2,
+            0.82 * GPU_PARALLEL_BEND_RELAXATION,
+          );
+        }
         if (column + 3 < CAPE.columns) addConstraint(column, row, column + 3, row, 0.16);
-        if (row + 3 < CAPE.rows) addConstraint(column, row, column, row + 3, 0.38);
+        if (row + 3 < CAPE.rows) {
+          addConstraint(
+            column,
+            row,
+            column,
+            row + 3,
+            0.38 * GPU_PARALLEL_BEND_RELAXATION,
+          );
+        }
       }
     }
-    // Local links preserve arc length but permit an entire row to curl into a
-    // tube. This loose endpoint chord is rotation-invariant and only resists
-    // severe row curl; normal waves and formation contact remain free.
-    for (let row = 1; row < CAPE.rows; row += 1) {
-      addConstraint(0, row, CAPE.columns - 1, row, 0.36);
-    }
-
     const normalNeighbors = new Uint32Array(PARTICLE_COUNT * 4);
     for (let row = 0; row < CAPE.rows; row += 1) {
       for (let column = 0; column < CAPE.columns; column += 1) {
@@ -2458,6 +2701,10 @@ export class GpuCapeSimulation {
     for (let particleIndex = 0; particleIndex < PARTICLE_COUNT; particleIndex += 1) {
       const metadataOffset = particleIndex * TOPOLOGY_METADATA_STRIDE * 4;
       const neighborOffset = particleIndex * 4;
+      const row = Math.floor(particleIndex / CAPE.columns);
+      const rowLeft = row * CAPE.columns;
+      const rowRight = rowLeft + CAPE.columns - 1;
+      packed[metadataOffset] = readPosition(rowLeft).distanceTo(readPosition(rowRight));
       packed[metadataOffset + 2] = normalNeighbors[neighborOffset] ?? particleIndex;
       packed[metadataOffset + 3] = normalNeighbors[neighborOffset + 1] ?? particleIndex;
       packed[metadataOffset + 4] = normalNeighbors[neighborOffset + 2] ?? particleIndex;
@@ -2503,7 +2750,6 @@ export class GpuCapeSimulation {
 
   private updateAnchorBuffer(anchors: CapeAnchors): void {
     this.anchorCenter.copy(anchors.left).add(anchors.right).multiplyScalar(0.5);
-    this.anchorCenterYUniform.value = this.anchorCenter.y;
     const array = this.anchorBuffer.value.array as Float32Array;
     for (let column = 0; column < CAPE.columns; column += 1) {
       const progress = column / (CAPE.columns - 1);
@@ -2529,7 +2775,6 @@ export class GpuCapeSimulation {
     this.stiffnessUniform.value = this.settings.stiffness;
     this.dampingUniform.value = this.settings.damping;
     this.weightUniform.value = this.settings.weight;
-    this.capeLengthUniform.value = this.settings.length;
   }
 
   private updateBodyBuffers(
