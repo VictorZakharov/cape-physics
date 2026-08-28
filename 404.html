@@ -9,8 +9,10 @@
     />
     <meta name="theme-color" content="#05080a" />
     <title>Cape Physics — The Veiled Deep</title>
-    <script type="module" crossorigin src="/cape-physics/assets/index-CrX3bgWc.js"></script>
-    <link rel="stylesheet" crossorigin href="/cape-physics/assets/index-B4Ivkf_t.css">
+    <script type="module" crossorigin src="/cape-physics/assets/index-BmnRYQyR.js"></script>
+    <link rel="modulepreload" crossorigin href="/cape-physics/assets/three.core-caSNtrlo.js">
+    <link rel="modulepreload" crossorigin href="/cape-physics/assets/caveProfile-vzQLRLXH.js">
+    <link rel="stylesheet" crossorigin href="/cape-physics/assets/index-CDWZ9Ywn.css">
   </head>
   <body>
     <main class="app" data-app>
@@ -78,6 +80,17 @@
         <span data-quality-label>ADAPTIVE ULTRA</span>
       </div>
 
+      <div
+        class="renderer-switch"
+        data-renderer-switch
+        role="group"
+        aria-label="Graphics renderer. Changing renderer reloads the demo."
+      >
+        <span>RENDERER</span>
+        <button type="button" data-renderer-option="webgpu" aria-pressed="false" title="Experimental renderer; WebGL is recommended">WEBGPU EXP</button>
+        <button type="button" data-renderer-option="webgl" aria-pressed="false">WEBGL</button>
+      </div>
+
       <div class="onboarding" data-onboarding role="status">
         <span data-onboarding-prompt>Hold either mouse button</span>
         <strong data-onboarding-action>DRAG TO LOOK AROUND</strong>
@@ -136,7 +149,7 @@
         <small data-loading-status>Shaping stone</small>
       </section>
 
-      <noscript>This demonstration requires JavaScript and WebGL 2.</noscript>
+      <noscript>This demonstration requires JavaScript and a WebGPU or WebGL 2 browser.</noscript>
     </main>
   </body>
 </html>
