@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta
+      name="description"
+      content="A procedural Three.js cape-physics demo inside a torchlit, water-carved cave."
+    />
+    <meta name="theme-color" content="#05080a" />
+    <title>Cape Physics — The Veiled Deep</title>
+    <script type="module" crossorigin src="/cape-physics/pr-preview/pr-16/assets/index-COGVY4Ta.js"></script>
+    <link rel="modulepreload" crossorigin href="/cape-physics/pr-preview/pr-16/assets/three.core-caSNtrlo.js">
+    <link rel="modulepreload" crossorigin href="/cape-physics/pr-preview/pr-16/assets/caveProfile-eedwewZm.js">
+    <link rel="stylesheet" crossorigin href="/cape-physics/pr-preview/pr-16/assets/index-le2Z7jCn.css">
+  </head>
+  <body>
+    <main class="app" data-app>
+      <canvas
+        id="scene-canvas"
+        aria-label="Interactive third-person cape physics demonstration in a cave"
+      ></canvas>
+
+      <div class="vignette" aria-hidden="true"></div>
+      <div class="film-grain" aria-hidden="true"></div>
+
+      <button
+        class="performance-panel"
+        type="button"
+        data-performance-panel
+        title="Click to copy a 15-second performance report"
+        aria-label="Rendering diagnostics. Click to copy the last 15 seconds of performance data."
+      >
+        <strong><b data-fps>--</b><i> FPS</i></strong>
+        <span>RENDER FPS / LAST 15S</span>
+        <svg
+          class="performance-panel__history"
+          data-fps-history
+          viewBox="0 0 154 32"
+          preserveAspectRatio="none"
+          role="img"
+          aria-label="Frame-rate history"
+        >
+          <line x1="0" y1="1" x2="154" y2="1"></line>
+          <line x1="0" y1="16" x2="154" y2="16"></line>
+          <path data-fps-history-line d=""></path>
+        </svg>
+        <small><b data-frame-time>--</b> MS / <b data-fps-low>--</b> 1% LOW</small>
+        <span class="performance-panel__copy" data-performance-copy aria-live="polite">
+          CLICK TO COPY 15S REPORT
+        </span>
+      </button>
+
+      <header class="title-card" aria-label="Demo title">
+        <span>PROCEDURAL PHYSICS STUDY 01</span>
+        <h1>THE VEILED DEEP</h1>
+        <p>Realtime cloth · reactive water · living stone</p>
+      </header>
+
+      <aside class="customization" data-customization aria-label="Cape customization">
+        <button
+          class="customization__toggle"
+          type="button"
+          data-customization-toggle
+          aria-controls="customization-panel"
+          aria-expanded="true"
+          aria-label="Collapse cape customization"
+        >
+          <span>CUSTOMIZE</span>
+          <strong>CAPE &amp; SCENE</strong>
+          <i aria-hidden="true"></i>
+        </button>
+        <div
+          class="customization__panel"
+          id="customization-panel"
+          data-customization-panel
+        >
+          <fieldset>
+            <legend>CAPE PHYSICS</legend>
+            <label class="customization__range">
+              <span>Length <output data-customization-value="length">1.68 m</output></span>
+              <input type="range" data-customization-setting="length" aria-label="Cape length" />
+            </label>
+            <label class="customization__range">
+              <span>Width <output data-customization-value="width">0.98 m</output></span>
+              <input type="range" data-customization-setting="width" aria-label="Cape width" />
+            </label>
+            <label class="customization__range">
+              <span>Stiffness <output data-customization-value="stiffness">1.00×</output></span>
+              <input type="range" data-customization-setting="stiffness" aria-label="Cloth stiffness" />
+            </label>
+            <label class="customization__range">
+              <span>Damping <output data-customization-value="damping">1.00×</output></span>
+              <input type="range" data-customization-setting="damping" aria-label="Cloth damping" />
+            </label>
+            <label class="customization__range">
+              <span>Weight <output data-customization-value="weight">1.00×</output></span>
+              <input type="range" data-customization-setting="weight" aria-label="Cape weight and gravity response" />
+            </label>
+          </fieldset>
+
+          <fieldset class="customization__scene">
+            <legend>SCENE</legend>
+            <label class="customization__switch">
+              <span>Lights</span>
+              <input type="checkbox" role="switch" data-customization-setting="lights" checked />
+              <i aria-hidden="true"></i>
+            </label>
+            <label class="customization__switch">
+              <span>Shadows</span>
+              <input type="checkbox" role="switch" data-customization-setting="shadows" checked />
+              <i aria-hidden="true"></i>
+            </label>
+            <label class="customization__switch">
+              <span>Reflections</span>
+              <input type="checkbox" role="switch" data-customization-setting="reflections" checked />
+              <i aria-hidden="true"></i>
+            </label>
+            <div
+              class="renderer-switch"
+              data-renderer-switch
+              role="group"
+              aria-label="Graphics renderer. Changing renderer reloads the demo."
+            >
+              <span>RENDERER</span>
+              <button type="button" data-renderer-option="webgpu" aria-pressed="false" title="Experimental renderer; WebGL is recommended">WEBGPU EXP</button>
+              <button type="button" data-renderer-option="webgl" aria-pressed="false">WEBGL</button>
+            </div>
+          </fieldset>
+
+          <div class="customization__footer">
+            <button type="button" data-customization-reset>RESET DEFAULTS</button>
+            <span data-customization-status aria-live="polite">Defaults active</span>
+          </div>
+        </div>
+      </aside>
+
+      <section class="controls" aria-label="Controls">
+        <div class="controls__eyebrow">TRAVERSE</div>
+        <div class="controls__row">
+          <span class="key-cluster" aria-label="W A S D keys">
+            <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd>
+          </span>
+          <span>Move</span>
+          <kbd class="key-wide">SHIFT</kbd>
+          <span>Run</span>
+          <kbd class="key-wide">SPACE</kbd>
+          <span>Jump</span>
+        </div>
+        <div class="controls__row">
+          <span class="mouse-icon" aria-hidden="true"><i></i></span>
+          <span>LMB / RMB drag to orbit · wheel to zoom</span>
+        </div>
+      </section>
+
+      <div class="quality-badge" data-quality-badge>
+        <span class="quality-badge__pulse"></span>
+        <span data-quality-label>ADAPTIVE ULTRA</span>
+      </div>
+
+      <div class="onboarding" data-onboarding role="status">
+        <span data-onboarding-prompt>Hold either mouse button</span>
+        <strong data-onboarding-action>DRAG TO LOOK AROUND</strong>
+      </div>
+
+      <section
+        class="mobile-controls"
+        data-mobile-controls
+        aria-label="Touch controls"
+        aria-hidden="true"
+      >
+        <div
+          class="touch-stick"
+          data-touch-move
+          role="slider"
+          aria-label="Virtual movement joystick"
+          aria-valuetext="Centered"
+        >
+          <span class="touch-stick__label" aria-hidden="true">MOVE</span>
+          <i class="touch-stick__thumb" data-touch-move-thumb aria-hidden="true"></i>
+        </div>
+
+        <div class="mobile-controls__actions" aria-label="Character actions">
+          <button
+            class="mobile-action mobile-action--run"
+            type="button"
+            data-touch-run
+            aria-label="Hold to run"
+            aria-pressed="false"
+          >
+            <small>HOLD</small>
+            <strong>RUN</strong>
+          </button>
+          <button
+            class="mobile-action mobile-action--jump"
+            type="button"
+            data-touch-jump
+            aria-label="Jump"
+          >
+            <small>TAP</small>
+            <strong>JUMP</strong>
+          </button>
+        </div>
+
+        <div class="mobile-controls__camera-hint" aria-hidden="true">
+          SWIPE TO LOOK &middot; PINCH TO ZOOM
+        </div>
+      </section>
+
+      <section class="loading" data-loading role="status" aria-live="polite">
+        <div class="loading__mark" aria-hidden="true">
+          <span></span><span></span><span></span>
+        </div>
+        <p>DESCENDING INTO THE VEILED DEEP</p>
+        <div class="loading__track"><i data-loading-bar></i></div>
+        <small data-loading-status>Shaping stone</small>
+      </section>
+
+      <noscript>This demonstration requires JavaScript and a WebGPU or WebGL 2 browser.</noscript>
+    </main>
+  </body>
+</html>
