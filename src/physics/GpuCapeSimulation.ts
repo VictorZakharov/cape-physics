@@ -622,13 +622,11 @@ export class GpuCapeSimulation {
         const delta = neighborPosition.sub(position).toVar('constraintDelta');
         const length = delta.length().max(0.000_001).toVar('constraintLength');
         const baseWeight = link.z.abs().mul(link.w);
-        const settingScale = select(
-          link.z.lessThan(0),
-          1,
-          this.stiffnessUniform,
-        );
         correction.addAssign(
-          delta.mul(length.sub(link.y).div(length)).mul(baseWeight).mul(settingScale),
+          delta
+            .mul(length.sub(link.y).div(length))
+            .mul(baseWeight)
+            .mul(this.stiffnessUniform),
         );
         correctionWeight.addAssign(baseWeight);
       });
@@ -1454,6 +1452,96 @@ export class GpuCapeSimulation {
         { name: 'third', type: 'vec3' },
       ],
     });
+    const getCaveWallCorrection = Fn<
+      readonly [THREE.Node<'vec3'>],
+      THREE.Node<'float'>
+    >(([sample]) => {
+      const segmentPosition = float(CAVE.startZ).sub(sample.z)
+        .div(CAVE.startZ - CAVE.endZ)
+        .clamp(0, 1)
+        .mul(CAVE.segments)
+        .toVar('caveFaceSegmentPosition');
+      const firstSegment = uint(segmentPosition.floor()).toVar('caveFaceFirstSegment');
+      const secondSegment = select(
+        firstSegment.lessThan(uint(CAVE.segments)),
+        firstSegment.add(1),
+        firstSegment,
+      ).toVar('caveFaceSecondSegment');
+      const blend = segmentPosition.sub(float(firstSegment)).toVar('caveFaceBlend');
+      const sectionSamples = uint(CAVE.radialSegments + 1);
+      const center = sample.z.sub(10).mul(0.055).sin().mul(2.05)
+        .add(sample.z.add(5).mul(0.137).sin().mul(0.38))
+        .toVar('caveFaceCenter');
+      const minimumIntersection = float(1_000_000).toVar('caveFaceMinimumIntersection');
+      const maximumIntersection = float(-1_000_000).toVar('caveFaceMaximumIntersection');
+      const nearestLeft = float(-1_000_000).toVar('caveFaceNearestLeft');
+      const nearestRight = float(1_000_000).toVar('caveFaceNearestRight');
+      Loop(
+        { start: uint(0), end: uint(CAVE.radialSegments), type: 'uint', condition: '<' },
+        ({ i }) => {
+          const firstA = this.caveShellBuffer.element(
+            firstSegment.mul(sectionSamples).add(i),
+          );
+          const firstB = this.caveShellBuffer.element(
+            secondSegment.mul(sectionSamples).add(i),
+          );
+          const secondA = this.caveShellBuffer.element(
+            firstSegment.mul(sectionSamples).add(i).add(1),
+          );
+          const secondB = this.caveShellBuffer.element(
+            secondSegment.mul(sectionSamples).add(i).add(1),
+          );
+          const firstX = mix(firstA.x, firstB.x, blend).toVar('caveFaceFirstX');
+          const firstY = mix(firstA.y, firstB.y, blend).toVar('caveFaceFirstY');
+          const secondX = mix(secondA.x, secondB.x, blend).toVar('caveFaceSecondX');
+          const secondY = mix(secondA.y, secondB.y, blend).toVar('caveFaceSecondY');
+          If(firstX.lessThanEqual(center), () => {
+            nearestLeft.assign(nearestLeft.max(firstX));
+          });
+          If(firstX.greaterThanEqual(center), () => {
+            nearestRight.assign(nearestRight.min(firstX));
+          });
+          const edgeHeight = secondY.sub(firstY);
+          If(
+            sample.y.greaterThanEqual(firstY.min(secondY))
+              .and(sample.y.lessThanEqual(firstY.max(secondY)))
+              .and(edgeHeight.abs().greaterThan(0.000_001)),
+            () => {
+              const edgeBlend = sample.y.sub(firstY).div(edgeHeight);
+              const intersection = mix(firstX, secondX, edgeBlend);
+              minimumIntersection.assign(minimumIntersection.min(intersection));
+              maximumIntersection.assign(maximumIntersection.max(intersection));
+            },
+          );
+        },
+      );
+      const minimumX = select(
+        minimumIntersection.lessThan(500_000),
+        minimumIntersection,
+        nearestLeft,
+      ).add(CLOTH_WORLD_CLEARANCE).toVar('caveFaceMinimumX');
+      const maximumX = select(
+        maximumIntersection.greaterThan(-500_000),
+        maximumIntersection,
+        nearestRight,
+      ).sub(CLOTH_WORLD_CLEARANCE).toVar('caveFaceMaximumX');
+      If(minimumX.greaterThan(maximumX), () => {
+        const midpoint = minimumX.add(maximumX).mul(0.5);
+        minimumX.assign(midpoint.sub(0.08));
+        maximumX.assign(midpoint.add(0.08));
+      });
+      const correction = float(0).toVar('caveFaceSampleCorrection');
+      If(sample.x.lessThan(minimumX), () => {
+        correction.assign(minimumX.sub(sample.x));
+      }).ElseIf(sample.x.greaterThan(maximumX), () => {
+        correction.assign(maximumX.sub(sample.x));
+      });
+      return correction;
+    }, 'float').setLayout({
+      name: `capeCaveFaceSample${passName}`,
+      type: 'float',
+      inputs: [{ name: 'sample', type: 'vec3' }],
+    });
 
     return Fn<readonly [THREE.Node<'uint'>], THREE.Node<'float'>>(([color]) => {
       const orientation = color.mod(uint(2));
@@ -1743,6 +1831,27 @@ export class GpuCapeSimulation {
             });
           },
         );
+        const caveFaceCorrection = getCaveWallCorrection(
+          first.add(second).add(third).div(3),
+        ).toVar('caveFaceCorrection');
+        const keepLargerCaveCorrection = (candidate: THREE.Node<'float'>): void => {
+          If(candidate.abs().greaterThan(caveFaceCorrection.abs()), () => {
+            caveFaceCorrection.assign(candidate);
+          });
+        };
+        keepLargerCaveCorrection(getCaveWallCorrection(first.add(second).mul(0.5)));
+        keepLargerCaveCorrection(getCaveWallCorrection(first.add(third).mul(0.5)));
+        keepLargerCaveCorrection(getCaveWallCorrection(second.add(third).mul(0.5)));
+        If(caveFaceCorrection.abs().greaterThan(0.000_001), () => {
+          faceCorrection.x.addAssign(caveFaceCorrection.clamp(
+            -CLOTH_ROCK_CLEARANCE * 1.5,
+            CLOTH_ROCK_CLEARANCE * 1.5,
+          ));
+          hadFaceContact.assign(bool(true));
+          // A previous cloth face can pierce the same curved wall, so cave
+          // recovery must use the sampled separating correction, not rollback.
+          previousTriangleSafe.assign(bool(false));
+        });
         const correctionLength = faceCorrection.length().toVar('rockFaceCorrectionLength');
         If(correctionLength.greaterThan(0.015), () => {
           faceCorrection.mulAssign(float(0.015).div(correctionLength));

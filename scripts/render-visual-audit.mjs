@@ -1032,6 +1032,7 @@ try {
       wall: 0,
       sphereFace: 0,
       rockFace: 0,
+      caveFace: 0,
     },
   };
   let smallRockContact = null;
@@ -1174,7 +1175,10 @@ try {
       + `strain=${smallRockTraversal.maximumStructuralError.toFixed(4)})`,
   );
   assert(smallRockTraversal.maximumUpwardFold < 0.03, 'small stone crossed or straightened lower cape rows');
-  assert(smallRockTraversal.maximumStructuralError < 0.035, 'small-stone traversal overstretched the cape');
+  assert(
+    smallRockTraversal.maximumStructuralError < 0.035,
+    `small-stone traversal overstretched the cape (${smallRockTraversal.maximumStructuralError.toFixed(4)} m)`,
+  );
   assert(
     smallRockTraversal.maximumBodyPenetration < 0.002,
     `small-stone traversal pushed cape through the body (${smallRockTraversal.maximumBodyPenetration.toFixed(4)} m)`,

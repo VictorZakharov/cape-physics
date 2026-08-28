@@ -90,6 +90,7 @@ interface CapeDemoDiagnostics {
       readonly wall: number;
       readonly sphereFace: number;
       readonly rockFace: number;
+      readonly caveFace: number;
       readonly maximum: number;
       readonly floorParticleIndex: number | null;
       readonly floorPosition: readonly [number, number, number] | null;

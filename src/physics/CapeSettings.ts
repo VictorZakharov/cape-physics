@@ -12,7 +12,7 @@ export interface CapePhysicsSettings {
 export const CAPE_PHYSICS_SETTING_RANGES = {
   length: CAPE.lengthRange,
   width: CAPE.widthRange,
-  stiffness: { min: 0.55, max: 1.04, step: 0.01 },
+  stiffness: { min: 0.1, max: 1.5, step: 0.05 },
   damping: { min: 0.5, max: 1.8, step: 0.05 },
   weight: { min: 0.5, max: 1.5, step: 0.05 },
 } as const;

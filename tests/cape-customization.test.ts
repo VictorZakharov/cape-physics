@@ -166,6 +166,44 @@ describe('cape customization', () => {
     ).toBeLessThan(0.000_001);
   });
 
+  test('provides a materially wider structural stiffness response', () => {
+    const character = new Character();
+    character.root.updateMatrixWorld(true);
+    const anchors = character.getCapeAnchors();
+    const colliders = character.getCapeColliders();
+    const maximumErrors: number[] = [];
+
+    for (const stiffness of [
+      CAPE_PHYSICS_SETTING_RANGES.stiffness.min,
+      CAPE_PHYSICS_SETTING_RANGES.stiffness.max,
+    ]) {
+      const cape = new CapeSimulation(anchors, {
+        ...DEFAULT_CAPE_PHYSICS_SETTINGS,
+        stiffness,
+      });
+      let maximumError = 0;
+      for (let step = 0; step < 120; step += 1) {
+        const velocity = new THREE.Vector3(
+          Math.sin(step * 0.11) * 7,
+          0,
+          Math.cos(step * 0.07) * 5,
+        );
+        cape.step(
+          PHYSICS_STEP,
+          anchors,
+          colliders,
+          [],
+          velocity,
+          step * PHYSICS_STEP,
+        );
+        maximumError = Math.max(maximumError, cape.getMaximumStructuralError());
+      }
+      maximumErrors.push(maximumError);
+    }
+
+    expect(maximumErrors[0]!).toBeGreaterThan(maximumErrors[1]! * 1.8);
+  });
+
   test('keeps a long heavy flexible cape outside formations and the cave shell', () => {
     const character = new Character();
     character.root.updateMatrixWorld(true);

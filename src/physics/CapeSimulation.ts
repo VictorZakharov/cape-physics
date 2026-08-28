@@ -256,13 +256,17 @@ export class CapeSimulation {
         // animated boot or lower leg. Finish on the moving body constraint so
         // rendered limb geometry cannot emerge through a stone-pinned cape,
         // then reconcile exact world-face crossings once more. Both rock
-        // fallback projections share one strict per-particle step budget;
-        // temporal rollback itself adds no impulse.
+        // point projections share one strict per-particle step budget; exact
+        // face translations are independently bounded and velocity-neutral.
         this.contactSolver.solveBody(bodyColliders, anchors.back);
         if (this.contactSolver.solvePostCaveWorldContacts() > 0) {
           this.contactSolver.solveBody(bodyColliders, anchors.back);
           this.contactSolver.solvePostCaveWorldContacts();
         }
+        // Final world/body reconciliation can push a triangle interior back
+        // through the curved cave side while all of its vertices stay valid.
+        // Make the cave face constraint authoritative for the rendered state.
+        this.contactSolver.solveCave();
       }
       if (profileActive) {
         const profileNow = performance.now();
@@ -711,9 +715,10 @@ export class CapeSimulation {
     const secondWeight = this.inverseMass[constraint.second] ?? 0;
     const totalWeight = firstWeight + secondWeight;
     if (totalWeight === 0) return;
-    const stiffness = constraint.structural
-      ? constraint.stiffness
-      : Math.min(0.999, constraint.stiffness * this.settings.stiffness);
+    const stiffness = Math.min(
+      0.999,
+      constraint.stiffness * this.settings.stiffness,
+    );
     this.correction.copy(this.delta).multiplyScalar(
       ((length - constraint.restLength) / length) * stiffness,
     );
