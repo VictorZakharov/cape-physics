@@ -697,7 +697,14 @@ try {
   );
   assert(afterWalk.cape.maximumEnvironmentFacePenetration < 0.002, 'a cave object pierced a cape triangle during visual traversal');
   assertCapeNotRolled(afterWalk, 'walking');
-  assert(afterWalk.cape.hemBackOffset < 0.75, 'walking pulled the cape into a running-length trail');
+  assert(
+    afterWalk.cape.hemBackOffset < 1.25,
+    `walking pulled the cape almost fully horizontal (${afterWalk.cape.hemBackOffset} m)`,
+  );
+  assert(
+    afterWalk.cape.hemDrop > 0.9,
+    `walking failed to preserve a gravity-driven drape (${afterWalk.cape.hemDrop} m)`,
+  );
   assert(
     Math.abs(afterWalk.cape.hemCenter[2] - beforeWalk.cape.hemCenter[2]) > 1,
     'cape hem did not respond dynamically to traversal',

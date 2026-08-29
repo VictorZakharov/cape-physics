@@ -33,16 +33,9 @@ import {
 import { CAPE_FLUTTER_ACCELERATION } from './CapeAerodynamics';
 import { CapeSimulation } from './CapeSimulation';
 import {
-  CAPE_DRAPE_RELAXATION,
   CAPE_ROW_CURL_RELAXATION,
   CAPE_ROW_SPAN_RELAXATION,
-  MAXIMUM_IDLE_CAPE_TRAIL_RATIO,
-  MAXIMUM_RUNNING_CAPE_TRAIL_RATIO,
-  MAXIMUM_WALKING_CAPE_TRAIL_RATIO,
   MAXIMUM_CAPE_ROW_CURL_RATIO,
-  MINIMUM_IDLE_CAPE_DROP_RATIO,
-  MINIMUM_RUNNING_CAPE_DROP_RATIO,
-  MINIMUM_WALKING_CAPE_DROP_RATIO,
   MINIMUM_CAPE_ROW_SPAN_RATIO,
 } from './CapeRestShape';
 import { getClothBodyClearance, getClothBodyDepthRadius } from './ClothBodyCollision';
@@ -112,19 +105,6 @@ export interface GpuCapeKernelProfile {
 const PARTICLE_COUNT = CAPE.columns * CAPE.rows;
 const ACTIVE_DRAG_PER_SECOND = 2.05;
 const IDLE_DRAG_PER_SECOND = 2.8;
-// Keep the authored aerodynamic field identical to the WebGL solver. Earlier
-// GPU-only amplification held the cloth almost horizontal and measured as
-// "curvature" even though it visibly behaved like a rigid windsock.
-const GPU_PARALLEL_FLUTTER_COMPENSATION = 1;
-// GPU storage projection retains less of the CPU sweep's numerical damping.
-// Match its quick post-walk settling without changing active cloth response.
-const GPU_IDLE_DRAG_COMPENSATION = 3;
-// A graph-colored sweep converges overlapping long-range bend links more
-// completely per iteration than the authored serial order.
-const GPU_PARALLEL_BEND_RELAXATION = 0.12;
-// Storage-buffer projection retains more inertial energy than the CPU object
-// updates. Normalize active drag so constant walking does not hold the cape at
-// a rigid horizontal pendulum angle; idle drag remains exactly shared.
 const WAKE_SPEED = 0.08;
 const MAX_BODY_COLLIDERS = 32;
 const MAX_WORLD_SPHERES = 512;
@@ -155,8 +135,8 @@ const CAVE_LOWER_RADIAL_START = Math.floor(CAVE.radialSegments / 2);
  *
  * Distance, self-collision, and fold constraints use race-free pair colors.
  * They apply the same shared PBD rules as WebGL while keeping the performance
- * benefit of a parallel GPU sweep; a shared curl guard plus a GPU drape
- * envelope normalize the small equilibrium difference introduced by order.
+ * benefit of a parallel GPU sweep. Movement affects only authored forces;
+ * projection never selects or steers toward a locomotion-specific shape.
  */
 export class GpuCapeSimulation {
   public readonly mesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshPhysicalNodeMaterial>;
@@ -176,12 +156,9 @@ export class GpuCapeSimulation {
   private readonly deltaTimeUniform = uniform(1 / 120);
   private readonly timeUniform = uniform(0);
   private readonly movementBlendUniform = uniform(0);
-  private readonly runningBlendUniform = uniform(0);
-  private readonly drapeGuardBlendUniform = uniform(1);
   private readonly airflowUniform = uniform(new THREE.Vector3());
-  private readonly capeLengthUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.length);
-  private readonly anchorCenterUniform = uniform(new THREE.Vector3());
-  private readonly anchorCenterYUniform = uniform(0);
+  private readonly anchorDisplacementUniform = uniform(new THREE.Vector3());
+  private readonly anchorAccelerationDisplacementUniform = uniform(new THREE.Vector3());
   private readonly stiffnessUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.stiffness);
   private readonly dampingUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.damping);
   private readonly weightUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.weight);
@@ -193,6 +170,9 @@ export class GpuCapeSimulation {
   private readonly profileNoOpKernel: THREE.ComputeNode;
   private readonly profileProjectionKernels: readonly THREE.ComputeNode[];
   private readonly anchorCenter = new THREE.Vector3();
+  private readonly anchorDisplacement = new THREE.Vector3();
+  private readonly previousAnchorDisplacement = new THREE.Vector3();
+  private readonly anchorAccelerationDisplacement = new THREE.Vector3();
   private readonly anchorTarget = new THREE.Vector3();
   private readonly worldCandidateCenter = new THREE.Vector3(
     Number.POSITIVE_INFINITY,
@@ -441,16 +421,20 @@ export class GpuCapeSimulation {
     this.deltaTimeUniform.value = deltaTime;
     this.timeUniform.value = time;
     this.movementBlendUniform.value = movementBlend;
-    this.runningBlendUniform.value = runningBlend;
-    this.drapeGuardBlendUniform.value = 1 - THREE.MathUtils.smoothstep(
-      Math.abs(characterVelocity.y),
-      0.15,
-      0.8,
+    this.anchorDisplacement.copy(anchors.left).add(anchors.right)
+      .multiplyScalar(0.5)
+      .sub(this.anchorCenter);
+    this.anchorAccelerationDisplacement.copy(this.anchorDisplacement)
+      .sub(this.previousAnchorDisplacement);
+    this.anchorDisplacementUniform.value.copy(this.anchorDisplacement);
+    this.anchorAccelerationDisplacementUniform.value.copy(
+      this.anchorAccelerationDisplacement,
     );
     this.updateAnchorBuffer(anchors);
     this.updateBodyBuffers(bodyColliders, anchors.back);
     this.updateWorldBuffers(worldColliders);
     this.renderer.compute(this.computeSequence);
+    this.previousAnchorDisplacement.copy(this.anchorDisplacement);
     this.submittedSteps += 1;
   }
 
@@ -464,6 +448,7 @@ export class GpuCapeSimulation {
     this.writeStorage(this.scratchBuffer.value, state);
     this.writeStorage(this.previousBuffer.value, state);
     this.updateAnchorBuffer(anchors);
+    this.previousAnchorDisplacement.set(0, 0, 0);
     this.submittedSteps = 0;
     this.worldContactsLastStep = 0;
     this.worldContactEventOffset = this.worldContactEvents;
@@ -489,6 +474,7 @@ export class GpuCapeSimulation {
     this.writeStorage(this.topologyBuffer.value, topology.packed);
     this.writeStorage(this.constraintBuffer.value, topology.coloredConstraints);
     this.updateAnchorBuffer(anchors);
+    this.previousAnchorDisplacement.set(0, 0, 0);
     this.submittedSteps = 0;
     this.worldContactsLastStep = 0;
     this.worldContactEventOffset = this.worldContactEvents;
@@ -740,15 +726,17 @@ export class GpuCapeSimulation {
         Return();
       });
 
-      const currentPosition = current.xyz.toVar('currentPosition');
-      const velocity = currentPosition.sub(previous.xyz).toVar('velocity');
+      const currentPosition = current.xyz.add(this.anchorDisplacementUniform)
+        .toVar('currentPosition');
+      const previousPosition = previous.xyz.add(this.anchorDisplacementUniform);
+      const velocity = currentPosition.sub(previousPosition).toVar('velocity');
       const drag = mix(
-        float(IDLE_DRAG_PER_SECOND * GPU_IDLE_DRAG_COMPENSATION),
+        float(IDLE_DRAG_PER_SECOND),
         float(ACTIVE_DRAG_PER_SECOND),
         this.movementBlendUniform,
       ).mul(this.dampingUniform);
       velocity.mulAssign(drag.mul(this.deltaTimeUniform).negate().exp());
-      previous.assign(vec4(current.xyz, 0));
+      previous.assign(vec4(currentPosition, 0));
 
       const topologyMetadata = this.topologyBuffer.element(
         index.mul(uint(TOPOLOGY_METADATA_STRIDE)),
@@ -783,6 +771,7 @@ export class GpuCapeSimulation {
         .mul(flutterEnvelope);
       const deltaSquared = this.deltaTimeUniform.mul(this.deltaTimeUniform);
       const predicted = currentPosition.add(velocity).toVar('predicted');
+      predicted.subAssign(this.anchorAccelerationDisplacementUniform);
       predicted.y.subAssign(deltaSquared.mul(9.81).mul(this.weightUniform));
       predicted.addAssign(normal.mul(
         pressure.mul(pressure.abs()).mul(0.026).mul(deltaSquared),
@@ -790,10 +779,7 @@ export class GpuCapeSimulation {
       predicted.addAssign(normal.mul(
         fabricFlutter
           .mul(this.movementBlendUniform)
-          // The colored parallel sweep cancels most broad asymmetric motion
-          // that the ordered CPU sweep naturally retains. Compensate the same
-          // physical flutter field here instead of adding a shape constraint.
-          .mul(CAPE_FLUTTER_ACCELERATION * GPU_PARALLEL_FLUTTER_COMPENSATION)
+          .mul(CAPE_FLUTTER_ACCELERATION)
           .mul(deltaSquared),
       ));
       predicted.addAssign(
@@ -1137,52 +1123,6 @@ export class GpuCapeSimulation {
       ).toVar('rockCorrectionUsed');
       const particleRow = index.div(uint(CAPE.columns));
       const particleColumn = index.mod(uint(CAPE.columns));
-
-      // Reject only a suspended, near-horizontal GPU equilibrium. Normal
-      // drape, running trail, and airborne inertia remain free.
-      const down = float(particleRow).div(CAPE.rows - 1);
-      const dropProfile = down.mul(down).mul(float(3).sub(down.mul(2)));
-      const activeDropRatio = mix(
-        MINIMUM_WALKING_CAPE_DROP_RATIO,
-        MINIMUM_RUNNING_CAPE_DROP_RATIO,
-        this.runningBlendUniform,
-      );
-      const minimumDropRatio = mix(
-        MINIMUM_IDLE_CAPE_DROP_RATIO,
-        activeDropRatio,
-        this.movementBlendUniform,
-      );
-      const activeTrailRatio = mix(
-        MAXIMUM_WALKING_CAPE_TRAIL_RATIO,
-        MAXIMUM_RUNNING_CAPE_TRAIL_RATIO,
-        this.runningBlendUniform,
-      );
-      const maximumTrailRatio = mix(
-        MAXIMUM_IDLE_CAPE_TRAIL_RATIO,
-        activeTrailRatio,
-        this.movementBlendUniform,
-      );
-      const maximumHeight = this.anchorCenterYUniform.sub(
-        this.capeLengthUniform.mul(dropProfile).mul(minimumDropRatio),
-      );
-      const drapeStart = position.toVar('drapeStart');
-      position.y.subAssign(
-        position.y.sub(maximumHeight).max(0)
-          .mul(smoothstep(0.05, 0.35, down))
-          .mul(CAPE_DRAPE_RELAXATION)
-          .mul(this.drapeGuardBlendUniform),
-      );
-      const trail = position.sub(this.anchorCenterUniform).dot(this.backUniform);
-      position.subAssign(
-        this.backUniform.mul(
-          trail.sub(this.capeLengthUniform.mul(down).mul(maximumTrailRatio))
-            .max(0)
-            .mul(smoothstep(0.05, 0.35, down))
-            .mul(CAPE_DRAPE_RELAXATION)
-            .mul(this.drapeGuardBlendUniform),
-        ),
-      );
-      previousPosition.addAssign(position.sub(drapeStart));
 
       if (includeFoldGuard) {
       const topologyNeighbors = this.topologyBuffer.element(
@@ -2745,23 +2685,11 @@ export class GpuCapeSimulation {
         }
         if (column + 2 < CAPE.columns) addConstraint(column, row, column + 2, row, 0.58);
         if (row + 2 < CAPE.rows) {
-          addConstraint(
-            column,
-            row,
-            column,
-            row + 2,
-            0.82 * GPU_PARALLEL_BEND_RELAXATION,
-          );
+          addConstraint(column, row, column, row + 2, 0.82);
         }
         if (column + 3 < CAPE.columns) addConstraint(column, row, column + 3, row, 0.16);
         if (row + 3 < CAPE.rows) {
-          addConstraint(
-            column,
-            row,
-            column,
-            row + 3,
-            0.38 * GPU_PARALLEL_BEND_RELAXATION,
-          );
+          addConstraint(column, row, column, row + 3, 0.38);
         }
       }
     }
@@ -2830,8 +2758,6 @@ export class GpuCapeSimulation {
   private updateAnchorBuffer(anchors: CapeAnchors): void {
     this.anchorCenter.copy(anchors.left).add(anchors.right).multiplyScalar(0.5);
     this.diagnosticMirror.synchronizeAnchorDiagnostics(anchors);
-    this.anchorCenterUniform.value.copy(this.anchorCenter);
-    this.anchorCenterYUniform.value = this.anchorCenter.y;
     const array = this.anchorBuffer.value.array as Float32Array;
     for (let column = 0; column < CAPE.columns; column += 1) {
       const progress = column / (CAPE.columns - 1);
@@ -2857,7 +2783,6 @@ export class GpuCapeSimulation {
     this.stiffnessUniform.value = this.settings.stiffness;
     this.dampingUniform.value = this.settings.damping;
     this.weightUniform.value = this.settings.weight;
-    this.capeLengthUniform.value = this.settings.length;
   }
 
   private updateBodyBuffers(

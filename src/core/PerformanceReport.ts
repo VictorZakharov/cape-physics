@@ -79,7 +79,7 @@ export function formatPerformanceReport(input: PerformanceReportInput): string {
   const capeSolverLines = capeSolver
     ? capeSolver.implementation === 'webgpu-compute'
       ? [
-        `Cape solver: WebGPU compute PBD at ${Math.round(1 / PHYSICS_STEP)} Hz | ${CAPE.columns * CAPE.rows} GPU-resident particles | ${CAPE.solverIterations} Jacobi projection passes | 25 batched dispatches in 1 compute submission/step`,
+        `Cape solver: WebGPU compute PBD at ${Math.round(1 / PHYSICS_STEP)} Hz | ${CAPE.columns * CAPE.rows} GPU-resident particles | ${CAPE.solverIterations} graph-colored projection passes | 25 batched dispatches in 1 compute submission/step`,
         'Cape timing: no animation-loop particle readback or GPU fence; main-thread physics above measures command preparation/submission, not GPU completion',
       ]
       : [
