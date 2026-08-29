@@ -178,6 +178,28 @@ declare global {
       setRunning: (running: boolean) => void;
       jump: () => void;
       advance: (options: { duration: number; frameStep?: number }) => Promise<CapeDemoDiagnostics>;
+      traceCapeScenario: (options: {
+        scenario: 'raised-drop' | 'forward-start' | 'forward-stop' | 'reverse';
+        frames?: number;
+        sampleEvery?: number;
+      }) => Promise<{
+        readonly scenario: 'raised-drop' | 'forward-start' | 'forward-stop' | 'reverse';
+        readonly renderer: 'webgpu' | 'webgl';
+        readonly physicsStep: number;
+        readonly samples: readonly {
+          readonly frame: number;
+          readonly time: number;
+          readonly playerPosition: readonly number[];
+          readonly playerYaw: number;
+          readonly playerSpeed: number;
+          readonly particles: readonly number[];
+          readonly hemDrop: number;
+          readonly hemBackOffset: number;
+          readonly maximumParticleMotion: number;
+          readonly centerlineDeviation: number;
+          readonly rowTwistRange: number;
+        }[];
+      }>;
       profile: (options: {
         duration: number;
         frameStep?: number;

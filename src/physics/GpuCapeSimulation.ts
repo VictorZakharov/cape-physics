@@ -110,12 +110,13 @@ const IDLE_DRAG_PER_SECOND = 2.8;
 // links so both solvers retain the same authored flex; structural constraints,
 // collision projection, and the user stiffness multiplier remain unchanged.
 const GPU_LENGTHWISE_BEND_RELAXATION = 0.12;
+const GPU_TANGENTIAL_DECELERATION_TRANSFER = 18.5;
+const GPU_TANGENTIAL_DECELERATION_RESPONSE_PER_SECOND = 40;
+const GPU_MAXIMUM_TANGENTIAL_DECELERATION_CORRECTION = 0.06;
 // Graph-colored projection dissipates more of the neckline's braking inertia
-// than WebGL's ordered sweep. Filter only the controller's measured planar
-// deceleration into the normal Verlet prediction; no cape position or target
-// pose is selected at the walking/idle boundary.
-const GPU_BRAKING_VELOCITY_TRANSFER = 18.5;
-const GPU_BRAKING_VELOCITY_RESPONSE_PER_SECOND = 40;
+// than WebGL's ordered sweep. Transfer only measured loss of planar speed,
+// excluding direction-only acceleration, and hard-cap the filtered correction.
+// No cape position or target pose is selected at a locomotion boundary.
 const WAKE_SPEED = 0.08;
 const MAX_BODY_COLLIDERS = 32;
 const MAX_WORLD_SPHERES = 512;
@@ -170,7 +171,7 @@ export class GpuCapeSimulation {
   private readonly airflowUniform = uniform(new THREE.Vector3());
   private readonly anchorDisplacementUniform = uniform(new THREE.Vector3());
   private readonly anchorAccelerationDisplacementUniform = uniform(new THREE.Vector3());
-  private readonly brakingVelocityCorrectionUniform = uniform(new THREE.Vector3());
+  private readonly tangentialDecelerationCorrectionUniform = uniform(new THREE.Vector3());
   private readonly stiffnessUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.stiffness);
   private readonly dampingUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.damping);
   private readonly weightUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.weight);
@@ -187,9 +188,8 @@ export class GpuCapeSimulation {
   private readonly anchorAccelerationDisplacement = new THREE.Vector3();
   private readonly characterDisplacement = new THREE.Vector3();
   private readonly previousCharacterDisplacement = new THREE.Vector3();
-  private readonly characterAccelerationDisplacement = new THREE.Vector3();
-  private readonly brakingVelocityCorrection = new THREE.Vector3();
-  private readonly brakingVelocityCorrectionTarget = new THREE.Vector3();
+  private readonly tangentialDecelerationCorrection = new THREE.Vector3();
+  private readonly tangentialDecelerationTarget = new THREE.Vector3();
   private readonly anchorTarget = new THREE.Vector3();
   private readonly worldCandidateCenter = new THREE.Vector3(
     Number.POSITIVE_INFINITY,
@@ -342,6 +342,15 @@ export class GpuCapeSimulation {
     if (!currentBufferIsPosition) {
       throw new Error('GPU cape projection schedule must finish in the render position buffer.');
     }
+    // The top-down structural wavefront can keep loading a sustained boulder
+    // contact through the reconciliation passes. Finish with one race-free
+    // face sweep in the authoritative render buffer so no later constraint can
+    // push a cloth triangle back through the rock clearance.
+    this.computeSequence.push(
+      hardPositionToScratch,
+      hardScratchToPosition,
+      positionRockFaces,
+    );
     this.profileNoOpKernel = Fn(() => {})()
       .compute(PARTICLE_COUNT, [PARTICLE_COUNT])
       .setName('Cape profile no-op');
@@ -446,28 +455,29 @@ export class GpuCapeSimulation {
     this.characterDisplacement.copy(characterVelocity);
     this.characterDisplacement.y = 0;
     this.characterDisplacement.multiplyScalar(deltaTime);
-    this.characterAccelerationDisplacement.copy(this.characterDisplacement)
-      .sub(this.previousCharacterDisplacement);
-    this.brakingVelocityCorrectionTarget.set(0, 0, 0);
-    const planarAccelerationDotDisplacement = this.characterAccelerationDisplacement.x
-      * this.characterDisplacement.x
-      + this.characterAccelerationDisplacement.z * this.characterDisplacement.z;
-    if (planarAccelerationDotDisplacement < 0) {
-      this.brakingVelocityCorrectionTarget.set(
-        this.characterAccelerationDisplacement.x * (GPU_BRAKING_VELOCITY_TRANSFER - 1),
-        0,
-        this.characterAccelerationDisplacement.z * (GPU_BRAKING_VELOCITY_TRANSFER - 1),
-      );
+    const previousPlanarStep = this.previousCharacterDisplacement.length();
+    const currentPlanarStep = this.characterDisplacement.length();
+    this.tangentialDecelerationTarget.set(0, 0, 0);
+    if (previousPlanarStep > currentPlanarStep + 0.000_001) {
+      this.tangentialDecelerationTarget.copy(this.previousCharacterDisplacement)
+        .multiplyScalar(
+          -(previousPlanarStep - currentPlanarStep)
+          / previousPlanarStep
+          * (GPU_TANGENTIAL_DECELERATION_TRANSFER - 1),
+        )
+        .clampLength(0, GPU_MAXIMUM_TANGENTIAL_DECELERATION_CORRECTION);
     }
-    this.brakingVelocityCorrection.lerp(
-      this.brakingVelocityCorrectionTarget,
-      1 - Math.exp(-GPU_BRAKING_VELOCITY_RESPONSE_PER_SECOND * deltaTime),
-    );
+    this.tangentialDecelerationCorrection.lerp(
+      this.tangentialDecelerationTarget,
+      1 - Math.exp(-GPU_TANGENTIAL_DECELERATION_RESPONSE_PER_SECOND * deltaTime),
+    ).clampLength(0, GPU_MAXIMUM_TANGENTIAL_DECELERATION_CORRECTION);
     this.anchorDisplacementUniform.value.copy(this.anchorDisplacement);
     this.anchorAccelerationDisplacementUniform.value.copy(
       this.anchorAccelerationDisplacement,
     );
-    this.brakingVelocityCorrectionUniform.value.copy(this.brakingVelocityCorrection);
+    this.tangentialDecelerationCorrectionUniform.value.copy(
+      this.tangentialDecelerationCorrection,
+    );
     this.updateAnchorBuffer(anchors);
     this.updateBodyBuffers(bodyColliders, anchors.back);
     this.updateWorldBuffers(worldColliders);
@@ -489,8 +499,8 @@ export class GpuCapeSimulation {
     this.updateAnchorBuffer(anchors);
     this.previousAnchorDisplacement.set(0, 0, 0);
     this.previousCharacterDisplacement.set(0, 0, 0);
-    this.brakingVelocityCorrection.set(0, 0, 0);
-    this.brakingVelocityCorrectionTarget.set(0, 0, 0);
+    this.tangentialDecelerationCorrection.set(0, 0, 0);
+    this.tangentialDecelerationTarget.set(0, 0, 0);
     this.submittedSteps = 0;
     this.worldContactsLastStep = 0;
     this.worldContactEventOffset = this.worldContactEvents;
@@ -518,8 +528,8 @@ export class GpuCapeSimulation {
     this.updateAnchorBuffer(anchors);
     this.previousAnchorDisplacement.set(0, 0, 0);
     this.previousCharacterDisplacement.set(0, 0, 0);
-    this.brakingVelocityCorrection.set(0, 0, 0);
-    this.brakingVelocityCorrectionTarget.set(0, 0, 0);
+    this.tangentialDecelerationCorrection.set(0, 0, 0);
+    this.tangentialDecelerationTarget.set(0, 0, 0);
     this.submittedSteps = 0;
     this.worldContactsLastStep = 0;
     this.worldContactEventOffset = this.worldContactEvents;
@@ -549,6 +559,27 @@ export class GpuCapeSimulation {
       cumulativeContactEvents - this.worldContactEvents,
     );
     this.worldContactEvents = cumulativeContactEvents;
+  }
+
+  /** Harness-only state injection; production simulation never performs this upload. */
+  public overwriteStateForHarness(
+    positionData: Float32Array,
+    previousData: Float32Array = positionData,
+  ): void {
+    if (positionData.length < PARTICLE_COUNT * 4 || previousData.length < PARTICLE_COUNT * 4) {
+      throw new RangeError('Harness cape state is smaller than the simulation grid.');
+    }
+    this.writeStorage(this.positionBuffer.value, positionData);
+    this.writeStorage(this.scratchBuffer.value, positionData);
+    this.writeStorage(this.previousBuffer.value, previousData);
+    this.diagnosticMirror.overwriteStateForHarness(positionData, previousData);
+    this.previousAnchorDisplacement.set(0, 0, 0);
+    this.previousCharacterDisplacement.set(0, 0, 0);
+    this.tangentialDecelerationCorrection.set(0, 0, 0);
+    this.tangentialDecelerationTarget.set(0, 0, 0);
+    this.submittedSteps = 0;
+    this.worldContactsLastStep = 0;
+    this.worldContactEventOffset = this.worldContactEvents;
   }
 
   public getParticlePosition(column: number, row: number): THREE.Vector3 {
@@ -817,7 +848,7 @@ export class GpuCapeSimulation {
       const deltaSquared = this.deltaTimeUniform.mul(this.deltaTimeUniform);
       const predicted = currentPosition.add(velocity).toVar('predicted');
       predicted.subAssign(this.anchorAccelerationDisplacementUniform);
-      predicted.subAssign(this.brakingVelocityCorrectionUniform);
+      predicted.subAssign(this.tangentialDecelerationCorrectionUniform);
       predicted.y.subAssign(deltaSquared.mul(9.81).mul(this.weightUniform));
       predicted.addAssign(normal.mul(
         pressure.mul(pressure.abs()).mul(0.026).mul(deltaSquared),
@@ -848,6 +879,40 @@ export class GpuCapeSimulation {
   ): THREE.ComputeNode {
     return Fn(() => {
       const constraintIndex = instanceIndex;
+      // WebGL visits particles top-to-bottom, so its vertical structural
+      // constraints transmit neckline motion through the whole cape during a
+      // single iteration. Preserve that dependency as a row wavefront while
+      // solving every column in parallel. The remaining independent pairs use
+      // the graph colors below.
+      for (let row = 0; row < CAPE.rows - 1; row += 1) {
+        If(constraintIndex.lessThan(uint(CAPE.columns)), () => {
+          const firstIndex = uint(row * CAPE.columns).add(constraintIndex);
+          const secondIndex = firstIndex.add(uint(CAPE.columns));
+          const firstState = buffer.element(firstIndex);
+          const secondState = buffer.element(secondIndex);
+          const first = firstState.xyz.toVar('verticalFirst' + row);
+          const second = secondState.xyz.toVar('verticalSecond' + row);
+          const delta = second.sub(first).toVar('verticalDelta' + row);
+          const length = delta.length().toVar('verticalLength' + row);
+          const firstWeight = select(firstIndex.lessThan(uint(CAPE.columns)), 0, 1);
+          const totalWeight = firstWeight.add(1);
+          If(length.greaterThan(0.000_001), () => {
+            const restLength = this.topologyBuffer.element(
+              firstIndex.mul(uint(TOPOLOGY_METADATA_STRIDE)),
+            ).y;
+            const correction = delta.mul(
+              length.sub(restLength)
+                .div(length)
+                .mul(float(0.96).mul(this.stiffnessUniform).min(0.999)),
+            );
+            first.addAssign(correction.mul(firstWeight.div(totalWeight)));
+            second.subAssign(correction.div(totalWeight));
+            buffer.element(firstIndex).assign(vec4(first, firstState.w));
+            buffer.element(secondIndex).assign(vec4(second, secondState.w));
+          });
+        });
+        storageBarrier();
+      }
       for (const range of this.coloredConstraintRanges) {
         If(constraintIndex.lessThan(uint(range.count)), () => {
           const definition = this.constraintBuffer.element(
@@ -2724,7 +2789,7 @@ export class GpuCapeSimulation {
     for (let row = 0; row < CAPE.rows; row += 1) {
       for (let column = 0; column < CAPE.columns; column += 1) {
         if (column + 1 < CAPE.columns) addConstraint(column, row, column + 1, row, 0.93);
-        if (row + 1 < CAPE.rows) addConstraint(column, row, column, row + 1, 0.96);
+        // Vertical structural pairs are solved by the ordered row wavefront.
         if (column + 1 < CAPE.columns && row + 1 < CAPE.rows) {
           addConstraint(column, row, column + 1, row + 1, 0.8);
           addConstraint(column + 1, row, column, row + 1, 0.8);
@@ -2770,6 +2835,9 @@ export class GpuCapeSimulation {
       const rowLeft = row * CAPE.columns;
       const rowRight = rowLeft + CAPE.columns - 1;
       packed[metadataOffset] = readPosition(rowLeft).distanceTo(readPosition(rowRight));
+      packed[metadataOffset + 1] = row + 1 < CAPE.rows
+        ? readPosition(particleIndex).distanceTo(readPosition(particleIndex + CAPE.columns))
+        : 0;
       packed[metadataOffset + 2] = normalNeighbors[neighborOffset] ?? particleIndex;
       packed[metadataOffset + 3] = normalNeighbors[neighborOffset + 1] ?? particleIndex;
       packed[metadataOffset + 4] = normalNeighbors[neighborOffset + 2] ?? particleIndex;

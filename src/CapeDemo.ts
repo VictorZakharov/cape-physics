@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { CAMERA_NEAR_OPACITY, PHYSICS_STEP, PLAYER } from './config';
+import { CAMERA_NEAR_OPACITY, CAPE, PHYSICS_STEP, PLAYER } from './config';
 import { ThirdPersonCamera } from './camera/ThirdPersonCamera';
 import {
   calculateViewportAspect,
@@ -67,6 +67,30 @@ interface ScenePhaseTotals {
   veins: number;
   atmosphere: number;
   lighting: number;
+}
+
+type CapeTrajectoryScenario = 'raised-drop' | 'forward-start' | 'forward-stop' | 'reverse';
+
+interface CapeTrajectorySample {
+  readonly frame: number;
+  readonly time: number;
+  readonly playerPosition: readonly number[];
+  readonly playerYaw: number;
+  readonly playerSpeed: number;
+  /** Particle triples in neckline-local right/up/back coordinates. */
+  readonly particles: readonly number[];
+  readonly hemDrop: number;
+  readonly hemBackOffset: number;
+  readonly maximumParticleMotion: number;
+  readonly centerlineDeviation: number;
+  readonly rowTwistRange: number;
+}
+
+interface CapeTrajectoryReport {
+  readonly scenario: CapeTrajectoryScenario;
+  readonly renderer: 'webgpu' | 'webgl';
+  readonly physicsStep: number;
+  readonly samples: readonly CapeTrajectorySample[];
 }
 
 function createScenePhaseTotals(): ScenePhaseTotals {
@@ -554,6 +578,7 @@ export class CapeDemo {
         this.input.queueVirtualJump();
       },
       advance: ({ duration, frameStep = 1 / 60 }) => this.advanceHarness(duration, frameStep),
+      traceCapeScenario: (options) => this.traceCapeScenario(options),
       profile: ({
         duration,
         frameStep = 1 / 60,
@@ -592,6 +617,119 @@ export class CapeDemo {
     }
     this.pipeline.renderManual(lastDelta);
     return this.getDiagnosticsAfterReadback();
+  }
+
+  private resetHarnessPlayer(): void {
+    this.input.clearVirtualMovement();
+    this.input.setVirtualRunning(false);
+    this.character.root.position.set(-2.38, 0, -15);
+    this.worldCollision.resolvePlayer(this.character.root.position);
+    this.character.root.rotation.y = 0;
+    this.characterController.reset();
+    this.character.root.updateMatrixWorld(true);
+    this.cape.reset(this.character.getCapeAnchors());
+    this.harnessAccumulator = 0;
+  }
+
+  private async raiseCapeForHarness(): Promise<void> {
+    await this.cape.refreshDiagnostics();
+    const anchors = this.character.getCapeAnchors();
+    const center = anchors.left.clone().add(anchors.right).multiplyScalar(0.5);
+    const state = new Float32Array(CAPE.columns * CAPE.rows * 4);
+    for (let row = 0; row < CAPE.rows; row += 1) {
+      for (let column = 0; column < CAPE.columns; column += 1) {
+        const index = row * CAPE.columns + column;
+        const position = this.cape.getParticlePosition(column, row);
+        const offset = position.clone().sub(center);
+        if (row > 0) position.y = center.y + Math.abs(offset.y);
+        state[index * 4] = position.x;
+        state[index * 4 + 1] = position.y;
+        state[index * 4 + 2] = position.z;
+      }
+    }
+    this.cape.overwriteStateForHarness(state, state);
+    this.cape.syncGeometry();
+  }
+
+  private captureCapeTrajectorySample(frame: number): CapeTrajectorySample {
+    const anchors = this.character.getCapeAnchors();
+    const center = anchors.left.clone().add(anchors.right).multiplyScalar(0.5);
+    const right = anchors.right.clone().sub(anchors.left).normalize();
+    const particles: number[] = [];
+    for (let row = 0; row < CAPE.rows; row += 1) {
+      for (let column = 0; column < CAPE.columns; column += 1) {
+        const offset = this.cape.getParticlePosition(column, row).clone().sub(center);
+        particles.push(offset.dot(right), offset.y, offset.dot(anchors.back));
+      }
+    }
+    return {
+      frame,
+      time: this.fixedTime,
+      playerPosition: this.character.root.position.toArray(),
+      playerYaw: this.character.root.rotation.y,
+      playerSpeed: Math.hypot(this.character.velocity.x, this.character.velocity.z),
+      particles,
+      hemDrop: this.cape.getHemDrop(),
+      hemBackOffset: this.cape.getHemBackOffset(anchors),
+      maximumParticleMotion: this.cape.getMaximumParticleMotion(),
+      centerlineDeviation: this.cape.getCapeCenterlineDeviation(),
+      rowTwistRange: this.cape.getCapeRowTwistRange(anchors),
+    };
+  }
+
+  private async traceCapeScenario({
+    scenario,
+    frames = 120,
+    sampleEvery = 1,
+  }: {
+    scenario: CapeTrajectoryScenario;
+    frames?: number;
+    sampleEvery?: number;
+  }): Promise<CapeTrajectoryReport> {
+    const frameCount = THREE.MathUtils.clamp(Math.round(frames), 1, 360);
+    const sampleInterval = THREE.MathUtils.clamp(Math.round(sampleEvery), 1, 12);
+    this.resetHarnessPlayer();
+    this.fixedTime = 0;
+    if (scenario === 'raised-drop') await this.raiseCapeForHarness();
+
+    const samples: CapeTrajectorySample[] = [];
+    for (let frame = 0; frame <= frameCount; frame += 1) {
+      if (scenario !== 'raised-drop') {
+        if (scenario === 'forward-start') {
+          this.input.setVirtualMovement(0, frame >= 30 ? 1 : 0);
+        } else if (scenario === 'forward-stop') {
+          this.input.setVirtualMovement(0, frame >= 30 && frame < 90 ? 1 : 0);
+        } else if (scenario === 'reverse') {
+          this.input.setVirtualMovement(0, frame < 30 ? 0 : frame < 90 ? 1 : -1);
+        }
+      }
+      if (frame % sampleInterval === 0) {
+        await this.cape.refreshDiagnostics();
+        samples.push(this.captureCapeTrajectorySample(frame));
+      }
+      if (frame === frameCount) break;
+      this.fixedTime += PHYSICS_STEP;
+      this.characterController.update(PHYSICS_STEP, this.thirdPersonCamera.yaw);
+      this.characterController.consumeLandingImpact();
+      this.character.root.updateMatrixWorld(true);
+      this.cape.step(
+        PHYSICS_STEP,
+        this.character.getCapeAnchors(),
+        this.character.getCapeColliders(),
+        [],
+        this.character.velocity,
+        this.fixedTime,
+      );
+      this.cape.syncGeometry();
+      this.pipeline.renderManual(PHYSICS_STEP);
+    }
+    this.input.clearVirtualMovement();
+    return {
+      scenario,
+      renderer: this.pipeline.getBackendDiagnostics().actual,
+      physicsStep: PHYSICS_STEP,
+      samples,
+    };
   }
 
   private async profileHarness(

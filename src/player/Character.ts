@@ -103,6 +103,10 @@ export class Character {
     this.animator.update(delta, planarSpeed, grounded, verticalVelocity);
   }
 
+  public resetAnimation(): void {
+    this.animator.reset();
+  }
+
   public getCapeAnchors(): CapeAnchors {
     this.root.updateMatrixWorld(true);
     this.leftCapeAnchor.getWorldPosition(this.leftAnchorWorld);

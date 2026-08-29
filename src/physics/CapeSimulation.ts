@@ -380,6 +380,19 @@ export class CapeSimulation {
     });
   }
 
+  /** Harness-only state injection shared with the WebGPU implementation. */
+  public overwriteStateForHarness(
+    positionData: Float32Array,
+    previousData: Float32Array = positionData,
+  ): void {
+    this.overwriteStateFromGpu(positionData, previousData);
+    this.positions.forEach((position, index) => this.stepStart[index]?.copy(position));
+    this.settledSeconds = 0;
+    this.sleeping = false;
+    this.maximumParticleMotion = 0;
+    this.maximumParticleVerticalMotion = 0;
+  }
+
   /** Keeps GPU readback diagnostics relative to the current moving neckline. */
   public synchronizeAnchorDiagnostics(anchors: CapeAnchors): void {
     this.anchorCenter.copy(anchors.left).add(anchors.right).multiplyScalar(0.5);

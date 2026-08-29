@@ -145,4 +145,15 @@ export class CharacterController {
     this.landingImpactSpeed = 0;
     this.character.velocity.y = 0;
   }
+
+  public reset(): void {
+    this.desiredVelocity.set(0, 0, 0);
+    this.running = false;
+    this.grounded = true;
+    this.verticalVelocity = 0;
+    this.landingImpactSpeed = 0;
+    this.turnRate = 0;
+    this.character.velocity.set(0, 0, 0);
+    this.character.resetAnimation();
+  }
 }

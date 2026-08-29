@@ -37,6 +37,7 @@
     "stress:rocks": "bun scripts/run-rock-stress.ts",
     "audit:visual": "bun run build && bun scripts/render-visual-audit.mjs",
     "profile:render": "bun run build && bun scripts/render-performance-profile.mjs",
+    "audit:cape-trajectories": "bun run build && bun scripts/compare-cape-trajectories.mjs",
     "verify": "bun run check && bun run build && bun run harness",
     "preview": "vite preview --host 0.0.0.0"
   },

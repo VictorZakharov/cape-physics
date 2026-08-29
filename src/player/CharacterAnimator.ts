@@ -31,6 +31,22 @@ export class CharacterAnimator {
 
   public constructor(private readonly rig: CharacterAnimationRig) {}
 
+  public reset(): void {
+    this.walkPhase = 0;
+    this.gaitBob = 0;
+    this.runningBlend = 0;
+    this.airborneBlend = 0;
+    this.jumpPhase = 0;
+    this.rig.body.position.y = 0;
+    this.rig.body.rotation.set(0, 0, 0);
+    this.rig.leftArm.rotation.x = -0.08;
+    this.rig.rightArm.rotation.x = -0.08;
+    this.rig.leftLeg.rotation.x = 0;
+    this.rig.rightLeg.rotation.x = 0;
+    this.rig.leftFoot.rotation.x = 0;
+    this.rig.rightFoot.rotation.x = 0;
+  }
+
   public update(
     delta: number,
     planarSpeed: number,
