@@ -555,6 +555,41 @@ describe('CapeSimulation', () => {
     expect(cape.isSleeping()).toBe(false);
   });
 
+  test('does not sleep a lightweight cape while it remains suspended behind the neckline', () => {
+    const cape = new CapeSimulation(anchors, { weight: 0.5 });
+    const suspended = new Float32Array(CAPE.columns * CAPE.rows * 4);
+    for (let row = 0; row < CAPE.rows; row += 1) {
+      const down = row / (CAPE.rows - 1);
+      for (let column = 0; column < CAPE.columns; column += 1) {
+        const index = row * CAPE.columns + column;
+        const position = cape.getParticlePosition(column, row)
+          .addScaledVector(anchors.back, down * 1.15);
+        position.y += down * 0.58;
+        suspended[index * 4] = position.x;
+        suspended[index * 4 + 1] = position.y;
+        suspended[index * 4 + 2] = position.z;
+      }
+    }
+    cape.overwriteStateForHarness(suspended);
+
+    for (let frame = 0; frame < 480; frame += 1) {
+      cape.step(
+        PHYSICS_STEP,
+        anchors,
+        [],
+        [],
+        new THREE.Vector3(),
+        frame * PHYSICS_STEP,
+      );
+      if (cape.isSleeping()) {
+        expect(cape.getMaximumLowerCapeHorizontalOffset()).toBeLessThan(0.18);
+      }
+    }
+
+    expect(cape.getHemDrop()).toBeGreaterThan(1.3);
+    expect(cape.getMaximumLowerCapeHorizontalOffset()).toBeLessThan(0.18);
+  });
+
   test('curves the pinned neckline behind the shoulders without body penetration', () => {
     const cape = new CapeSimulation(anchors);
     const bodyColliders: CapsuleCollider[] = [

@@ -25,6 +25,7 @@ import { MobileControls } from './input/MobileControls';
 import { CinematicLighting } from './lighting/CinematicLighting';
 import type { WebGpuCinematicLighting } from './lighting/WebGpuCinematicLighting';
 import { CapeSimulation } from './physics/CapeSimulation';
+import { DEFAULT_CAPE_PHYSICS_SETTINGS } from './physics/CapeSettings';
 import type { GpuCapeSimulation } from './physics/GpuCapeSimulation';
 import type { WorldCollider } from './physics/colliders';
 import { Character } from './player/Character';
@@ -69,7 +70,13 @@ interface ScenePhaseTotals {
   lighting: number;
 }
 
-type CapeTrajectoryScenario = 'raised-drop' | 'forward-start' | 'forward-stop' | 'reverse';
+type CapeTrajectoryScenario =
+  | 'raised-drop'
+  | 'forward-start'
+  | 'forward-stop'
+  | 'reverse'
+  | 'back-and-forth'
+  | 'lightweight-stop';
 
 interface CapeTrajectorySample {
   readonly frame: number;
@@ -82,6 +89,8 @@ interface CapeTrajectorySample {
   readonly hemDrop: number;
   readonly hemBackOffset: number;
   readonly maximumParticleMotion: number;
+  readonly maximumLowerParticleHeight: number;
+  readonly maximumLowerHorizontalOffset: number;
   readonly centerlineDeviation: number;
   readonly rowTwistRange: number;
 }
@@ -195,7 +204,16 @@ export class CapeDemo {
         this.recoverWithWebGL('WebGPU startup stalled; restarting with WebGL');
       }, 20_000);
     }
-    await this.loading.update(0.03, 'Selecting the graphics backend');
+    if (this.rendererPreference === 'webgpu') {
+      await this.loading.beginLongStage(
+        0.03,
+        0.075,
+        'Requesting the WebGPU adapter and device',
+        4_000,
+      );
+    } else {
+      await this.loading.update(0.03, 'Selecting the graphics backend');
+    }
     try {
       await this.pipeline.init();
     } catch (error) {
@@ -216,7 +234,7 @@ export class CapeDemo {
       this.pipeline.getActualBackend(),
       this.rendererPreference,
     );
-    await this.loading.update(0.08, 'Shaping ancient stone');
+    await this.loading.beginLongStage(0.08, 0.27, 'Shaping ancient stone', 1_600);
     const rockTextures = createRockTextures(512);
     configureTextureFiltering(
       rockTextures,
@@ -225,7 +243,7 @@ export class CapeDemo {
     this.cave = new CaveWorld(rockTextures);
     this.scene.add(this.cave.group);
 
-    await this.loading.update(0.3, 'Awakening mineral light');
+    await this.loading.beginLongStage(0.3, 0.52, 'Awakening mineral light', 2_000);
     this.veins = new MineralVeins();
     const usesNodeRenderer = this.pipeline.usesNodeRenderer();
     if (usesNodeRenderer) {
@@ -265,10 +283,11 @@ export class CapeDemo {
     if (gpuRenderer) {
       await this.loading.update(0.59, 'Loading the WebGPU cloth solver');
       const { GpuCapeSimulation } = await import('./physics/GpuCapeSimulation');
+      await this.loading.update(0.62, 'Allocating WebGPU cloth buffers');
       await this.loading.beginLongStage(
         0.64,
         0.72,
-        'Building the WebGPU cloth compute graph',
+        'Linking WebGPU cloth compute passes',
         2_500,
       );
       this.cape = new GpuCapeSimulation(
@@ -308,11 +327,13 @@ export class CapeDemo {
     await this.loading.update(0.78, 'Placing traveller lights');
     if (usesNodeRenderer) {
       const { WebGpuCinematicLighting } = await import('./lighting/WebGpuCinematicLighting');
+      await this.loading.update(0.8, 'Creating WebGPU light pipelines');
       const nodeRenderer = invariant(
         this.pipeline.getNodeRenderer(),
         'WebGPU node renderer is missing.',
       );
       this.lighting = new WebGpuCinematicLighting(this.scene, nodeRenderer);
+      await this.loading.update(0.82, 'Binding WebGPU shadows and reflections');
     } else {
       const webGlRenderer = invariant(
         this.pipeline.getWebGlRenderer(),
@@ -656,10 +677,17 @@ export class CapeDemo {
     const center = anchors.left.clone().add(anchors.right).multiplyScalar(0.5);
     const right = anchors.right.clone().sub(anchors.left).normalize();
     const particles: number[] = [];
+    let maximumLowerParticleHeight = Number.NEGATIVE_INFINITY;
+    const firstLowerRow = Math.floor(CAPE.rows * 0.58);
     for (let row = 0; row < CAPE.rows; row += 1) {
       for (let column = 0; column < CAPE.columns; column += 1) {
         const offset = this.cape.getParticlePosition(column, row).clone().sub(center);
-        particles.push(offset.dot(right), offset.y, offset.dot(anchors.back));
+        const localRight = offset.dot(right);
+        const localBack = offset.dot(anchors.back);
+        particles.push(localRight, offset.y, localBack);
+        if (row >= firstLowerRow) {
+          maximumLowerParticleHeight = Math.max(maximumLowerParticleHeight, offset.y);
+        }
       }
     }
     return {
@@ -672,6 +700,8 @@ export class CapeDemo {
       hemDrop: this.cape.getHemDrop(),
       hemBackOffset: this.cape.getHemBackOffset(anchors),
       maximumParticleMotion: this.cape.getMaximumParticleMotion(),
+      maximumLowerParticleHeight,
+      maximumLowerHorizontalOffset: this.cape.getMaximumLowerCapeHorizontalOffset(),
       centerlineDeviation: this.cape.getCapeCenterlineDeviation(),
       rowTwistRange: this.cape.getCapeRowTwistRange(anchors),
     };
@@ -690,6 +720,14 @@ export class CapeDemo {
     const sampleInterval = THREE.MathUtils.clamp(Math.round(sampleEvery), 1, 12);
     this.resetHarnessPlayer();
     this.fixedTime = 0;
+    const anchors = this.character.getCapeAnchors();
+    this.cape.updateSettings({
+      ...DEFAULT_CAPE_PHYSICS_SETTINGS,
+      weight: scenario === 'lightweight-stop'
+        ? 0.5
+        : DEFAULT_CAPE_PHYSICS_SETTINGS.weight,
+    }, anchors);
+    this.cape.reset(anchors);
     if (scenario === 'raised-drop') await this.raiseCapeForHarness();
 
     const samples: CapeTrajectorySample[] = [];
@@ -697,10 +735,14 @@ export class CapeDemo {
       if (scenario !== 'raised-drop') {
         if (scenario === 'forward-start') {
           this.input.setVirtualMovement(0, frame >= 30 ? 1 : 0);
-        } else if (scenario === 'forward-stop') {
+        } else if (scenario === 'forward-stop' || scenario === 'lightweight-stop') {
           this.input.setVirtualMovement(0, frame >= 30 && frame < 90 ? 1 : 0);
         } else if (scenario === 'reverse') {
           this.input.setVirtualMovement(0, frame < 30 ? 0 : frame < 90 ? 1 : -1);
+        } else if (scenario === 'back-and-forth') {
+          const moving = frame >= 30 && frame < 210;
+          const direction = Math.floor((frame - 30) / 30) % 2 === 0 ? 1 : -1;
+          this.input.setVirtualMovement(0, moving ? direction : 0);
         }
       }
       if (frame % sampleInterval === 0) {
@@ -977,6 +1019,7 @@ export class CapeDemo {
         maximumEnvironmentFacePenetration: this.cape.getMaximumEnvironmentFacePenetration(this.worldColliders),
         maximumParticleMotion: this.cape.getMaximumParticleMotion(),
         maximumParticleVerticalMotion: this.cape.getMaximumParticleVerticalMotion(),
+        particleMotion: this.cape.getMaximumParticleMotionDiagnostics(),
         sleeping: this.cape.isSleeping(),
         minimumSelfSeparation: this.cape.getMinimumSelfSeparation(),
         maximumUpwardFold: this.cape.getMaximumUpwardFold(),

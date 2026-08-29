@@ -110,13 +110,37 @@ const IDLE_DRAG_PER_SECOND = 2.8;
 // links so both solvers retain the same authored flex; structural constraints,
 // collision projection, and the user stiffness multiplier remain unchanged.
 const GPU_LENGTHWISE_BEND_RELAXATION = 0.12;
-const GPU_TANGENTIAL_DECELERATION_TRANSFER = 18.5;
-const GPU_TANGENTIAL_DECELERATION_RESPONSE_PER_SECOND = 40;
-const GPU_MAXIMUM_TANGENTIAL_DECELERATION_CORRECTION = 0.06;
-// Graph-colored projection dissipates more of the neckline's braking inertia
-// than WebGL's ordered sweep. Transfer only measured loss of planar speed,
-// excluding direction-only acceleration, and hard-cap the filtered correction.
-// No cape position or target pose is selected at a locomotion boundary.
+// The ordered CPU sweep transfers neckline motion through partially updated
+// rows during each iteration. The parallel sweep lacks part of that implicit
+// impulse, so transfer half of the current neckline rigid transform into the
+// prediction. Translation remains partially inertial while yaw follows the full rigid transform;
+// neither path contains a locomotion-state or braking branch.
+const GPU_NECKLINE_TRANSLATION_TRANSFER = 0.5;
+const GPU_NECKLINE_ROTATION_TRANSFER = 0.9;
+const GPU_MAXIMUM_NECKLINE_ROTATION_PER_STEP = 0.025;
+// Parallel graph projection dissipates deterministic normal excitation more
+// strongly than the ordered CPU sweep. Compensate the numerical loss without
+// adding a locomotion pose or changing the authored frequency and phase.
+const GPU_FLUTTER_COMPENSATION = 5;
+// Jacobi-style graph colors converge slightly less per authored pass than the
+// ordered CPU sweep. This factor matches structural extension without adding
+// another compute pass or changing the public stiffness scale.
+const GPU_CONSTRAINT_STIFFNESS_COMPENSATION = 1.025;
+const GPU_MAXIMUM_PLANAR_PARTICLE_SPEED = 9.6;
+const GPU_MAXIMUM_VERTICAL_PARTICLE_SPEED = 12;
+// Parallel projection removes a small amount of downward energy that the
+// ordered CPU sweep retains. Restore only that measured loss; the authored
+// weight multiplier and fixed-step gravity remain shared with WebGL.
+const GPU_GRAVITY_COMPENSATION = 1.05;
+
+// Fully converged graph colors retain more projection energy than the ordered
+// CPU sweep. Dampen the gravity axis strongly to prevent vertical launch, while
+// retaining more planar constraint response so the cape can swing around the
+// body and carry travelling waves like the ordered solver.
+const GPU_PLANAR_CONSTRAINT_VELOCITY_NEUTRALIZATION = 0.9;
+const GPU_VERTICAL_CONSTRAINT_VELOCITY_NEUTRALIZATION = 0.95;
+
+
 const WAKE_SPEED = 0.08;
 const MAX_BODY_COLLIDERS = 32;
 const MAX_WORLD_SPHERES = 512;
@@ -169,9 +193,10 @@ export class GpuCapeSimulation {
   private readonly timeUniform = uniform(0);
   private readonly movementBlendUniform = uniform(0);
   private readonly airflowUniform = uniform(new THREE.Vector3());
-  private readonly anchorDisplacementUniform = uniform(new THREE.Vector3());
-  private readonly anchorAccelerationDisplacementUniform = uniform(new THREE.Vector3());
-  private readonly tangentialDecelerationCorrectionUniform = uniform(new THREE.Vector3());
+  private readonly necklineMotionUniform = uniform(new THREE.Vector3());
+  private readonly necklineRotationCenterUniform = uniform(new THREE.Vector3());
+  private readonly necklineRotationSinUniform = uniform(0);
+  private readonly necklineRotationCosUniform = uniform(1);
   private readonly stiffnessUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.stiffness);
   private readonly dampingUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.damping);
   private readonly weightUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.weight);
@@ -183,13 +208,11 @@ export class GpuCapeSimulation {
   private readonly profileNoOpKernel: THREE.ComputeNode;
   private readonly profileProjectionKernels: readonly THREE.ComputeNode[];
   private readonly anchorCenter = new THREE.Vector3();
+  private readonly nextAnchorCenter = new THREE.Vector3();
   private readonly anchorDisplacement = new THREE.Vector3();
-  private readonly previousAnchorDisplacement = new THREE.Vector3();
-  private readonly anchorAccelerationDisplacement = new THREE.Vector3();
-  private readonly characterDisplacement = new THREE.Vector3();
-  private readonly previousCharacterDisplacement = new THREE.Vector3();
-  private readonly tangentialDecelerationCorrection = new THREE.Vector3();
-  private readonly tangentialDecelerationTarget = new THREE.Vector3();
+  private readonly necklineMotion = new THREE.Vector3();
+  private readonly previousBack = new THREE.Vector3(0, 0, 1);
+  private pendingNecklineYaw = 0;
   private readonly anchorTarget = new THREE.Vector3();
   private readonly worldCandidateCenter = new THREE.Vector3(
     Number.POSITIVE_INFINITY,
@@ -447,43 +470,34 @@ export class GpuCapeSimulation {
     this.deltaTimeUniform.value = deltaTime;
     this.timeUniform.value = time;
     this.movementBlendUniform.value = movementBlend;
-    this.anchorDisplacement.copy(anchors.left).add(anchors.right)
-      .multiplyScalar(0.5)
-      .sub(this.anchorCenter);
-    this.anchorAccelerationDisplacement.copy(this.anchorDisplacement)
-      .sub(this.previousAnchorDisplacement);
-    this.characterDisplacement.copy(characterVelocity);
-    this.characterDisplacement.y = 0;
-    this.characterDisplacement.multiplyScalar(deltaTime);
-    const previousPlanarStep = this.previousCharacterDisplacement.length();
-    const currentPlanarStep = this.characterDisplacement.length();
-    this.tangentialDecelerationTarget.set(0, 0, 0);
-    if (previousPlanarStep > currentPlanarStep + 0.000_001) {
-      this.tangentialDecelerationTarget.copy(this.previousCharacterDisplacement)
-        .multiplyScalar(
-          -(previousPlanarStep - currentPlanarStep)
-          / previousPlanarStep
-          * (GPU_TANGENTIAL_DECELERATION_TRANSFER - 1),
-        )
-        .clampLength(0, GPU_MAXIMUM_TANGENTIAL_DECELERATION_CORRECTION);
-    }
-    this.tangentialDecelerationCorrection.lerp(
-      this.tangentialDecelerationTarget,
-      1 - Math.exp(-GPU_TANGENTIAL_DECELERATION_RESPONSE_PER_SECOND * deltaTime),
-    ).clampLength(0, GPU_MAXIMUM_TANGENTIAL_DECELERATION_CORRECTION);
-    this.anchorDisplacementUniform.value.copy(this.anchorDisplacement);
-    this.anchorAccelerationDisplacementUniform.value.copy(
-      this.anchorAccelerationDisplacement,
+    this.nextAnchorCenter.copy(anchors.left).add(anchors.right).multiplyScalar(0.5);
+    this.anchorDisplacement.copy(this.nextAnchorCenter).sub(this.anchorCenter);
+    this.necklineMotion.copy(this.anchorDisplacement)
+      .multiplyScalar(GPU_NECKLINE_TRANSLATION_TRANSFER);
+    this.necklineMotionUniform.value.copy(this.necklineMotion);
+    this.necklineRotationCenterUniform.value.copy(this.anchorCenter);
+    const backDot = THREE.MathUtils.clamp(
+      this.previousBack.x * anchors.back.x + this.previousBack.z * anchors.back.z,
+      -1,
+      1,
     );
-    this.tangentialDecelerationCorrectionUniform.value.copy(
-      this.tangentialDecelerationCorrection,
+    const backCrossY = this.previousBack.z * anchors.back.x
+      - this.previousBack.x * anchors.back.z;
+    this.pendingNecklineYaw += Math.atan2(backCrossY, backDot)
+      * GPU_NECKLINE_ROTATION_TRANSFER;
+    const transferredYaw = THREE.MathUtils.clamp(
+      this.pendingNecklineYaw,
+      -GPU_MAXIMUM_NECKLINE_ROTATION_PER_STEP,
+      GPU_MAXIMUM_NECKLINE_ROTATION_PER_STEP,
     );
+    this.pendingNecklineYaw -= transferredYaw;
+    this.necklineRotationSinUniform.value = Math.sin(transferredYaw);
+    this.necklineRotationCosUniform.value = Math.cos(transferredYaw);
     this.updateAnchorBuffer(anchors);
     this.updateBodyBuffers(bodyColliders, anchors.back);
     this.updateWorldBuffers(worldColliders);
     this.renderer.compute(this.computeSequence);
-    this.previousAnchorDisplacement.copy(this.anchorDisplacement);
-    this.previousCharacterDisplacement.copy(this.characterDisplacement);
+    this.previousBack.copy(anchors.back);
     this.submittedSteps += 1;
   }
 
@@ -497,10 +511,8 @@ export class GpuCapeSimulation {
     this.writeStorage(this.scratchBuffer.value, state);
     this.writeStorage(this.previousBuffer.value, state);
     this.updateAnchorBuffer(anchors);
-    this.previousAnchorDisplacement.set(0, 0, 0);
-    this.previousCharacterDisplacement.set(0, 0, 0);
-    this.tangentialDecelerationCorrection.set(0, 0, 0);
-    this.tangentialDecelerationTarget.set(0, 0, 0);
+    this.previousBack.copy(anchors.back);
+    this.pendingNecklineYaw = 0;
     this.submittedSteps = 0;
     this.worldContactsLastStep = 0;
     this.worldContactEventOffset = this.worldContactEvents;
@@ -526,10 +538,8 @@ export class GpuCapeSimulation {
     this.writeStorage(this.topologyBuffer.value, topology.packed);
     this.writeStorage(this.constraintBuffer.value, topology.coloredConstraints);
     this.updateAnchorBuffer(anchors);
-    this.previousAnchorDisplacement.set(0, 0, 0);
-    this.previousCharacterDisplacement.set(0, 0, 0);
-    this.tangentialDecelerationCorrection.set(0, 0, 0);
-    this.tangentialDecelerationTarget.set(0, 0, 0);
+    this.previousBack.copy(anchors.back);
+    this.pendingNecklineYaw = 0;
     this.submittedSteps = 0;
     this.worldContactsLastStep = 0;
     this.worldContactEventOffset = this.worldContactEvents;
@@ -573,10 +583,6 @@ export class GpuCapeSimulation {
     this.writeStorage(this.scratchBuffer.value, positionData);
     this.writeStorage(this.previousBuffer.value, previousData);
     this.diagnosticMirror.overwriteStateForHarness(positionData, previousData);
-    this.previousAnchorDisplacement.set(0, 0, 0);
-    this.previousCharacterDisplacement.set(0, 0, 0);
-    this.tangentialDecelerationCorrection.set(0, 0, 0);
-    this.tangentialDecelerationTarget.set(0, 0, 0);
     this.submittedSteps = 0;
     this.worldContactsLastStep = 0;
     this.worldContactEventOffset = this.worldContactEvents;
@@ -636,6 +642,10 @@ export class GpuCapeSimulation {
     return this.diagnosticMirror.getMaximumLowerCapeLateralOffset(anchors);
   }
 
+  public getMaximumLowerCapeHorizontalOffset(): number {
+    return this.diagnosticMirror.getMaximumLowerCapeHorizontalOffset();
+  }
+
   public getAverageLowerCapeSpanRatio(anchors: CapeAnchors): number {
     return this.diagnosticMirror.getAverageLowerCapeSpanRatio(anchors);
   }
@@ -666,6 +676,10 @@ export class GpuCapeSimulation {
 
   public getMaximumParticleVerticalMotion(): number {
     return this.diagnosticMirror.getMaximumParticleVerticalMotion();
+  }
+
+  public getMaximumParticleMotionDiagnostics() {
+    return this.diagnosticMirror.getMaximumParticleMotionDiagnostics();
   }
 
   public isSleeping(): boolean {
@@ -802,9 +816,8 @@ export class GpuCapeSimulation {
         Return();
       });
 
-      const currentPosition = current.xyz.add(this.anchorDisplacementUniform)
-        .toVar('currentPosition');
-      const previousPosition = previous.xyz.add(this.anchorDisplacementUniform);
+      const currentPosition = current.xyz.toVar('currentPosition');
+      const previousPosition = previous.xyz;
       const velocity = currentPosition.sub(previousPosition).toVar('velocity');
       const drag = mix(
         float(IDLE_DRAG_PER_SECOND),
@@ -812,6 +825,23 @@ export class GpuCapeSimulation {
         this.movementBlendUniform,
       ).mul(this.dampingUniform);
       velocity.mulAssign(drag.mul(this.deltaTimeUniform).negate().exp());
+      const maximumPlanarDisplacement = this.deltaTimeUniform
+        .mul(GPU_MAXIMUM_PLANAR_PARTICLE_SPEED);
+      const planarVelocityLength = velocity.x.mul(velocity.x)
+        .add(velocity.z.mul(velocity.z))
+        .sqrt()
+        .toVar('planarVelocityLength');
+      If(planarVelocityLength.greaterThan(maximumPlanarDisplacement), () => {
+        const planarScale = maximumPlanarDisplacement.div(planarVelocityLength);
+        velocity.x.mulAssign(planarScale);
+        velocity.z.mulAssign(planarScale);
+      });
+      const maximumVerticalDisplacement = this.deltaTimeUniform
+        .mul(GPU_MAXIMUM_VERTICAL_PARTICLE_SPEED);
+      velocity.y.assign(velocity.y.clamp(
+        maximumVerticalDisplacement.negate(),
+        maximumVerticalDisplacement,
+      ));
       previous.assign(vec4(currentPosition, 0));
 
       const topologyMetadata = this.topologyBuffer.element(
@@ -847,16 +877,28 @@ export class GpuCapeSimulation {
         .mul(flutterEnvelope);
       const deltaSquared = this.deltaTimeUniform.mul(this.deltaTimeUniform);
       const predicted = currentPosition.add(velocity).toVar('predicted');
-      predicted.subAssign(this.anchorAccelerationDisplacementUniform);
-      predicted.subAssign(this.tangentialDecelerationCorrectionUniform);
-      predicted.y.subAssign(deltaSquared.mul(9.81).mul(this.weightUniform));
+      predicted.addAssign(this.necklineMotionUniform);
+      const relativeToNeckline = currentPosition
+        .sub(this.necklineRotationCenterUniform)
+        .toVar('relativeToNeckline');
+      const rotatedAroundNeckline = vec3(
+        relativeToNeckline.x.mul(this.necklineRotationCosUniform)
+          .add(relativeToNeckline.z.mul(this.necklineRotationSinUniform)),
+        relativeToNeckline.y,
+        relativeToNeckline.z.mul(this.necklineRotationCosUniform)
+          .sub(relativeToNeckline.x.mul(this.necklineRotationSinUniform)),
+      );
+      predicted.addAssign(rotatedAroundNeckline.sub(relativeToNeckline));
+      predicted.y.subAssign(
+        deltaSquared.mul(9.81 * GPU_GRAVITY_COMPENSATION).mul(this.weightUniform),
+      );
       predicted.addAssign(normal.mul(
         pressure.mul(pressure.abs()).mul(0.026).mul(deltaSquared),
       ));
       predicted.addAssign(normal.mul(
         fabricFlutter
           .mul(this.movementBlendUniform)
-          .mul(CAPE_FLUTTER_ACCELERATION)
+          .mul(CAPE_FLUTTER_ACCELERATION * GPU_FLUTTER_COMPENSATION)
           .mul(deltaSquared),
       ));
       predicted.addAssign(
@@ -903,12 +945,38 @@ export class GpuCapeSimulation {
             const correction = delta.mul(
               length.sub(restLength)
                 .div(length)
-                .mul(float(0.96).mul(this.stiffnessUniform).min(0.999)),
+                .mul(float(0.96 * GPU_CONSTRAINT_STIFFNESS_COMPENSATION).mul(this.stiffnessUniform).min(0.999)),
             );
-            first.addAssign(correction.mul(firstWeight.div(totalWeight)));
-            second.subAssign(correction.div(totalWeight));
+            const firstCorrection = correction.mul(firstWeight.div(totalWeight))
+              .toVar('verticalFirstCorrection' + row);
+            const secondCorrection = correction.div(totalWeight)
+              .toVar('verticalSecondCorrection' + row);
+            first.addAssign(firstCorrection);
+            second.subAssign(secondCorrection);
             buffer.element(firstIndex).assign(vec4(first, firstState.w));
             buffer.element(secondIndex).assign(vec4(second, secondState.w));
+            const firstPreviousState = this.previousBuffer.element(firstIndex);
+            const secondPreviousState = this.previousBuffer.element(secondIndex);
+            this.previousBuffer.element(firstIndex).assign(vec4(
+              firstPreviousState.xyz.add(
+                firstCorrection.mul(vec3(
+                  GPU_PLANAR_CONSTRAINT_VELOCITY_NEUTRALIZATION,
+                  GPU_VERTICAL_CONSTRAINT_VELOCITY_NEUTRALIZATION,
+                  GPU_PLANAR_CONSTRAINT_VELOCITY_NEUTRALIZATION,
+                )),
+              ),
+              firstPreviousState.w,
+            ));
+            this.previousBuffer.element(secondIndex).assign(vec4(
+              secondPreviousState.xyz.sub(
+                secondCorrection.mul(vec3(
+                  GPU_PLANAR_CONSTRAINT_VELOCITY_NEUTRALIZATION,
+                  GPU_VERTICAL_CONSTRAINT_VELOCITY_NEUTRALIZATION,
+                  GPU_PLANAR_CONSTRAINT_VELOCITY_NEUTRALIZATION,
+                )),
+              ),
+              secondPreviousState.w,
+            ));
           });
         });
         storageBarrier();
@@ -930,14 +998,43 @@ export class GpuCapeSimulation {
           const secondWeight = select(secondIndex.lessThan(uint(CAPE.columns)), 0, 1);
           const totalWeight = firstWeight.add(secondWeight);
           If(length.greaterThan(0.000_001).and(totalWeight.greaterThan(0)), () => {
-            const stiffness = definition.w.mul(this.stiffnessUniform).min(0.999);
+            const stiffness = definition.w
+              .mul(GPU_CONSTRAINT_STIFFNESS_COMPENSATION)
+              .mul(this.stiffnessUniform)
+              .min(0.999);
             const correction = delta.mul(
               length.sub(definition.z).div(length).mul(stiffness),
             );
-            first.addAssign(correction.mul(firstWeight.div(totalWeight)));
-            second.subAssign(correction.mul(secondWeight.div(totalWeight)));
+            const firstCorrection = correction.mul(firstWeight.div(totalWeight))
+              .toVar('constraintFirstCorrection' + range.offset);
+            const secondCorrection = correction.mul(secondWeight.div(totalWeight))
+              .toVar('constraintSecondCorrection' + range.offset);
+            first.addAssign(firstCorrection);
+            second.subAssign(secondCorrection);
             buffer.element(firstIndex).assign(vec4(first, firstState.w));
             buffer.element(secondIndex).assign(vec4(second, secondState.w));
+            const firstPreviousState = this.previousBuffer.element(firstIndex);
+            const secondPreviousState = this.previousBuffer.element(secondIndex);
+            this.previousBuffer.element(firstIndex).assign(vec4(
+              firstPreviousState.xyz.add(
+                firstCorrection.mul(vec3(
+                  GPU_PLANAR_CONSTRAINT_VELOCITY_NEUTRALIZATION,
+                  GPU_VERTICAL_CONSTRAINT_VELOCITY_NEUTRALIZATION,
+                  GPU_PLANAR_CONSTRAINT_VELOCITY_NEUTRALIZATION,
+                )),
+              ),
+              firstPreviousState.w,
+            ));
+            this.previousBuffer.element(secondIndex).assign(vec4(
+              secondPreviousState.xyz.sub(
+                secondCorrection.mul(vec3(
+                  GPU_PLANAR_CONSTRAINT_VELOCITY_NEUTRALIZATION,
+                  GPU_VERTICAL_CONSTRAINT_VELOCITY_NEUTRALIZATION,
+                  GPU_PLANAR_CONSTRAINT_VELOCITY_NEUTRALIZATION,
+                )),
+              ),
+              secondPreviousState.w,
+            ));
           });
         });
         storageBarrier();
@@ -1344,7 +1441,40 @@ export class GpuCapeSimulation {
                 const normalizedLateral = lateralSquared.div(radiusSquared).clamp(0, 1);
                 const surfaceDepth = axisDepth.w.mul(float(1).sub(normalizedLateral).sqrt());
                 const penetration = surfaceDepth.sub(depth).max(0);
-                position.addAssign(this.backUniform.mul(penetration));
+                const frontDepthRatio = depth.div(axisDepth.w).clamp(-1, 0);
+                const lateralBoundary = startRadius.w.mul(
+                  float(1).sub(frontDepthRatio.mul(frontDepthRatio)).max(0).sqrt(),
+                );
+                const lateralDistance = lateralSquared.sqrt();
+                const previousBodyDelta = previousPosition.sub(closest).toVar('previousBodyDelta');
+                const previousDepth = previousBodyDelta.dot(this.backUniform);
+                const preferredLateral = previousBodyDelta
+                  .sub(this.backUniform.mul(previousDepth))
+                  .toVar('preferredBodyLateral');
+                const preferredLateralDistance = preferredLateral.dot(preferredLateral).sqrt();
+                // Preserve the particle's previous continuous side of the
+                // capsule. The GPU pass owns a stable prior position for every
+                // vertex, so it does not need a topology-forced side.
+                const lateralNormal = vec3(
+                  this.backUniform.z,
+                  0,
+                  this.backUniform.x.negate(),
+                ).toVar('bodyLateralNormal');
+                If(preferredLateralDistance.greaterThan(0.000_001), () => {
+                  lateralNormal.assign(preferredLateral.div(preferredLateralDistance));
+                }).ElseIf(lateralDistance.greaterThan(0.000_001), () => {
+                  lateralNormal.assign(bodyDelta.sub(this.backUniform.mul(depth)).div(lateralDistance));
+                });
+                const lateralProjection = bodyDelta.dot(lateralNormal);
+                const lateralCorrection = lateralBoundary.sub(lateralProjection).max(0);
+                const useFrontSlide = depth.lessThan(0)
+                  .and(depth.greaterThan(axisDepth.w.negate()))
+                  .and(lateralCorrection.greaterThan(0));
+                position.addAssign(select(
+                  useFrontSlide,
+                  lateralNormal.mul(lateralCorrection),
+                  this.backUniform.mul(select(depth.lessThanEqual(axisDepth.w.negate()), 0, penetration)),
+                ));
               });
             },
           );
@@ -2565,6 +2695,7 @@ export class GpuCapeSimulation {
         const first = firstStart.toVar('bodyFaceFirst');
         const second = secondStart.toVar('bodyFaceSecond');
         const third = thirdStart.toVar('bodyFaceThird');
+
         const firstMass = select(firstIndex.lessThan(uint(CAPE.columns)), 0, 1);
         const secondMass = select(secondIndex.lessThan(uint(CAPE.columns)), 0, 1);
         const thirdMass = select(thirdIndex.lessThan(uint(CAPE.columns)), 0, 1);

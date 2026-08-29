@@ -105,6 +105,19 @@ interface CapeDemoDiagnostics {
     readonly maximumEnvironmentFacePenetration: number;
     readonly maximumParticleMotion: number;
     readonly maximumParticleVerticalMotion: number;
+    readonly particleMotion: {
+      readonly particleIndex: number;
+      readonly displacement: readonly [number, number, number];
+      readonly verticalParticleIndex: number;
+      readonly verticalDelta: number;
+      readonly rockContact: {
+        readonly pointCorrection: number;
+        readonly faceCorrection: number;
+        readonly swept: boolean;
+        readonly bodyPointCorrection: number;
+        readonly bodyFaceCorrection: number;
+      };
+    };
     readonly sleeping: boolean;
     readonly minimumSelfSeparation: number;
     readonly maximumUpwardFold: number;
@@ -179,11 +192,23 @@ declare global {
       jump: () => void;
       advance: (options: { duration: number; frameStep?: number }) => Promise<CapeDemoDiagnostics>;
       traceCapeScenario: (options: {
-        scenario: 'raised-drop' | 'forward-start' | 'forward-stop' | 'reverse';
+        scenario:
+          | 'raised-drop'
+          | 'forward-start'
+          | 'forward-stop'
+          | 'reverse'
+          | 'back-and-forth'
+          | 'lightweight-stop';
         frames?: number;
         sampleEvery?: number;
       }) => Promise<{
-        readonly scenario: 'raised-drop' | 'forward-start' | 'forward-stop' | 'reverse';
+        readonly scenario:
+          | 'raised-drop'
+          | 'forward-start'
+          | 'forward-stop'
+          | 'reverse'
+          | 'back-and-forth'
+          | 'lightweight-stop';
         readonly renderer: 'webgpu' | 'webgl';
         readonly physicsStep: number;
         readonly samples: readonly {
@@ -196,6 +221,8 @@ declare global {
           readonly hemDrop: number;
           readonly hemBackOffset: number;
           readonly maximumParticleMotion: number;
+          readonly maximumLowerParticleHeight: number;
+          readonly maximumLowerHorizontalOffset: number;
           readonly centerlineDeviation: number;
           readonly rowTwistRange: number;
         }[];

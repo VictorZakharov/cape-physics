@@ -24,6 +24,7 @@ interface CharacterAnimationRig {
 
 export class CharacterAnimator {
   private walkPhase = 0;
+  private gaitBlend = 0;
   private gaitBob = 0;
   private runningBlend = 0;
   private airborneBlend = 0;
@@ -33,6 +34,7 @@ export class CharacterAnimator {
 
   public reset(): void {
     this.walkPhase = 0;
+    this.gaitBlend = 0;
     this.gaitBob = 0;
     this.runningBlend = 0;
     this.airborneBlend = 0;
@@ -53,7 +55,18 @@ export class CharacterAnimator {
     grounded: boolean,
     verticalVelocity: number,
   ): void {
-    const gait = THREE.MathUtils.smoothstep(planarSpeed, 0.04, PLAYER.walkSpeed * 0.45);
+    const gaitTarget = THREE.MathUtils.smoothstep(planarSpeed, 0.04, PLAYER.walkSpeed * 0.45);
+    // Player velocity can change at an input boundary, but limbs and their cape
+    // colliders cannot teleport to an arbitrary retained walk-cycle phase. Blend
+    // gait amplitude on both start and stop while allowing the phase to keep
+    // advancing during the decay, so cloth receives continuous body motion.
+    this.gaitBlend = damp(
+      this.gaitBlend,
+      gaitTarget,
+      gaitTarget > this.gaitBlend ? 12 : 9,
+      delta,
+    );
+    const gait = this.gaitBlend;
     this.runningBlend = THREE.MathUtils.smoothstep(
       planarSpeed,
       PLAYER.walkSpeed * 1.02,

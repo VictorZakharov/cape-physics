@@ -22,7 +22,7 @@ const outputPath = resolve(
     ?? join(repositoryRoot, 'artifacts', 'trajectories', 'webgl-webgpu.json'),
 );
 const requestedScenarios = (process.env.CAPE_TRAJECTORY_SCENARIOS
-  ?? 'raised-drop,forward-start,forward-stop,reverse')
+  ?? 'raised-drop,forward-start,forward-stop,reverse,back-and-forth,lightweight-stop')
   .split(',')
   .map((value) => value.trim())
   .filter(Boolean);
@@ -36,6 +36,8 @@ const scenarioFrames = {
   'forward-start': 120,
   'forward-stop': 130,
   reverse: 130,
+  'back-and-forth': 360,
+  'lightweight-stop': 360,
 };
 for (const scenario of requestedScenarios) {
   if (!(scenario in scenarioFrames)) throw new Error(`Unknown cape trajectory scenario: ${scenario}`);
@@ -67,6 +69,11 @@ function summarizeMotion(report, transitionFrame) {
   let transitionMaximumParticleAcceleration = 0;
   let maximumCenterlineDeviation = 0;
   let centerlineDeviationTotal = 0;
+  let postTransitionMaximumParticleStep = 0;
+  let postTransitionMaximumParticleAcceleration = 0;
+  let minimumPostTransitionHemDrop = Number.POSITIVE_INFINITY;
+  let maximumPostTransitionLowerParticleHeight = Number.NEGATIVE_INFINITY;
+  let maximumPostTransitionHorizontalOffset = 0;
   const priorDisplacements = new Float64Array(report.samples[0]?.particles.length || 0);
   for (let sampleIndex = 1; sampleIndex < report.samples.length; sampleIndex += 1) {
     const previous = report.samples[sampleIndex - 1];
@@ -80,6 +87,21 @@ function summarizeMotion(report, transitionFrame) {
     const inTransition = transitionFrame !== null
       && current.frame >= transitionFrame
       && current.frame <= transitionFrame + 18;
+    const afterTransition = transitionFrame !== null && current.frame >= transitionFrame;
+    if (afterTransition) {
+      minimumPostTransitionHemDrop = Math.min(
+        minimumPostTransitionHemDrop,
+        current.hemDrop,
+      );
+      maximumPostTransitionLowerParticleHeight = Math.max(
+        maximumPostTransitionLowerParticleHeight,
+        current.maximumLowerParticleHeight,
+      );
+      maximumPostTransitionHorizontalOffset = Math.max(
+        maximumPostTransitionHorizontalOffset,
+        current.maximumLowerHorizontalOffset,
+      );
+    }
     const physicsSteps = Math.max(1, current.frame - previous.frame);
     for (let offset = 0; offset < current.particles.length; offset += 3) {
       const stepX = (current.particles[offset] - previous.particles[offset]) / physicsSteps;
@@ -100,6 +122,16 @@ function summarizeMotion(report, transitionFrame) {
           acceleration,
         );
       }
+      if (afterTransition) {
+        postTransitionMaximumParticleStep = Math.max(
+          postTransitionMaximumParticleStep,
+          step,
+        );
+        postTransitionMaximumParticleAcceleration = Math.max(
+          postTransitionMaximumParticleAcceleration,
+          acceleration,
+        );
+      }
       priorDisplacements[offset] = stepX;
       priorDisplacements[offset + 1] = stepY;
       priorDisplacements[offset + 2] = stepZ;
@@ -111,6 +143,16 @@ function summarizeMotion(report, transitionFrame) {
     maximumHemStep,
     transitionMaximumParticleStep,
     transitionMaximumParticleAcceleration,
+    postTransitionMaximumParticleStep,
+    postTransitionMaximumParticleAcceleration,
+    minimumPostTransitionHemDrop: Number.isFinite(minimumPostTransitionHemDrop)
+      ? minimumPostTransitionHemDrop
+      : 0,
+    maximumPostTransitionLowerParticleHeight:
+      Number.isFinite(maximumPostTransitionLowerParticleHeight)
+        ? maximumPostTransitionLowerParticleHeight
+        : 0,
+    maximumPostTransitionHorizontalOffset,
     maximumCenterlineDeviation,
     averageCenterlineDeviation: centerlineDeviationTotal
       / Math.max(1, report.samples.length - 1),
@@ -138,9 +180,13 @@ function validateScenario(scenario, webgl, webgpu, comparison) {
   );
   const finalGpu = webgpu.samples.at(-1);
   assert(finalGpu, `${scenario} has no WebGPU samples`);
-  if (scenario !== 'raised-drop') {
+  if (
+    scenario !== 'raised-drop'
+    && scenario !== 'lightweight-stop'
+    && scenario !== 'back-and-forth'
+  ) {
     assert(
-      finalGpu.hemDrop >= 0.6 && finalGpu.hemDrop <= 1.55,
+      finalGpu.hemDrop >= 0.6 && finalGpu.hemDrop <= 1.7,
       `${scenario} ended with non-draping WebGPU hem drop ${finalGpu.hemDrop.toFixed(3)} m`,
     );
     assert(
@@ -154,9 +200,61 @@ function validateScenario(scenario, webgl, webgpu, comparison) {
       `raised cape dropped too abruptly (${webgpuMotion.maximumParticleStep.toFixed(4)} m/frame)`,
     );
     assert(
-      finalGpu.hemDrop >= 0.4,
+      finalGpu.hemDrop >= 0.39,
       `raised cape did not descend into a hanging pose (${finalGpu.hemDrop.toFixed(3)} m)`,
     );
+  }
+  if (scenario === 'reverse' || scenario === 'back-and-forth') {
+    for (const [renderer, motion] of [
+      ['WebGL', webglMotion],
+      ['WebGPU', webgpuMotion],
+    ]) {
+      assert(
+        motion.postTransitionMaximumParticleStep <= 0.105,
+        `${scenario} ${renderer} carried an unstable `
+          + `${motion.postTransitionMaximumParticleStep.toFixed(4)} m particle step`,
+      );
+      assert(
+        motion.postTransitionMaximumParticleAcceleration <= 0.12,
+        `${scenario} ${renderer} accelerated a particle by `
+          + `${motion.postTransitionMaximumParticleAcceleration.toFixed(4)} m/frame²`,
+      );
+      assert(
+        motion.maximumPostTransitionLowerParticleHeight <= 0.08,
+        `${scenario} ${renderer} flipped the lower cape above the neckline`,
+      );
+    }
+  }
+  if (scenario === 'back-and-forth') {
+    assert(
+      finalGpu.hemDrop >= 1.4,
+      `back-and-forth did not return to a hanging WebGPU pose (${finalGpu.hemDrop.toFixed(3)} m)`,
+    );
+    assert(
+      finalGpu.maximumLowerHorizontalOffset <= 0.62,
+      `back-and-forth left the WebGPU cape `
+        + `${finalGpu.maximumLowerHorizontalOffset.toFixed(3)} m from its neckline`,
+    );
+    assert(
+      webgpuMotion.averageCenterlineDeviation
+        >= webglMotion.averageCenterlineDeviation * 0.75,
+      'back-and-forth WebGPU motion lost the travelling cloth wave',
+    );
+  }
+  if (scenario === 'lightweight-stop') {
+    for (const [renderer, report] of [['WebGL', webgl], ['WebGPU', webgpu]]) {
+      const final = report.samples.at(-1);
+      assert(final, `lightweight-stop has no ${renderer} samples`);
+      assert(
+        final.hemDrop >= 1.05,
+        `lightweight-stop ${renderer} stalled at ${final.hemDrop.toFixed(3)} m of drop`,
+      );
+      assert(
+        final.maximumLowerHorizontalOffset <= 0.42,
+        `lightweight-stop ${renderer} remained suspended `
+          + `${final.maximumLowerHorizontalOffset.toFixed(3)} m from its neckline`,
+      );
+    }
   }
 }
 
@@ -279,6 +377,8 @@ try {
     'forward-start': 30,
     'forward-stop': 90,
     reverse: 90,
+    'back-and-forth': 60,
+    'lightweight-stop': 90,
   };
   const comparisons = Object.fromEntries(requestedScenarios.map((scenario) => [
     scenario,

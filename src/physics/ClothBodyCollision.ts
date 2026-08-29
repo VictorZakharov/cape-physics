@@ -25,8 +25,11 @@ export class ClothBodyCollision {
   private readonly boundsMinimum = new THREE.Vector3();
   private readonly boundsMaximum = new THREE.Vector3();
   private readonly motion = new THREE.Vector3();
+  private readonly contactNormal = new THREE.Vector3();
+  private readonly previousClosestPoint = new THREE.Vector3();
   private readonly rowMinimumY: Float32Array;
   private readonly rowMaximumY: Float32Array;
+  private readonly correctionUsed: Float32Array;
 
   public constructor(
     private readonly positions: readonly THREE.Vector3[],
@@ -37,15 +40,28 @@ export class ClothBodyCollision {
   ) {
     this.rowMinimumY = new Float32Array(rows);
     this.rowMaximumY = new Float32Array(rows);
+    this.correctionUsed = new Float32Array(inverseMass.length);
   }
 
-  public solve(colliders: readonly CapsuleCollider[], back: THREE.Vector3): void {
+  public beginStep(): void {
+    this.correctionUsed.fill(0);
+  }
+
+  public getCorrectionUsed(index: number): number {
+    return this.correctionUsed[index] ?? 0;
+  }
+
+  public solve(
+    colliders: readonly CapsuleCollider[],
+    back: THREE.Vector3,
+    sideOrigin?: THREE.Vector3,
+  ): void {
     this.updateBounds();
     this.forEachCapsuleSample(colliders, (center, lateralRadius, depthRadius) => {
       const boundsRadius = Math.max(lateralRadius, depthRadius);
       if (!this.intersectsBounds(center, boundsRadius)) return;
       this.forEachTriangle(center.y, boundsRadius, (first, second, third) => {
-        this.solveTriangle(first, second, third, center, lateralRadius, depthRadius, back);
+        this.solveTriangle(first, second, third, center, lateralRadius, depthRadius, back, sideOrigin);
       });
     });
   }
@@ -85,6 +101,7 @@ export class ClothBodyCollision {
     lateralRadius: number,
     depthRadius: number,
     back: THREE.Vector3,
+    sideOrigin?: THREE.Vector3,
   ): void {
     const first = this.positions[firstIndex];
     const second = this.positions[secondIndex];
@@ -95,15 +112,30 @@ export class ClothBodyCollision {
 
     this.triangle.set(first, second, third);
     this.triangle.closestPointToPoint(center, this.closestPoint);
+    if (this.triangle.getBarycoord(this.closestPoint, this.barycentric) === null) return;
+    const previousFirst = this.previous[firstIndex];
+    const previousSecond = this.previous[secondIndex];
+    const previousThird = this.previous[thirdIndex];
+    if (!previousFirst || !previousSecond || !previousThird) return;
+    this.previousClosestPoint.set(0, 0, 0)
+      .addScaledVector(previousFirst, this.barycentric.x)
+      .addScaledVector(previousSecond, this.barycentric.y)
+      .addScaledVector(previousThird, this.barycentric.z);
+    const topologyColumn = firstIndex % this.columns * this.barycentric.x
+      + secondIndex % this.columns * this.barycentric.y
+      + thirdIndex % this.columns * this.barycentric.z;
+    const topologySide = topologyColumn / (this.columns - 1) - 0.5;
     const penetration = this.oneSidedPenetration(
       this.closestPoint,
       center,
       lateralRadius,
       depthRadius,
       back,
+      this.previousClosestPoint,
+      sideOrigin,
+      topologySide,
     );
     if (penetration <= 0) return;
-    if (this.triangle.getBarycoord(this.closestPoint, this.barycentric) === null) return;
 
     const firstWeight = this.inverseMass[firstIndex] ?? 0;
     const secondWeight = this.inverseMass[secondIndex] ?? 0;
@@ -114,9 +146,21 @@ export class ClothBodyCollision {
     if (denominator < 0.000_001) return;
 
     const lambda = penetration / denominator;
-    this.applyCorrection(firstIndex, firstWeight * this.barycentric.x * lambda, back);
-    this.applyCorrection(secondIndex, secondWeight * this.barycentric.y * lambda, back);
-    this.applyCorrection(thirdIndex, thirdWeight * this.barycentric.z * lambda, back);
+    this.applyCorrection(
+      firstIndex,
+      firstWeight * this.barycentric.x * lambda,
+      this.contactNormal,
+    );
+    this.applyCorrection(
+      secondIndex,
+      secondWeight * this.barycentric.y * lambda,
+      this.contactNormal,
+    );
+    this.applyCorrection(
+      thirdIndex,
+      thirdWeight * this.barycentric.z * lambda,
+      this.contactNormal,
+    );
   }
 
   private getTrianglePenetration(
@@ -151,6 +195,9 @@ export class ClothBodyCollision {
     lateralRadius: number,
     depthRadius: number,
     back: THREE.Vector3,
+    preferredPoint?: THREE.Vector3,
+    sideOrigin?: THREE.Vector3,
+    preferredTopologySide = 0,
   ): number {
     this.delta.copy(point).sub(center);
     const depth = this.delta.dot(back);
@@ -158,7 +205,41 @@ export class ClothBodyCollision {
     if (lateralSquared >= lateralRadius * lateralRadius) return 0;
     const normalizedLateralSquared = lateralSquared / (lateralRadius * lateralRadius);
     const surfaceDepth = depthRadius * Math.sqrt(1 - normalizedLateralSquared);
-    return Math.max(0, surfaceDepth - depth);
+    const backCorrection = Math.max(0, surfaceDepth - depth);
+    this.contactNormal.copy(back);
+    if (backCorrection <= 0 || depth >= 0) return backCorrection;
+
+    // Cloth that first meets the front of the body must travel around its
+    // nearest side. Projecting every front contact through the full capsule
+    // depth makes a coarse triangle jump to the cape side in one solve pass.
+    if (depth <= -depthRadius) return 0;
+    const depthRatio = THREE.MathUtils.clamp(depth / depthRadius, -1, 0);
+    const lateralBoundary = lateralRadius
+      * Math.sqrt(Math.max(0, 1 - depthRatio * depthRatio));
+    const preferred = preferredPoint ?? point;
+    const rightX = back.z;
+    const rightZ = -back.x;
+    const spatialSide = sideOrigin
+      ? (preferred.x - sideOrigin.x) * rightX + (preferred.z - sideOrigin.z) * rightZ
+      : 0;
+    const preferredSide = Math.abs(preferredTopologySide) > 0.000_001
+      ? preferredTopologySide
+      : spatialSide;
+    if (Math.abs(preferredSide) > 0.000_001) {
+      const sideSign = Math.sign(preferredSide);
+      this.contactNormal.set(rightX * sideSign, 0, rightZ * sideSign);
+    } else {
+      this.contactNormal.copy(preferred).sub(center);
+      const preferredDepth = this.contactNormal.dot(back);
+      this.contactNormal.addScaledVector(back, -preferredDepth);
+      if (this.contactNormal.lengthSq() > 0.000_001) this.contactNormal.normalize();
+      else if (lateralSquared > 0.000_001) {
+        this.contactNormal.copy(this.delta).addScaledVector(back, -depth).normalize();
+      } else this.contactNormal.set(rightX, 0, rightZ).normalize();
+    }
+    const lateralProjection = this.delta.dot(this.contactNormal);
+    const lateralCorrection = lateralBoundary - lateralProjection;
+    return lateralCorrection > 0 ? lateralCorrection : backCorrection;
   }
 
   private forEachCapsuleSample(
@@ -209,15 +290,16 @@ export class ClothBodyCollision {
     }
   }
 
-  private applyCorrection(index: number, scale: number, back: THREE.Vector3): void {
+  private applyCorrection(index: number, scale: number, normal: THREE.Vector3): void {
     if (scale <= 0) return;
     const position = this.positions[index];
     const previous = this.previous[index];
     if (!position || !previous) return;
-    position.addScaledVector(back, scale);
-    previous.addScaledVector(back, scale);
-    const inwardMotion = this.motion.copy(position).sub(previous).dot(back);
-    if (inwardMotion < 0) previous.addScaledVector(back, inwardMotion);
+    position.addScaledVector(normal, scale);
+    previous.addScaledVector(normal, scale);
+    const inwardMotion = this.motion.copy(position).sub(previous).dot(normal);
+    if (inwardMotion < 0) previous.addScaledVector(normal, inwardMotion);
+    this.correctionUsed[index] = (this.correctionUsed[index] ?? 0) + scale;
   }
 
   private updateBounds(): void {

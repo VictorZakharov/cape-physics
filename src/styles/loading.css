@@ -81,9 +81,12 @@
 }
 
 .loading small {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 4.2rem;
+  align-items: start;
+  column-gap: 12px;
   width: min(240px, 62vw);
+  min-height: 3.5em;
   margin-top: 12px;
   color: rgb(210 231 225 / 38%);
   font-size: 0.5rem;
@@ -92,10 +95,16 @@
   text-transform: uppercase;
 }
 
+.loading small [data-loading-status] {
+  min-width: 0;
+  line-height: 1.4;
+}
+
 .loading small [data-loading-progress] {
-  margin-left: 18px;
   color: rgb(140 219 200 / 62%);
   font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
 }
 
 .is-ready .loading {
