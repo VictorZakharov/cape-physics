@@ -672,23 +672,13 @@ try {
   await capture('character-walking');
   assertCapeWavy(walkMotionState, 'walking');
   await setMovement(0, 0);
-  const postWalkFallResponse = [];
-  for (let sampleIndex = 0; sampleIndex < 9; sampleIndex += 1) {
-    const sample = await advance(0.02, 1 / 120);
-    postWalkFallResponse.push({
-      elapsed: (sampleIndex + 1) * 0.02,
-      playerSpeed: sample.player.speed,
-      hemDrop: sample.cape.hemDrop,
-      hemBackOffset: sample.cape.hemBackOffset,
-    });
-  }
+  await advance(0.18, 1 / 120);
   const afterWalk = await setView(0.18, 0.46, 4.65);
   console.log('Post-walk cape shape:', JSON.stringify({
     centerlineDeviation: afterWalk.cape.capeCenterlineDeviation,
     hemDrop: afterWalk.cape.hemDrop,
     hemBackOffset: afterWalk.cape.hemBackOffset,
     maximumRowCurlRatio: afterWalk.cape.maximumLowerCapeRowCurlRatio,
-    fallResponse: postWalkFallResponse,
   }));
   assert(afterWalk.player.position[2] < beforeWalk.player.position[2] - 4, 'W movement did not traverse the cave');
   assert(afterWalk.player.inWater, 'visual traversal did not stop inside the first puddle');
