@@ -27,6 +27,10 @@ const requestedScenarios = (process.env.CAPE_TRAJECTORY_SCENARIOS
   .map((value) => value.trim())
   .filter(Boolean);
 const enforce = (process.env.CAPE_TRAJECTORY_ENFORCE ?? 'true').trim().toLowerCase() !== 'false';
+const sampleEvery = Number.parseInt(process.env.CAPE_TRAJECTORY_SAMPLE_EVERY ?? '1', 10);
+if (!Number.isInteger(sampleEvery) || sampleEvery < 1 || sampleEvery > 12) {
+  throw new Error('CAPE_TRAJECTORY_SAMPLE_EVERY must be an integer from 1 to 12.');
+}
 const scenarioFrames = {
   'raised-drop': 120,
   'forward-start': 120,
@@ -76,10 +80,11 @@ function summarizeMotion(report, transitionFrame) {
     const inTransition = transitionFrame !== null
       && current.frame >= transitionFrame
       && current.frame <= transitionFrame + 18;
+    const physicsSteps = Math.max(1, current.frame - previous.frame);
     for (let offset = 0; offset < current.particles.length; offset += 3) {
-      const stepX = current.particles[offset] - previous.particles[offset];
-      const stepY = current.particles[offset + 1] - previous.particles[offset + 1];
-      const stepZ = current.particles[offset + 2] - previous.particles[offset + 2];
+      const stepX = (current.particles[offset] - previous.particles[offset]) / physicsSteps;
+      const stepY = (current.particles[offset + 1] - previous.particles[offset + 1]) / physicsSteps;
+      const stepZ = (current.particles[offset + 2] - previous.particles[offset + 2]) / physicsSteps;
       const step = Math.hypot(stepX, stepY, stepZ);
       const acceleration = Math.hypot(
         stepX - priorDisplacements[offset],
@@ -234,7 +239,7 @@ async function captureRenderer(renderer, staticPort) {
         `window.__CAPE_DEMO__.traceCapeScenario(${JSON.stringify({
           scenario,
           frames: scenarioFrames[scenario],
-          sampleEvery: 1,
+          sampleEvery,
         })})`,
       );
     }
@@ -293,6 +298,7 @@ try {
     browser: browserExecutable,
     scenarios: requestedScenarios,
     enforced: enforce,
+    sampleEvery,
     comparisons,
     traces: { webgl, webgpu },
   };
