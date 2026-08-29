@@ -9,10 +9,10 @@
     />
     <meta name="theme-color" content="#05080a" />
     <title>Cape Physics — The Veiled Deep</title>
-    <script type="module" crossorigin src="/cape-physics/pr-preview/pr-17/assets/index-Bd_3upFd.js"></script>
+    <script type="module" crossorigin src="/cape-physics/pr-preview/pr-17/assets/index-BC6i9uqB.js"></script>
     <link rel="modulepreload" crossorigin href="/cape-physics/pr-preview/pr-17/assets/three.core-D3xM8gHG.js">
     <link rel="modulepreload" crossorigin href="/cape-physics/pr-preview/pr-17/assets/caveProfile-B5c2cC3U.js">
-    <link rel="stylesheet" crossorigin href="/cape-physics/pr-preview/pr-17/assets/index-qfETJF29.css">
+    <link rel="stylesheet" crossorigin href="/cape-physics/pr-preview/pr-17/assets/index-Ud-vRGTT.css">
   </head>
   <body>
     <main class="app" data-app>
@@ -31,7 +31,7 @@
         title="Click to copy a 15-second performance report"
         aria-label="Rendering diagnostics. Click to copy the last 15 seconds of performance data."
       >
-        <strong><b data-fps>--</b><i> FPS</i></strong>
+        <strong><b data-fps>--</b><i> FPS AVG</i></strong>
         <span data-fps-caption>DISPLAY FPS / LAST 15S</span>
         <svg
           class="performance-panel__history"
@@ -39,13 +39,17 @@
           viewBox="0 0 154 32"
           preserveAspectRatio="none"
           role="img"
-          aria-label="Main-thread work history"
+          aria-label="Average FPS and one-percent-low history"
         >
           <line x1="0" y1="1" x2="154" y2="1"></line>
           <line x1="0" y1="16" x2="154" y2="16"></line>
-          <path data-fps-history-line d=""></path>
+          <path class="performance-panel__average-line" data-fps-average-line d=""></path>
+          <path class="performance-panel__low-line" data-fps-low-line d=""></path>
         </svg>
-        <small><b data-frame-time>--</b> MS MAIN WORK / <b data-fps-low>--</b> P95</small>
+        <small><b data-fps-average>--</b> AVG / <b data-fps-low>--</b> 1% LOW</small>
+        <small><b data-frame-time>--</b> MS FRAME / <b data-frame-p95>--</b> P95</small>
+        <small><b data-main-work>--</b> MS MAIN / <b data-main-p95>--</b> P95</small>
+        <small><b data-triangles>--</b> TRIANGLES</small>
         <span class="performance-panel__copy" data-performance-copy aria-live="polite">
           CLICK TO COPY 15S REPORT
         </span>
