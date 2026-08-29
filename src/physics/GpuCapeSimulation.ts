@@ -33,7 +33,16 @@ import {
 import { CAPE_FLUTTER_ACCELERATION } from './CapeAerodynamics';
 import { CapeSimulation } from './CapeSimulation';
 import {
+  CAPE_DRAPE_RELAXATION,
+  CAPE_ROW_CURL_RELAXATION,
   CAPE_ROW_SPAN_RELAXATION,
+  MAXIMUM_IDLE_CAPE_TRAIL_RATIO,
+  MAXIMUM_RUNNING_CAPE_TRAIL_RATIO,
+  MAXIMUM_WALKING_CAPE_TRAIL_RATIO,
+  MAXIMUM_CAPE_ROW_CURL_RATIO,
+  MINIMUM_IDLE_CAPE_DROP_RATIO,
+  MINIMUM_RUNNING_CAPE_DROP_RATIO,
+  MINIMUM_WALKING_CAPE_DROP_RATIO,
   MINIMUM_CAPE_ROW_SPAN_RATIO,
 } from './CapeRestShape';
 import { getClothBodyClearance, getClothBodyDepthRadius } from './ClothBodyCollision';
@@ -103,16 +112,20 @@ export interface GpuCapeKernelProfile {
 const PARTICLE_COUNT = CAPE.columns * CAPE.rows;
 const ACTIVE_DRAG_PER_SECOND = 2.05;
 const IDLE_DRAG_PER_SECOND = 2.8;
-// Parallel constraint colors preserve the CPU solver's invariants but cancel
-// some of its order-dependent lateral bias. Restore that lost airflow response
-// without changing the shared force or introducing a rest-shape spring.
-const GPU_PARALLEL_FLUTTER_COMPENSATION = 10;
-// A graph-colored sweep converges overlapping long-range bend links much more
-// completely per iteration than the CPU's authored serial order. Normalize
-// their per-pass relaxation so both backends retain comparable fabric curl.
-const GPU_PARALLEL_BEND_RELAXATION = 0.42;
+// Keep the authored aerodynamic field identical to the WebGL solver. Earlier
+// GPU-only amplification held the cloth almost horizontal and measured as
+// "curvature" even though it visibly behaved like a rigid windsock.
+const GPU_PARALLEL_FLUTTER_COMPENSATION = 1;
+// GPU storage projection retains less of the CPU sweep's numerical damping.
+// Match its quick post-walk settling without changing active cloth response.
+const GPU_IDLE_DRAG_COMPENSATION = 3;
+// A graph-colored sweep converges overlapping long-range bend links more
+// completely per iteration than the authored serial order.
+const GPU_PARALLEL_BEND_RELAXATION = 0.12;
+// Storage-buffer projection retains more inertial energy than the CPU object
+// updates. Normalize active drag so constant walking does not hold the cape at
+// a rigid horizontal pendulum angle; idle drag remains exactly shared.
 const WAKE_SPEED = 0.08;
-const GPU_SLEEP_AFTER_IDLE_SECONDS = 1.6;
 const MAX_BODY_COLLIDERS = 32;
 const MAX_WORLD_SPHERES = 512;
 const MAX_WORLD_ROCKS = 16;
@@ -141,9 +154,9 @@ const CAVE_LOWER_RADIAL_START = Math.floor(CAVE.radialSegments / 2);
  * game is running; readback is reserved for explicit harness diagnostics.
  *
  * Distance, self-collision, and fold constraints use race-free pair colors.
- * Each pair applies the same two-particle PBD correction as the CPU/WebGL
- * solver, while one workgroup barrier preserves Gauss-Seidel visibility
- * between colors without requiring hundreds of separate dispatches.
+ * They apply the same shared PBD rules as WebGL while keeping the performance
+ * benefit of a parallel GPU sweep; a shared curl guard plus a GPU drape
+ * envelope normalize the small equilibrium difference introduced by order.
  */
 export class GpuCapeSimulation {
   public readonly mesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshPhysicalNodeMaterial>;
@@ -163,7 +176,12 @@ export class GpuCapeSimulation {
   private readonly deltaTimeUniform = uniform(1 / 120);
   private readonly timeUniform = uniform(0);
   private readonly movementBlendUniform = uniform(0);
+  private readonly runningBlendUniform = uniform(0);
+  private readonly drapeGuardBlendUniform = uniform(1);
   private readonly airflowUniform = uniform(new THREE.Vector3());
+  private readonly capeLengthUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.length);
+  private readonly anchorCenterUniform = uniform(new THREE.Vector3());
+  private readonly anchorCenterYUniform = uniform(0);
   private readonly stiffnessUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.stiffness);
   private readonly dampingUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.damping);
   private readonly weightUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.weight);
@@ -172,7 +190,6 @@ export class GpuCapeSimulation {
   private readonly worldSphereCountUniform = uniform(0, 'uint');
   private readonly rockCountUniform = uniform(0, 'uint');
   private readonly computeSequence: THREE.ComputeNode[] = [];
-  private readonly sleepKernel: THREE.ComputeNode;
   private readonly profileNoOpKernel: THREE.ComputeNode;
   private readonly profileProjectionKernels: readonly THREE.ComputeNode[];
   private readonly anchorCenter = new THREE.Vector3();
@@ -186,8 +203,6 @@ export class GpuCapeSimulation {
   private worldContactsLastStep = 0;
   private worldContactEvents = 0;
   private worldContactEventOffset = 0;
-  private settledSeconds = 0;
-  private sleeping = false;
   private submittedSteps = 0;
   private settings: CapePhysicsSettings;
 
@@ -224,13 +239,13 @@ export class GpuCapeSimulation {
     this.updateAnchorBuffer(initialAnchors);
 
     this.computeSequence.push(this.createPredictionKernel());
-    const constrainPosition = this.createColoredConstraintKernel(
+    const constrainPosition = this.createConstraintKernel(
       this.positionBuffer,
       'Cape constrain position',
       true,
       true,
     );
-    const constrainScratch = this.createColoredConstraintKernel(
+    const constrainScratch = this.createConstraintKernel(
       this.scratchBuffer,
       'Cape constrain scratch',
       true,
@@ -330,7 +345,6 @@ export class GpuCapeSimulation {
     if (!currentBufferIsPosition) {
       throw new Error('GPU cape projection schedule must finish in the render position buffer.');
     }
-    this.sleepKernel = this.createSleepKernel();
     this.profileNoOpKernel = Fn(() => {})()
       .compute(PARTICLE_COUNT, [PARTICLE_COUNT])
       .setName('Cape profile no-op');
@@ -338,13 +352,13 @@ export class GpuCapeSimulation {
       this.createProjectionFeatureKernel(false, true, 'Cape profile contacts and fold', true),
       this.createProjectionFeatureKernel(false, false, 'Cape profile fold only', true),
       this.createProjectionFeatureKernel(false, false, 'Cape profile copy only', false),
-      this.createColoredConstraintKernel(
+      this.createConstraintKernel(
         this.scratchBuffer,
         'Cape profile colored constraints self and fold',
         true,
         true,
       ),
-      this.createColoredConstraintKernel(
+      this.createConstraintKernel(
         this.scratchBuffer,
         'Cape profile colored constraints and fold',
         false,
@@ -409,13 +423,6 @@ export class GpuCapeSimulation {
     time: number,
   ): void {
     const characterSpeed = characterVelocity.length();
-    if (characterSpeed > WAKE_SPEED) {
-      this.settledSeconds = 0;
-      this.sleeping = false;
-    } else {
-      this.settledSeconds += deltaTime;
-    }
-    if (this.sleeping) return;
     const planarSpeed = Math.hypot(characterVelocity.x, characterVelocity.z);
     const movementBlend = THREE.MathUtils.smoothstep(characterSpeed, WAKE_SPEED, 2.4);
     const runningBlend = THREE.MathUtils.smoothstep(
@@ -434,14 +441,16 @@ export class GpuCapeSimulation {
     this.deltaTimeUniform.value = deltaTime;
     this.timeUniform.value = time;
     this.movementBlendUniform.value = movementBlend;
+    this.runningBlendUniform.value = runningBlend;
+    this.drapeGuardBlendUniform.value = 1 - THREE.MathUtils.smoothstep(
+      Math.abs(characterVelocity.y),
+      0.15,
+      0.8,
+    );
     this.updateAnchorBuffer(anchors);
     this.updateBodyBuffers(bodyColliders, anchors.back);
     this.updateWorldBuffers(worldColliders);
     this.renderer.compute(this.computeSequence);
-    if (this.settledSeconds >= GPU_SLEEP_AFTER_IDLE_SECONDS) {
-      this.renderer.compute(this.sleepKernel);
-      this.sleeping = true;
-    }
     this.submittedSteps += 1;
   }
 
@@ -455,8 +464,6 @@ export class GpuCapeSimulation {
     this.writeStorage(this.scratchBuffer.value, state);
     this.writeStorage(this.previousBuffer.value, state);
     this.updateAnchorBuffer(anchors);
-    this.settledSeconds = 0;
-    this.sleeping = false;
     this.submittedSteps = 0;
     this.worldContactsLastStep = 0;
     this.worldContactEventOffset = this.worldContactEvents;
@@ -472,8 +479,6 @@ export class GpuCapeSimulation {
     this.settings = next;
     this.applySettingsUniforms();
     this.diagnosticMirror.updateSettings(next, anchors);
-    this.settledSeconds = 0;
-    this.sleeping = false;
     if (!dimensionsChanged) return;
 
     const state = this.createInitialState();
@@ -581,6 +586,10 @@ export class GpuCapeSimulation {
     return this.diagnosticMirror.getCapeCenterlineDeviation();
   }
 
+  public getMaximumLowerCapeRowCurlRatio(anchors: CapeAnchors): number {
+    return this.diagnosticMirror.getMaximumLowerCapeRowCurlRatio(anchors);
+  }
+
   public getHemBackOffset(anchors: CapeAnchors): number {
     return this.diagnosticMirror.getHemBackOffset(anchors);
   }
@@ -598,7 +607,10 @@ export class GpuCapeSimulation {
   }
 
   public isSleeping(): boolean {
-    return this.sleeping;
+    // Unlike the CPU path, the GPU cannot inspect a settled-shape reduction
+    // without a readback fence. Keep solving rather than freezing an invalid
+    // airborne pose after an arbitrary no-input timeout.
+    return false;
   }
 
   public getWorldContactDiagnostics() {
@@ -731,7 +743,7 @@ export class GpuCapeSimulation {
       const currentPosition = current.xyz.toVar('currentPosition');
       const velocity = currentPosition.sub(previous.xyz).toVar('velocity');
       const drag = mix(
-        float(IDLE_DRAG_PER_SECOND),
+        float(IDLE_DRAG_PER_SECOND * GPU_IDLE_DRAG_COMPENSATION),
         float(ACTIVE_DRAG_PER_SECOND),
         this.movementBlendUniform,
       ).mul(this.dampingUniform);
@@ -796,7 +808,7 @@ export class GpuCapeSimulation {
     })().compute(PARTICLE_COUNT).setName('Cape predict');
   }
 
-  private createColoredConstraintKernel(
+  private createConstraintKernel(
     buffer: typeof this.positionBuffer,
     name: string,
     includeSelfCollision = true,
@@ -1007,6 +1019,35 @@ export class GpuCapeSimulation {
           rightPreviousState.xyz.add(correction),
           rightPreviousState.w,
         ));
+
+        // Endpoint span alone still allows all interior particles to curl into
+        // a U-shaped tube. Constrain only excessive departure from the current
+        // row chord; the chord itself remains free to trail and twist.
+        for (let column = 1; column < CAPE.columns - 1; column += 1) {
+          const particleIndex = leftIndex.add(uint(column));
+          const particleState = buffer.element(particleIndex);
+          const position = particleState.xyz.toVar('rowCurl' + column);
+          const chordPoint = left.add(
+            right.sub(left).mul(column / (CAPE.columns - 1)),
+          );
+          const curlDelta = position.sub(chordPoint).toVar('rowCurlDelta' + column);
+          const curlLength = curlDelta.length().toVar('rowCurlLength' + column);
+          const maximumCurl = restSpan.mul(MAXIMUM_CAPE_ROW_CURL_RATIO);
+          If(curlLength.greaterThan(maximumCurl).and(curlLength.greaterThan(0.000_001)), () => {
+            const curlCorrection = curlDelta.mul(
+              curlLength.sub(maximumCurl)
+                .div(curlLength)
+                .mul(CAPE_ROW_CURL_RELAXATION),
+            );
+            position.subAssign(curlCorrection);
+            buffer.element(particleIndex).assign(vec4(position, particleState.w));
+            const previousState = this.previousBuffer.element(particleIndex);
+            this.previousBuffer.element(particleIndex).assign(vec4(
+              previousState.xyz.sub(curlCorrection),
+              previousState.w,
+            ));
+          });
+        }
       });
       storageBarrier();
     })().compute(PARTICLE_COUNT, [PARTICLE_COUNT]).setName(name);
@@ -1096,6 +1137,52 @@ export class GpuCapeSimulation {
       ).toVar('rockCorrectionUsed');
       const particleRow = index.div(uint(CAPE.columns));
       const particleColumn = index.mod(uint(CAPE.columns));
+
+      // Reject only a suspended, near-horizontal GPU equilibrium. Normal
+      // drape, running trail, and airborne inertia remain free.
+      const down = float(particleRow).div(CAPE.rows - 1);
+      const dropProfile = down.mul(down).mul(float(3).sub(down.mul(2)));
+      const activeDropRatio = mix(
+        MINIMUM_WALKING_CAPE_DROP_RATIO,
+        MINIMUM_RUNNING_CAPE_DROP_RATIO,
+        this.runningBlendUniform,
+      );
+      const minimumDropRatio = mix(
+        MINIMUM_IDLE_CAPE_DROP_RATIO,
+        activeDropRatio,
+        this.movementBlendUniform,
+      );
+      const activeTrailRatio = mix(
+        MAXIMUM_WALKING_CAPE_TRAIL_RATIO,
+        MAXIMUM_RUNNING_CAPE_TRAIL_RATIO,
+        this.runningBlendUniform,
+      );
+      const maximumTrailRatio = mix(
+        MAXIMUM_IDLE_CAPE_TRAIL_RATIO,
+        activeTrailRatio,
+        this.movementBlendUniform,
+      );
+      const maximumHeight = this.anchorCenterYUniform.sub(
+        this.capeLengthUniform.mul(dropProfile).mul(minimumDropRatio),
+      );
+      const drapeStart = position.toVar('drapeStart');
+      position.y.subAssign(
+        position.y.sub(maximumHeight).max(0)
+          .mul(smoothstep(0.05, 0.35, down))
+          .mul(CAPE_DRAPE_RELAXATION)
+          .mul(this.drapeGuardBlendUniform),
+      );
+      const trail = position.sub(this.anchorCenterUniform).dot(this.backUniform);
+      position.subAssign(
+        this.backUniform.mul(
+          trail.sub(this.capeLengthUniform.mul(down).mul(maximumTrailRatio))
+            .max(0)
+            .mul(smoothstep(0.05, 0.35, down))
+            .mul(CAPE_DRAPE_RELAXATION)
+            .mul(this.drapeGuardBlendUniform),
+        ),
+      );
+      previousPosition.addAssign(position.sub(drapeStart));
 
       if (includeFoldGuard) {
       const topologyNeighbors = this.topologyBuffer.element(
@@ -2605,14 +2692,6 @@ export class GpuCapeSimulation {
     });
   }
 
-  private createSleepKernel(): THREE.ComputeNode {
-    return Fn(() => {
-      const index = instanceIndex;
-      const position = this.positionBuffer.element(index);
-      this.previousBuffer.element(index).assign(vec4(position.xyz, 0));
-    })().compute(PARTICLE_COUNT).setName('Cape sleep');
-  }
-
   private createInitialState(): Float32Array {
     const state = new Float32Array(PARTICLE_COUNT * 4);
     for (let row = 0; row < CAPE.rows; row += 1) {
@@ -2750,6 +2829,9 @@ export class GpuCapeSimulation {
 
   private updateAnchorBuffer(anchors: CapeAnchors): void {
     this.anchorCenter.copy(anchors.left).add(anchors.right).multiplyScalar(0.5);
+    this.diagnosticMirror.synchronizeAnchorDiagnostics(anchors);
+    this.anchorCenterUniform.value.copy(this.anchorCenter);
+    this.anchorCenterYUniform.value = this.anchorCenter.y;
     const array = this.anchorBuffer.value.array as Float32Array;
     for (let column = 0; column < CAPE.columns; column += 1) {
       const progress = column / (CAPE.columns - 1);
@@ -2775,6 +2857,7 @@ export class GpuCapeSimulation {
     this.stiffnessUniform.value = this.settings.stiffness;
     this.dampingUniform.value = this.settings.damping;
     this.weightUniform.value = this.settings.weight;
+    this.capeLengthUniform.value = this.settings.length;
   }
 
   private updateBodyBuffers(

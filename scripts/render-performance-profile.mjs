@@ -161,11 +161,20 @@ try {
         return false;
       }
     });
+    const loadingMarks = performance.getEntriesByName('cape-loading-stage');
     return {
       readyMilliseconds: performance.now(),
       scriptTransferBytes: scripts.reduce((sum, entry) => sum + entry.transferSize, 0),
       scriptDecodedBytes: scripts.reduce((sum, entry) => sum + entry.decodedBodySize, 0),
       scriptResourceMilliseconds: scripts.reduce((sum, entry) => sum + entry.duration, 0),
+      loadingStages: loadingMarks.map((entry, index) => ({
+        atMilliseconds: entry.startTime,
+        stageMilliseconds: index === 0
+          ? entry.startTime
+          : entry.startTime - loadingMarks[index - 1].startTime,
+        progress: entry.detail?.progress ?? null,
+        message: entry.detail?.message ?? '',
+      })),
     };
   })()`);
 

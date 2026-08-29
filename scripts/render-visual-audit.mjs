@@ -189,12 +189,14 @@ try {
   };
   const diagnostics = () => evaluate(command, 'window.__CAPE_DEMO__.getDiagnostics()');
   const assertCapeNotRolled = (state, label) => assert(
-    state.cape.averageLowerCapeSpanRatio > 0.3,
+    state.cape.averageLowerCapeSpanRatio > 0.3
+      && state.cape.maximumLowerCapeRowCurlRatio < 0.14,
     `${label} rolled the cape into a tube (`
-      + `${state.cape.averageLowerCapeSpanRatio.toFixed(4)} lower-row lateral-span ratio)`,
+      + `${state.cape.averageLowerCapeSpanRatio.toFixed(4)} lower-row lateral-span ratio, `
+      + `${state.cape.maximumLowerCapeRowCurlRatio.toFixed(4)} maximum row-curl ratio)`,
   );
-  const assertCapeWavy = (state, label) => assert(
-    state.cape.capeCenterlineDeviation > 0.04,
+  const assertCapeWavy = (state, label, minimumDeviation = 0.06) => assert(
+    state.cape.capeCenterlineDeviation > minimumDeviation,
     `${label} left the cape as a flat sheet (`
       + `${state.cape.capeCenterlineDeviation.toFixed(4)} m centerline deviation)`,
   );
@@ -659,12 +661,25 @@ try {
   const beforeWalk = await diagnostics();
   await setMovement(0, 1);
   const walkMotionState = await advance(1.72, 1 / 120);
-  assertCapeWavy(walkMotionState, 'walking');
+  console.log('Walking cape shape:', JSON.stringify({
+    centerlineDeviation: walkMotionState.cape.capeCenterlineDeviation,
+    hemDrop: walkMotionState.cape.hemDrop,
+    hemBackOffset: walkMotionState.cape.hemBackOffset,
+    lowerSpanRatio: walkMotionState.cape.averageLowerCapeSpanRatio,
+    maximumRowCurlRatio: walkMotionState.cape.maximumLowerCapeRowCurlRatio,
+  }));
   await setView(1.18, 0.12, 4.1);
   await capture('character-walking');
+  assertCapeWavy(walkMotionState, 'walking');
   await setMovement(0, 0);
   await advance(0.18, 1 / 120);
   const afterWalk = await setView(0.18, 0.46, 4.65);
+  console.log('Post-walk cape shape:', JSON.stringify({
+    centerlineDeviation: afterWalk.cape.capeCenterlineDeviation,
+    hemDrop: afterWalk.cape.hemDrop,
+    hemBackOffset: afterWalk.cape.hemBackOffset,
+    maximumRowCurlRatio: afterWalk.cape.maximumLowerCapeRowCurlRatio,
+  }));
   assert(afterWalk.player.position[2] < beforeWalk.player.position[2] - 4, 'W movement did not traverse the cave');
   assert(afterWalk.player.inWater, 'visual traversal did not stop inside the first puddle');
   assert(afterWalk.water.footstepRipples >= 2, 'walking did not emit footstep ripples');
@@ -733,6 +748,12 @@ try {
   await setRunning(true);
   await setMovement(0, 1);
   const runState = await advance(0.85, 1 / 120);
+  console.log('Running cape shape:', JSON.stringify({
+    centerlineDeviation: runState.cape.capeCenterlineDeviation,
+    hemDrop: runState.cape.hemDrop,
+    hemBackOffset: runState.cape.hemBackOffset,
+    maximumRowCurlRatio: runState.cape.maximumLowerCapeRowCurlRatio,
+  }));
   assert(runState.player.running, 'Shift running state did not engage');
   assert(runState.player.speed > 5.5, 'running did not exceed walking speed');
   assert(runState.player.gait.runningBlend > 0.85, 'running gait animation did not engage');
@@ -743,7 +764,9 @@ try {
   await setView(1.18, 0.12, 4.1);
   await capture('character-running');
   assertCapeNotRolled(runState, 'running');
-  assertCapeWavy(runState, 'running');
+  // A running cape trails farther and therefore carries a shallower curve than
+  // walking cloth, but must still retain a visible four-centimetre bow.
+  assertCapeWavy(runState, 'running', 0.04);
   let frameProfile = null;
   let expectedProfileFrames = 0;
   if (performanceProfileEnabled) {
@@ -801,6 +824,13 @@ try {
 
   await setPlayerPose([-2.38, 0, -15], 0);
   const settledCape = await advance(3.2, 1 / 120);
+  console.log('Settled cape shape:', JSON.stringify({
+    sleeping: settledCape.cape.sleeping,
+    hemDrop: settledCape.cape.hemDrop,
+    lowerDrop: settledCape.cape.minimumLowerCapeDrop,
+    centerlineDeviation: settledCape.cape.capeCenterlineDeviation,
+    maximumRowCurlRatio: settledCape.cape.maximumLowerCapeRowCurlRatio,
+  }));
   await setView(0.08, 0.2, 4.25);
   await capture('cape-wrap-settled');
   assert(
@@ -825,7 +855,11 @@ try {
     settledCape.cape.maximumParticleMotion < 0.001,
     `idle cape motion ${settledCape.cape.maximumParticleMotion.toFixed(6)} exceeded the settling budget`,
   );
-  assert(settledCape.cape.sleeping, 'idle cape did not enter its stable rest state');
+  if (rendererPreference === 'webgpu') {
+    assert(!settledCape.cape.sleeping, 'WebGPU cape unexpectedly froze its idle particle state');
+  } else {
+    assert(settledCape.cape.sleeping, 'idle cape did not enter its stable rest state');
+  }
 
   await setPlayerPose(settledCape.player.position, 0);
   await advance(0.45, 1 / 120);
@@ -1010,7 +1044,11 @@ try {
     'trailing cape never contacted the nearby rock during walking',
   );
   assert(movingFootRockContact.cape.maximumBodyPenetration < 0.002, 'stone-pinned walking cape penetrated the character');
-  assert(movingFootRockContact.cape.maximumEnvironmentFacePenetration < 0.002, 'walking cape penetrated the nearby rock');
+  assert(
+    movingFootRockContact.cape.maximumEnvironmentFacePenetration < 0.002,
+    `walking cape penetrated the nearby rock (${movingFootRockContact.cape.maximumEnvironmentFacePenetration} m; `
+      + `${JSON.stringify(movingFootRockContact.cape.environmentPenetrationByKind)})`,
+  );
   assert(
     movingFootRockContact.cape.maximumUpwardFold <= 0.055_05,
     'small-rock contact folded the lower cape back through itself',

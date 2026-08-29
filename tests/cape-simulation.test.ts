@@ -43,6 +43,33 @@ describe('CapeSimulation', () => {
     expect(Number.isFinite(cape.getParticlePosition(6, CAPE.rows - 1).lengthSq())).toBe(true);
   });
 
+  test('opens a tubular row collapse without flattening normal cloth', () => {
+    const cape = new CapeSimulation(anchors);
+    const positionData = new Float32Array(CAPE.columns * CAPE.rows * 4);
+    const previousData = new Float32Array(positionData.length);
+    for (let row = 0; row < CAPE.rows; row += 1) {
+      for (let column = 0; column < CAPE.columns; column += 1) {
+        const index = row * CAPE.columns + column;
+        const position = cape.getParticlePosition(column, row);
+        if (row >= Math.floor(CAPE.rows * 0.58)) {
+          position.addScaledVector(
+            anchors.back,
+            Math.sin(column / (CAPE.columns - 1) * Math.PI) * 0.42,
+          );
+        }
+        position.toArray(positionData, index * 4);
+        position.toArray(previousData, index * 4);
+      }
+    }
+    cape.overwriteStateFromGpu(positionData, previousData);
+    expect(cape.getMaximumLowerCapeRowCurlRatio(anchors)).toBeGreaterThan(0.3);
+
+    cape.step(PHYSICS_STEP, anchors, [], [], new THREE.Vector3(), 0);
+
+    expect(cape.getMaximumLowerCapeRowCurlRatio(anchors)).toBeLessThan(0.14);
+    expect(cape.getAverageLowerCapeSpanRatio(anchors)).toBeGreaterThan(0.8);
+  });
+
   test('wraps behind the body instead of tunneling through during reversal', () => {
     const cape = new CapeSimulation(anchors);
     const velocity = new THREE.Vector3(0, 0, 8);

@@ -81,6 +81,9 @@
 }
 
 .loading small {
+  display: flex;
+  justify-content: space-between;
+  width: min(240px, 62vw);
   margin-top: 12px;
   color: rgb(210 231 225 / 38%);
   font-size: 0.5rem;
@@ -89,13 +92,20 @@
   text-transform: uppercase;
 }
 
+.loading small [data-loading-progress] {
+  margin-left: 18px;
+  color: rgb(140 219 200 / 62%);
+  font-variant-numeric: tabular-nums;
+}
+
 .is-ready .loading {
   visibility: hidden;
   opacity: 0;
   pointer-events: none;
 }
 
-.loading.has-error p {
+.loading.has-error p,
+.loading.has-error small {
   color: #f3b497;
 }
 

@@ -16,9 +16,11 @@ import {
   type CapePerformanceDiagnostics,
 } from './CapePerformanceProfiler';
 import {
+  CAPE_ROW_CURL_RELAXATION,
   CAPE_ROW_SPAN_RELAXATION,
   getCapeRestBackOffset,
   getCapeRestWidth,
+  MAXIMUM_CAPE_ROW_CURL_RATIO,
   MINIMUM_CAPE_ROW_SPAN_RATIO,
 } from './CapeRestShape';
 import {
@@ -74,6 +76,8 @@ export class CapeSimulation {
   private readonly centerlineStart = new THREE.Vector3();
   private readonly centerlineEnd = new THREE.Vector3();
   private readonly centerlinePoint = new THREE.Vector3();
+  private readonly rowChordPoint = new THREE.Vector3();
+  private readonly rowCurl = new THREE.Vector3();
   private readonly stepStart: THREE.Vector3[] = [];
   private opacity = 1;
   private settledSeconds = 0;
@@ -237,6 +241,7 @@ export class CapeSimulation {
       }
       this.foldGuard.solve(this.positions, this.previous, this.inverseMass);
       this.solveRowSpanGuard(anchors);
+      this.solveRowCurlGuard(anchors);
       if (profileActive) {
         const profileNow = performance.now();
         this.profiler.record('foldGuard', profileNow - profilePhaseStart);
@@ -373,6 +378,11 @@ export class CapeSimulation {
         previousData[offset + 2] ?? 0,
       );
     });
+  }
+
+  /** Keeps GPU readback diagnostics relative to the current moving neckline. */
+  public synchronizeAnchorDiagnostics(anchors: CapeAnchors): void {
+    this.anchorCenter.copy(anchors.left).add(anchors.right).multiplyScalar(0.5);
   }
 
   public reset(anchors: CapeAnchors): void {
@@ -566,6 +576,30 @@ export class CapeSimulation {
       this.getRowCenter(row, this.rowCenter);
       this.centerlinePoint.lerpVectors(this.centerlineStart, this.centerlineEnd, down);
       maximum = Math.max(maximum, this.rowCenter.distanceTo(this.centerlinePoint));
+    }
+    return maximum;
+  }
+
+  /** Largest interior departure from a lower row's outer-edge chord. */
+  public getMaximumLowerCapeRowCurlRatio(anchors: CapeAnchors): number {
+    const anchorWidth = anchors.right.distanceTo(anchors.left);
+    const firstLowerRow = Math.floor(CAPE.rows * 0.58);
+    let maximum = 0;
+    for (let row = firstLowerRow; row < CAPE.rows; row += 1) {
+      const left = this.positions[this.index(0, row)];
+      const right = this.positions[this.index(CAPE.columns - 1, row)];
+      if (!left || !right) continue;
+      const down = row / (CAPE.rows - 1);
+      const restWidth = getCapeRestWidth(anchorWidth, down, this.settings.width);
+      for (let column = 1; column < CAPE.columns - 1; column += 1) {
+        const position = this.positions[this.index(column, row)];
+        if (!position) continue;
+        this.rowChordPoint.lerpVectors(left, right, column / (CAPE.columns - 1));
+        maximum = Math.max(
+          maximum,
+          position.distanceTo(this.rowChordPoint) / Math.max(0.000_001, restWidth),
+        );
+      }
     }
     return maximum;
   }
@@ -779,6 +813,33 @@ export class CapeSimulation {
       right.add(this.correction);
       leftPrevious.sub(this.correction);
       rightPrevious.add(this.correction);
+    }
+  }
+
+  private solveRowCurlGuard(anchors: CapeAnchors): void {
+    const anchorWidth = anchors.right.distanceTo(anchors.left);
+    for (let row = 1; row < CAPE.rows; row += 1) {
+      const left = this.positions[this.index(0, row)];
+      const right = this.positions[this.index(CAPE.columns - 1, row)];
+      if (!left || !right) continue;
+      const down = row / (CAPE.rows - 1);
+      const maximumCurl = getCapeRestWidth(anchorWidth, down, this.settings.width)
+        * MAXIMUM_CAPE_ROW_CURL_RATIO;
+      for (let column = 1; column < CAPE.columns - 1; column += 1) {
+        const index = this.index(column, row);
+        const position = this.positions[index];
+        const previous = this.previous[index];
+        if (!position || !previous) continue;
+        this.rowChordPoint.lerpVectors(left, right, column / (CAPE.columns - 1));
+        this.rowCurl.copy(position).sub(this.rowChordPoint);
+        const curl = this.rowCurl.length();
+        if (curl <= maximumCurl || curl < 0.000_001) continue;
+        this.rowCurl.multiplyScalar(
+          ((curl - maximumCurl) / curl) * CAPE_ROW_CURL_RELAXATION,
+        );
+        position.sub(this.rowCurl);
+        previous.sub(this.rowCurl);
+      }
     }
   }
 

@@ -239,19 +239,28 @@ export class CapeDemo {
     this.scene.add(this.character.root);
     const gpuRenderer = this.pipeline.getWebGpuRenderer();
     if (gpuRenderer) {
+      await this.loading.update(0.59, 'Loading the WebGPU cloth solver');
       const { GpuCapeSimulation } = await import('./physics/GpuCapeSimulation');
+      await this.loading.beginLongStage(
+        0.64,
+        0.72,
+        'Building the WebGPU cloth compute graph',
+        2_500,
+      );
       this.cape = new GpuCapeSimulation(
         gpuRenderer,
         this.character.getCapeAnchors(),
         this.customizationSettings,
       );
     } else {
+      await this.loading.update(0.64, 'Weaving the cloth simulation');
       this.cape = new CapeSimulation(
         this.character.getCapeAnchors(),
         this.customizationSettings,
       );
     }
     this.scene.add(this.cape.mesh);
+    await this.loading.update(0.73, 'Rigging movement and camera');
     this.character.root.traverse((object) => {
       object.layers.set(CHARACTER_RENDER_LAYER);
       if (object instanceof THREE.Mesh && object.castShadow) {
@@ -272,6 +281,7 @@ export class CapeDemo {
     this.characterController = new CharacterController(this.character, this.input, this.worldCollision);
     this.thirdPersonCamera = new ThirdPersonCamera(this.camera, this.input);
     this.thirdPersonCamera.snapTo(this.character.root.position);
+    await this.loading.update(0.78, 'Placing traveller lights');
     if (usesNodeRenderer) {
       const { WebGpuCinematicLighting } = await import('./lighting/WebGpuCinematicLighting');
       const nodeRenderer = invariant(
@@ -291,14 +301,23 @@ export class CapeDemo {
     this.lighting.update(this.character.root.position, 0);
     this.torches.update(0, this.character.root.position);
     this.veins.update(0, this.character.root.position);
+    await this.loading.update(0.84, 'Settling the first cloth frame');
     this.stabilizeCape();
     this.cape.syncGeometry();
     this.applySceneCustomization(this.customizationSettings);
 
-    await this.loading.update(0.76, 'Compiling cloth and water shaders');
+    await this.loading.beginLongStage(
+      0.88,
+      0.95,
+      usesNodeRenderer
+        ? 'Compiling WebGPU cloth, water, and post-processing shaders'
+        : 'Compiling cloth, water, and post-processing shaders',
+      usesNodeRenderer ? 22_000 : 4_000,
+    );
     await this.pipeline.compile(this.scene, this.camera);
+    await this.loading.update(0.96, 'Submitting the first rendered frame');
     this.pipeline.renderManual(0);
-    await this.loading.update(0.94, 'Warming the torchlight');
+    await this.loading.update(0.98, 'Validating torchlight and reflections');
     this.pipeline.renderManual(0);
 
     window.addEventListener('resize', this.handleResize);
@@ -829,6 +848,7 @@ export class CapeDemo {
         averageLowerCapeSpanRatio: this.cape.getAverageLowerCapeSpanRatio(capeAnchors),
         capeRowTwistRange: this.cape.getCapeRowTwistRange(capeAnchors),
         capeCenterlineDeviation: this.cape.getCapeCenterlineDeviation(),
+        maximumLowerCapeRowCurlRatio: this.cape.getMaximumLowerCapeRowCurlRatio(capeAnchors),
         hemBackOffset: this.cape.getHemBackOffset(capeAnchors),
         minimumHemGroundClearance: this.cape.getMinimumHemGroundClearance(),
         minimumActiveRockSurfaceDistance: closestRockSurfaceContact?.distance ?? null,
