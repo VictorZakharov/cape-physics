@@ -110,13 +110,12 @@ const IDLE_DRAG_PER_SECOND = 2.8;
 // links so both solvers retain the same authored flex; structural constraints,
 // collision projection, and the user stiffness multiplier remain unchanged.
 const GPU_LENGTHWISE_BEND_RELAXATION = 0.12;
-// The moving-frame path otherwise retains only one previous player step while
-// WebGL's world-space cloth carries its forward momentum through braking. Apply
-// the measured anchor deceleration as a short inertial response; this is zero
-// during steady locomotion and does not select a cape pose. Low-pass the
-// response so stopping cannot collapse the entire release into one frame.
-const GPU_BRAKING_INERTIA_TRANSFER = 20;
-const GPU_BRAKING_RESPONSE_PER_SECOND = 30;
+// Graph-colored projection dissipates more of the neckline's braking inertia
+// than WebGL's ordered sweep. Filter only the controller's measured planar
+// deceleration into the normal Verlet prediction; no cape position or target
+// pose is selected at the walking/idle boundary.
+const GPU_BRAKING_VELOCITY_TRANSFER = 18.5;
+const GPU_BRAKING_VELOCITY_RESPONSE_PER_SECOND = 40;
 const WAKE_SPEED = 0.08;
 const MAX_BODY_COLLIDERS = 32;
 const MAX_WORLD_SPHERES = 512;
@@ -171,7 +170,7 @@ export class GpuCapeSimulation {
   private readonly airflowUniform = uniform(new THREE.Vector3());
   private readonly anchorDisplacementUniform = uniform(new THREE.Vector3());
   private readonly anchorAccelerationDisplacementUniform = uniform(new THREE.Vector3());
-  private readonly brakingCorrectionUniform = uniform(new THREE.Vector3());
+  private readonly brakingVelocityCorrectionUniform = uniform(new THREE.Vector3());
   private readonly stiffnessUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.stiffness);
   private readonly dampingUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.damping);
   private readonly weightUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.weight);
@@ -186,8 +185,11 @@ export class GpuCapeSimulation {
   private readonly anchorDisplacement = new THREE.Vector3();
   private readonly previousAnchorDisplacement = new THREE.Vector3();
   private readonly anchorAccelerationDisplacement = new THREE.Vector3();
-  private readonly brakingCorrection = new THREE.Vector3();
-  private readonly brakingCorrectionTarget = new THREE.Vector3();
+  private readonly characterDisplacement = new THREE.Vector3();
+  private readonly previousCharacterDisplacement = new THREE.Vector3();
+  private readonly characterAccelerationDisplacement = new THREE.Vector3();
+  private readonly brakingVelocityCorrection = new THREE.Vector3();
+  private readonly brakingVelocityCorrectionTarget = new THREE.Vector3();
   private readonly anchorTarget = new THREE.Vector3();
   private readonly worldCandidateCenter = new THREE.Vector3(
     Number.POSITIVE_INFINITY,
@@ -441,36 +443,37 @@ export class GpuCapeSimulation {
       .sub(this.anchorCenter);
     this.anchorAccelerationDisplacement.copy(this.anchorDisplacement)
       .sub(this.previousAnchorDisplacement);
-    this.brakingCorrectionTarget.set(0, 0, 0);
-    const planarAccelerationDotDisplacement = this.anchorAccelerationDisplacement.x
-      * this.anchorDisplacement.x
-      + this.anchorAccelerationDisplacement.z * this.anchorDisplacement.z;
-    if (
-      planarSpeed < PLAYER.walkSpeed * 0.92
-      && planarAccelerationDotDisplacement < 0
-    ) {
-      this.brakingCorrectionTarget.set(
-        this.anchorAccelerationDisplacement.x * (GPU_BRAKING_INERTIA_TRANSFER - 1),
+    this.characterDisplacement.copy(characterVelocity);
+    this.characterDisplacement.y = 0;
+    this.characterDisplacement.multiplyScalar(deltaTime);
+    this.characterAccelerationDisplacement.copy(this.characterDisplacement)
+      .sub(this.previousCharacterDisplacement);
+    this.brakingVelocityCorrectionTarget.set(0, 0, 0);
+    const planarAccelerationDotDisplacement = this.characterAccelerationDisplacement.x
+      * this.characterDisplacement.x
+      + this.characterAccelerationDisplacement.z * this.characterDisplacement.z;
+    if (planarAccelerationDotDisplacement < 0) {
+      this.brakingVelocityCorrectionTarget.set(
+        this.characterAccelerationDisplacement.x * (GPU_BRAKING_VELOCITY_TRANSFER - 1),
         0,
-        this.anchorAccelerationDisplacement.z * (GPU_BRAKING_INERTIA_TRANSFER - 1),
+        this.characterAccelerationDisplacement.z * (GPU_BRAKING_VELOCITY_TRANSFER - 1),
       );
     }
-    this.brakingCorrection.lerp(
-      this.brakingCorrectionTarget,
-      1 - Math.exp(-GPU_BRAKING_RESPONSE_PER_SECOND * deltaTime),
+    this.brakingVelocityCorrection.lerp(
+      this.brakingVelocityCorrectionTarget,
+      1 - Math.exp(-GPU_BRAKING_VELOCITY_RESPONSE_PER_SECOND * deltaTime),
     );
-    this.anchorAccelerationDisplacement.x += this.brakingCorrection.x;
-    this.anchorAccelerationDisplacement.z += this.brakingCorrection.z;
     this.anchorDisplacementUniform.value.copy(this.anchorDisplacement);
     this.anchorAccelerationDisplacementUniform.value.copy(
       this.anchorAccelerationDisplacement,
     );
-    this.brakingCorrectionUniform.value.copy(this.brakingCorrection);
+    this.brakingVelocityCorrectionUniform.value.copy(this.brakingVelocityCorrection);
     this.updateAnchorBuffer(anchors);
     this.updateBodyBuffers(bodyColliders, anchors.back);
     this.updateWorldBuffers(worldColliders);
     this.renderer.compute(this.computeSequence);
     this.previousAnchorDisplacement.copy(this.anchorDisplacement);
+    this.previousCharacterDisplacement.copy(this.characterDisplacement);
     this.submittedSteps += 1;
   }
 
@@ -485,8 +488,9 @@ export class GpuCapeSimulation {
     this.writeStorage(this.previousBuffer.value, state);
     this.updateAnchorBuffer(anchors);
     this.previousAnchorDisplacement.set(0, 0, 0);
-    this.brakingCorrection.set(0, 0, 0);
-    this.brakingCorrectionTarget.set(0, 0, 0);
+    this.previousCharacterDisplacement.set(0, 0, 0);
+    this.brakingVelocityCorrection.set(0, 0, 0);
+    this.brakingVelocityCorrectionTarget.set(0, 0, 0);
     this.submittedSteps = 0;
     this.worldContactsLastStep = 0;
     this.worldContactEventOffset = this.worldContactEvents;
@@ -513,8 +517,9 @@ export class GpuCapeSimulation {
     this.writeStorage(this.constraintBuffer.value, topology.coloredConstraints);
     this.updateAnchorBuffer(anchors);
     this.previousAnchorDisplacement.set(0, 0, 0);
-    this.brakingCorrection.set(0, 0, 0);
-    this.brakingCorrectionTarget.set(0, 0, 0);
+    this.previousCharacterDisplacement.set(0, 0, 0);
+    this.brakingVelocityCorrection.set(0, 0, 0);
+    this.brakingVelocityCorrectionTarget.set(0, 0, 0);
     this.submittedSteps = 0;
     this.worldContactsLastStep = 0;
     this.worldContactEventOffset = this.worldContactEvents;
@@ -776,7 +781,7 @@ export class GpuCapeSimulation {
         this.movementBlendUniform,
       ).mul(this.dampingUniform);
       velocity.mulAssign(drag.mul(this.deltaTimeUniform).negate().exp());
-      previous.assign(vec4(currentPosition.sub(this.brakingCorrectionUniform), 0));
+      previous.assign(vec4(currentPosition, 0));
 
       const topologyMetadata = this.topologyBuffer.element(
         index.mul(uint(TOPOLOGY_METADATA_STRIDE)),
@@ -812,6 +817,7 @@ export class GpuCapeSimulation {
       const deltaSquared = this.deltaTimeUniform.mul(this.deltaTimeUniform);
       const predicted = currentPosition.add(velocity).toVar('predicted');
       predicted.subAssign(this.anchorAccelerationDisplacementUniform);
+      predicted.subAssign(this.brakingVelocityCorrectionUniform);
       predicted.y.subAssign(deltaSquared.mul(9.81).mul(this.weightUniform));
       predicted.addAssign(normal.mul(
         pressure.mul(pressure.abs()).mul(0.026).mul(deltaSquared),

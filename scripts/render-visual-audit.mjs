@@ -719,9 +719,14 @@ try {
     afterWalk.cape.hemDrop > 0.9,
     `walking failed to preserve a gravity-driven drape (${afterWalk.cape.hemDrop} m)`,
   );
+  const postWalkFallDistance = afterWalk.cape.hemDrop - walkMotionState.cape.hemDrop;
   assert(
-    afterWalk.cape.hemDrop - walkMotionState.cape.hemDrop > 0.14,
-    `cape descended too slowly after walking (${(afterWalk.cape.hemDrop - walkMotionState.cape.hemDrop).toFixed(4)} m in 0.18 s)`,
+    postWalkFallDistance > 0.2,
+    `cape descended too slowly after walking (${postWalkFallDistance.toFixed(4)} m in 0.18 s)`,
+  );
+  assert(
+    postWalkFallDistance < 0.27,
+    `cape descended too far after walking (${postWalkFallDistance.toFixed(4)} m in 0.18 s)`,
   );
   if (sampleFallResponse) {
     const fallIntervals = postWalkFallResponse.map((sample, index) => (
@@ -732,6 +737,12 @@ try {
     assert(
       Math.max(...fallIntervals) < 0.045,
       `cape snapped downward after walking (${Math.max(...fallIntervals).toFixed(4)} m maximum 0.02 s drop)`,
+    );
+    const earlyFallDistance = postWalkFallResponse[2].hemDrop
+      - walkMotionState.cape.hemDrop;
+    assert(
+      earlyFallDistance > 0.06,
+      `cape delayed its descent after walking (${earlyFallDistance.toFixed(4)} m in the first 0.06 s)`,
     );
   }
   assert(
