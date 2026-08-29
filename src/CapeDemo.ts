@@ -89,6 +89,7 @@ interface CapeTrajectorySample {
   readonly hemDrop: number;
   readonly hemBackOffset: number;
   readonly maximumParticleMotion: number;
+  readonly particleMotion: ReturnType<CapeSimulation['getMaximumParticleMotionDiagnostics']>;
   readonly maximumLowerParticleHeight: number;
   readonly maximumLowerHorizontalOffset: number;
   readonly centerlineDeviation: number;
@@ -700,6 +701,7 @@ export class CapeDemo {
       hemDrop: this.cape.getHemDrop(),
       hemBackOffset: this.cape.getHemBackOffset(anchors),
       maximumParticleMotion: this.cape.getMaximumParticleMotion(),
+      particleMotion: this.cape.getMaximumParticleMotionDiagnostics(),
       maximumLowerParticleHeight,
       maximumLowerHorizontalOffset: this.cape.getMaximumLowerCapeHorizontalOffset(),
       centerlineDeviation: this.cape.getCapeCenterlineDeviation(),

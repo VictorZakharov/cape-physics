@@ -30,7 +30,11 @@ import {
   type CapsuleCollider,
   type WorldCollider,
 } from './colliders';
-import { CAPE_FLUTTER_ACCELERATION } from './CapeAerodynamics';
+import {
+  CAPE_BASE_DRAG_PER_SECOND,
+  CAPE_FLUTTER_ACCELERATION,
+  getCapeDragPerSecond,
+} from './CapeAerodynamics';
 import { CapeSimulation } from './CapeSimulation';
 import {
   CAPE_ROW_CURL_RELAXATION,
@@ -38,7 +42,10 @@ import {
   MAXIMUM_CAPE_ROW_CURL_RATIO,
   MINIMUM_CAPE_ROW_SPAN_RATIO,
 } from './CapeRestShape';
-import { getClothBodyClearance, getClothBodyDepthRadius } from './ClothBodyCollision';
+import {
+  getClothBodyClearance,
+  getClothBodyDepthRadius,
+} from './ClothBodyCollision';
 import { FOLD_RELAXATION, MAXIMUM_LOCAL_UPWARD_FOLD } from './ClothFoldGuard';
 import { CLOTH_THICKNESS } from './ClothSelfCollision';
 import {
@@ -103,25 +110,23 @@ export interface GpuCapeKernelProfile {
 }
 
 const PARTICLE_COUNT = CAPE.columns * CAPE.rows;
-const ACTIVE_DRAG_PER_SECOND = 2.05;
-const IDLE_DRAG_PER_SECOND = 2.8;
+
 // A graph-colored sweep resolves overlapping lengthwise bend links much more
 // completely than the serial WebGL sweep. Relax only those non-structural
 // links so both solvers retain the same authored flex; structural constraints,
 // collision projection, and the user stiffness multiplier remain unchanged.
 const GPU_LENGTHWISE_BEND_RELAXATION = 0.12;
-// The ordered CPU sweep transfers neckline motion through partially updated
-// rows during each iteration. The parallel sweep lacks part of that implicit
-// impulse, so transfer half of the current neckline rigid transform into the
-// prediction. Translation remains partially inertial while yaw follows the full rigid transform;
-// neither path contains a locomotion-state or braking branch.
-const GPU_NECKLINE_TRANSLATION_TRANSFER = 0.5;
-const GPU_NECKLINE_ROTATION_TRANSFER = 0.9;
+// The vertical row wavefront already transmits the pinned neckline transform
+// through the free cloth. A second rigid transform in prediction duplicates
+// that impulse and launches the cape during reversals, so free particles keep
+// their inertia exactly like the ordered CPU/WebGL solver.
+const GPU_NECKLINE_TRANSLATION_TRANSFER = 0;
+const GPU_NECKLINE_ROTATION_TRANSFER = 0;
 const GPU_MAXIMUM_NECKLINE_ROTATION_PER_STEP = 0.025;
-// Parallel graph projection dissipates deterministic normal excitation more
-// strongly than the ordered CPU sweep. Compensate the numerical loss without
-// adding a locomotion pose or changing the authored frequency and phase.
-const GPU_FLUTTER_COMPENSATION = 5;
+// The graph-colored sweep dissipates a little more horizontal symmetry
+// breaking than the ordered solver. Restore that measured loss without
+// applying any vertical lift or locomotion-specific pose.
+const GPU_FLUTTER_COMPENSATION = 2;
 // Jacobi-style graph colors converge slightly less per authored pass than the
 // ordered CPU sweep. This factor matches structural extension without adding
 // another compute pass or changing the public stiffness scale.
@@ -139,7 +144,13 @@ const GPU_GRAVITY_COMPENSATION = 1.05;
 // body and carry travelling waves like the ordered solver.
 const GPU_PLANAR_CONSTRAINT_VELOCITY_NEUTRALIZATION = 0.9;
 const GPU_VERTICAL_CONSTRAINT_VELOCITY_NEUTRALIZATION = 0.95;
-
+// Match the ordered solver's velocity-neutral idle row recovery. It supplies
+// the missing tangential settling component after projection has dissipated a
+// lightweight cape's pendulum motion.
+const IDLE_DRAPE_RECOVERY_PER_STEP = 0.016;
+const IDLE_DRAPE_RECOVERY_TARGET = 0.12;
+const IDLE_DRAPE_RECOVERY_DELAY_SECONDS = 0.12;
+const IDLE_DRAPE_RECOVERY_RAMP_SECONDS = 0.35;
 
 const WAKE_SPEED = 0.08;
 const MAX_BODY_COLLIDERS = 32;
@@ -192,6 +203,8 @@ export class GpuCapeSimulation {
   private readonly deltaTimeUniform = uniform(1 / 120);
   private readonly timeUniform = uniform(0);
   private readonly movementBlendUniform = uniform(0);
+  private readonly idleDrapeRecoveryUniform = uniform(0);
+  private readonly dragPerSecondUniform = uniform(CAPE_BASE_DRAG_PER_SECOND);
   private readonly airflowUniform = uniform(new THREE.Vector3());
   private readonly necklineMotionUniform = uniform(new THREE.Vector3());
   private readonly necklineRotationCenterUniform = uniform(new THREE.Vector3());
@@ -224,6 +237,7 @@ export class GpuCapeSimulation {
   private worldContactEvents = 0;
   private worldContactEventOffset = 0;
   private submittedSteps = 0;
+  private idleDrapeRecoverySeconds = 0;
   private settings: CapePhysicsSettings;
 
   public constructor(
@@ -258,7 +272,10 @@ export class GpuCapeSimulation {
     this.rockBuffer = instancedArray(MAX_WORLD_ROCKS * ROCK_BUFFER_STRIDE, 'vec4');
     this.updateAnchorBuffer(initialAnchors);
 
-    this.computeSequence.push(this.createPredictionKernel());
+    this.computeSequence.push(
+      this.createPredictionKernel(),
+      this.createIdleDrapeRecoveryKernel(),
+    );
     const constrainPosition = this.createConstraintKernel(
       this.positionBuffer,
       'Cape constrain position',
@@ -470,6 +487,14 @@ export class GpuCapeSimulation {
     this.deltaTimeUniform.value = deltaTime;
     this.timeUniform.value = time;
     this.movementBlendUniform.value = movementBlend;
+    if (characterSpeed > WAKE_SPEED) this.idleDrapeRecoverySeconds = 0;
+    else this.idleDrapeRecoverySeconds += deltaTime;
+    this.idleDrapeRecoveryUniform.value = THREE.MathUtils.smoothstep(
+      this.idleDrapeRecoverySeconds,
+      IDLE_DRAPE_RECOVERY_DELAY_SECONDS,
+      IDLE_DRAPE_RECOVERY_DELAY_SECONDS + IDLE_DRAPE_RECOVERY_RAMP_SECONDS,
+    );
+    this.dragPerSecondUniform.value = getCapeDragPerSecond(planarSpeed);
     this.nextAnchorCenter.copy(anchors.left).add(anchors.right).multiplyScalar(0.5);
     this.anchorDisplacement.copy(this.nextAnchorCenter).sub(this.anchorCenter);
     this.necklineMotion.copy(this.anchorDisplacement)
@@ -514,6 +539,8 @@ export class GpuCapeSimulation {
     this.previousBack.copy(anchors.back);
     this.pendingNecklineYaw = 0;
     this.submittedSteps = 0;
+    this.idleDrapeRecoverySeconds = 0;
+    this.idleDrapeRecoveryUniform.value = 0;
     this.worldContactsLastStep = 0;
     this.worldContactEventOffset = this.worldContactEvents;
   }
@@ -541,6 +568,8 @@ export class GpuCapeSimulation {
     this.previousBack.copy(anchors.back);
     this.pendingNecklineYaw = 0;
     this.submittedSteps = 0;
+    this.idleDrapeRecoverySeconds = 0;
+    this.idleDrapeRecoveryUniform.value = 0;
     this.worldContactsLastStep = 0;
     this.worldContactEventOffset = this.worldContactEvents;
   }
@@ -584,6 +613,8 @@ export class GpuCapeSimulation {
     this.writeStorage(this.previousBuffer.value, previousData);
     this.diagnosticMirror.overwriteStateForHarness(positionData, previousData);
     this.submittedSteps = 0;
+    this.idleDrapeRecoverySeconds = 0;
+    this.idleDrapeRecoveryUniform.value = 0;
     this.worldContactsLastStep = 0;
     this.worldContactEventOffset = this.worldContactEvents;
   }
@@ -803,6 +834,55 @@ export class GpuCapeSimulation {
     );
   }
 
+  private createIdleDrapeRecoveryKernel(): THREE.ComputeNode {
+    return Fn(() => {
+      const row = instanceIndex;
+      If(
+        this.idleDrapeRecoveryUniform.greaterThan(0)
+          .and(row.greaterThan(uint(0)))
+          .and(row.lessThan(uint(CAPE.rows))),
+        () => {
+          const rowCenter = vec3(0).toVar('idleDrapeRowCenter');
+          for (let column = 0; column < CAPE.columns; column += 1) {
+            rowCenter.addAssign(this.scratchBuffer.element(
+              row.mul(uint(CAPE.columns)).add(uint(column)),
+            ).xyz);
+          }
+          rowCenter.divAssign(CAPE.columns);
+          const horizontalOffset = rowCenter
+            .sub(this.necklineRotationCenterUniform)
+            .mul(vec3(1, 0, 1))
+            .toVar('idleDrapeHorizontalOffset');
+          If(
+            rowCenter.y.lessThan(this.necklineRotationCenterUniform.y)
+              .and(horizontalOffset.length().greaterThan(IDLE_DRAPE_RECOVERY_TARGET)),
+            () => {
+              const down = float(row).div(CAPE.rows - 1);
+              const correction = horizontalOffset.mul(
+                float(-IDLE_DRAPE_RECOVERY_PER_STEP)
+                  .mul(this.idleDrapeRecoveryUniform)
+                  .mul(smoothstep(0.05, 1, down)),
+              );
+              for (let column = 0; column < CAPE.columns; column += 1) {
+                const particleIndex = row.mul(uint(CAPE.columns)).add(uint(column));
+                const predicted = this.scratchBuffer.element(particleIndex);
+                this.scratchBuffer.element(particleIndex).assign(vec4(
+                  predicted.xyz.add(correction),
+                  predicted.w,
+                ));
+                const previous = this.previousBuffer.element(particleIndex);
+                this.previousBuffer.element(particleIndex).assign(vec4(
+                  previous.xyz.add(correction),
+                  previous.w,
+                ));
+              }
+            },
+          );
+        },
+      );
+    })().compute(CAPE.rows, [CAPE.rows]).setName('Cape idle drape recovery');
+  }
+
   private createPredictionKernel(): THREE.ComputeNode {
     return Fn(() => {
       const index = instanceIndex;
@@ -819,11 +899,7 @@ export class GpuCapeSimulation {
       const currentPosition = current.xyz.toVar('currentPosition');
       const previousPosition = previous.xyz;
       const velocity = currentPosition.sub(previousPosition).toVar('velocity');
-      const drag = mix(
-        float(IDLE_DRAG_PER_SECOND),
-        float(ACTIVE_DRAG_PER_SECOND),
-        this.movementBlendUniform,
-      ).mul(this.dampingUniform);
+      const drag = this.dragPerSecondUniform.mul(this.dampingUniform);
       velocity.mulAssign(drag.mul(this.deltaTimeUniform).negate().exp());
       const maximumPlanarDisplacement = this.deltaTimeUniform
         .mul(GPU_MAXIMUM_PLANAR_PARTICLE_SPEED);
@@ -870,6 +946,7 @@ export class GpuCapeSimulation {
         .sin()
         .pow(2);
       const flutterProfile = float(0.3).add(across.mul(0.4));
+      const flutterDirection = vec3(normal.x, 0, normal.z);
       const fabricFlutter = this.timeUniform.mul(3.4)
         .add(float(row).mul(0.28))
         .sin()
@@ -895,7 +972,9 @@ export class GpuCapeSimulation {
       predicted.addAssign(normal.mul(
         pressure.mul(pressure.abs()).mul(0.026).mul(deltaSquared),
       ));
-      predicted.addAssign(normal.mul(
+      // Match WebGL's symmetry breaker without letting a horizontal cape's
+      // vertical normal turn deterministic flutter into sustained lift.
+      predicted.addAssign(flutterDirection.mul(
         fabricFlutter
           .mul(this.movementBlendUniform)
           .mul(CAPE_FLUTTER_ACCELERATION * GPU_FLUTTER_COMPENSATION)
@@ -957,7 +1036,7 @@ export class GpuCapeSimulation {
             buffer.element(secondIndex).assign(vec4(second, secondState.w));
             const firstPreviousState = this.previousBuffer.element(firstIndex);
             const secondPreviousState = this.previousBuffer.element(secondIndex);
-            this.previousBuffer.element(firstIndex).assign(vec4(
+              this.previousBuffer.element(firstIndex).assign(vec4(
               firstPreviousState.xyz.add(
                 firstCorrection.mul(vec3(
                   GPU_PLANAR_CONSTRAINT_VELOCITY_NEUTRALIZATION,
@@ -967,7 +1046,7 @@ export class GpuCapeSimulation {
               ),
               firstPreviousState.w,
             ));
-            this.previousBuffer.element(secondIndex).assign(vec4(
+              this.previousBuffer.element(secondIndex).assign(vec4(
               secondPreviousState.xyz.sub(
                 secondCorrection.mul(vec3(
                   GPU_PLANAR_CONSTRAINT_VELOCITY_NEUTRALIZATION,
@@ -1015,7 +1094,7 @@ export class GpuCapeSimulation {
             buffer.element(secondIndex).assign(vec4(second, secondState.w));
             const firstPreviousState = this.previousBuffer.element(firstIndex);
             const secondPreviousState = this.previousBuffer.element(secondIndex);
-            this.previousBuffer.element(firstIndex).assign(vec4(
+              this.previousBuffer.element(firstIndex).assign(vec4(
               firstPreviousState.xyz.add(
                 firstCorrection.mul(vec3(
                   GPU_PLANAR_CONSTRAINT_VELOCITY_NEUTRALIZATION,
@@ -1025,7 +1104,7 @@ export class GpuCapeSimulation {
               ),
               firstPreviousState.w,
             ));
-            this.previousBuffer.element(secondIndex).assign(vec4(
+              this.previousBuffer.element(secondIndex).assign(vec4(
               secondPreviousState.xyz.sub(
                 secondCorrection.mul(vec3(
                   GPU_PLANAR_CONSTRAINT_VELOCITY_NEUTRALIZATION,
@@ -1120,11 +1199,11 @@ export class GpuCapeSimulation {
                     buffer.element(secondIndex).assign(vec4(second, secondState.w));
                     const firstPreviousState = this.previousBuffer.element(firstIndex);
                     const secondPreviousState = this.previousBuffer.element(secondIndex);
-                    this.previousBuffer.element(firstIndex).assign(vec4(
+                      this.previousBuffer.element(firstIndex).assign(vec4(
                       firstPreviousState.xyz.add(firstCorrection),
                       firstPreviousState.w,
                     ));
-                    this.previousBuffer.element(secondIndex).assign(vec4(
+                      this.previousBuffer.element(secondIndex).assign(vec4(
                       secondPreviousState.xyz.sub(secondCorrection),
                       secondPreviousState.w,
                     ));
@@ -1164,11 +1243,11 @@ export class GpuCapeSimulation {
             buffer.element(lowerIndex).assign(vec4(lower, lowerState.w));
             const upperPreviousState = this.previousBuffer.element(upperIndex);
             const lowerPreviousState = this.previousBuffer.element(lowerIndex);
-            this.previousBuffer.element(upperIndex).assign(vec4(
+              this.previousBuffer.element(upperIndex).assign(vec4(
               upperPreviousState.xyz.add(vec3(0, upperCorrection, 0)),
               upperPreviousState.w,
             ));
-            this.previousBuffer.element(lowerIndex).assign(vec4(
+              this.previousBuffer.element(lowerIndex).assign(vec4(
               lowerPreviousState.xyz.sub(vec3(0, lowerCorrection, 0)),
               lowerPreviousState.w,
             ));
@@ -1236,7 +1315,7 @@ export class GpuCapeSimulation {
             position.subAssign(curlCorrection);
             buffer.element(particleIndex).assign(vec4(position, particleState.w));
             const previousState = this.previousBuffer.element(particleIndex);
-            this.previousBuffer.element(particleIndex).assign(vec4(
+              this.previousBuffer.element(particleIndex).assign(vec4(
               previousState.xyz.sub(curlCorrection),
               previousState.w,
             ));
@@ -2632,7 +2711,7 @@ export class GpuCapeSimulation {
                 .dot(faceNormal)
                 .min(0);
               correctedPrevious.addAssign(faceNormal.mul(inwardMotion));
-              this.previousBuffer.element(particleIndex).assign(vec4(
+                this.previousBuffer.element(particleIndex).assign(vec4(
                 correctedPrevious,
                 previousState.w,
               ));

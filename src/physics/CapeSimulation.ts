@@ -4,6 +4,7 @@ import { createCapeFabricTextures } from '../graphics/proceduralTextures';
 import type { CapeAnchors } from '../player/Character';
 import {
   CAPE_FLUTTER_ACCELERATION,
+  getCapeDragPerSecond,
   MAXIMUM_CAPE_PARTICLE_SPEED,
 } from './CapeAerodynamics';
 import { caveGroundHeightAt } from '../world/caveProfile';
@@ -42,8 +43,6 @@ interface DistanceConstraint {
   readonly structural: boolean;
 }
 
-const ACTIVE_DRAG_PER_SECOND = 2.05;
-const IDLE_DRAG_PER_SECOND = 2.8;
 const MAXIMUM_PLANAR_CAPE_PARTICLE_SPEED = 9.6;
 const SLEEP_AFTER_SETTLED_SECONDS = 0.55;
 const SETTLED_MOTION_THRESHOLD = 0.0025;
@@ -55,6 +54,9 @@ const IDLE_DRAPE_RECOVERY_HEM_DROP = 1.2;
 const IDLE_DRAPE_RECOVERY_DELAY_SECONDS = 0.12;
 const IDLE_DRAPE_RECOVERY_RAMP_SECONDS = 0.35;
 const MAXIMUM_SLEEP_BODY_PENETRATION = 0.001;
+const BODY_CONTACT_RECONCILIATION_START = 0.025;
+const BODY_CONTACT_RECONCILIATION_FULL = 0.18;
+const BODY_CONTACT_RECONCILIATION_STRENGTH = 0.86;
 const WAKE_SPEED = 0.08;
 
 export class CapeSimulation {
@@ -71,6 +73,7 @@ export class CapeSimulation {
   private readonly velocity = new THREE.Vector3();
   private readonly airflow = new THREE.Vector3();
   private readonly normal = new THREE.Vector3();
+  private readonly flutterDirection = new THREE.Vector3();
   private readonly tangentAcross = new THREE.Vector3();
   private readonly tangentDown = new THREE.Vector3();
   private readonly correction = new THREE.Vector3();
@@ -206,16 +209,12 @@ export class CapeSimulation {
         const previous = this.previous[index];
         if (!position || !previous) continue;
 
-        const drag = THREE.MathUtils.lerp(
-          IDLE_DRAG_PER_SECOND,
-          ACTIVE_DRAG_PER_SECOND,
-          movementBlend,
-        ) * this.settings.damping;
+        const drag = getCapeDragPerSecond(planarSpeed) * this.settings.damping;
         this.velocity.copy(position).sub(previous).multiplyScalar(Math.exp(-drag * deltaTime));
-        const planarSpeed = Math.hypot(this.velocity.x, this.velocity.z);
+        const particlePlanarSpeed = Math.hypot(this.velocity.x, this.velocity.z);
         const maximumPlanarDisplacement = MAXIMUM_PLANAR_CAPE_PARTICLE_SPEED * deltaTime;
-        if (planarSpeed > maximumPlanarDisplacement) {
-          const planarScale = maximumPlanarDisplacement / planarSpeed;
+        if (particlePlanarSpeed > maximumPlanarDisplacement) {
+          const planarScale = maximumPlanarDisplacement / particlePlanarSpeed;
           this.velocity.x *= planarScale;
           this.velocity.z *= planarScale;
         }
@@ -240,8 +239,11 @@ export class CapeSimulation {
           this.normal,
           pressure * Math.abs(pressure) * 0.026 * deltaSquared,
         );
+        // Synthetic flutter only breaks perfect grid symmetry; it must not
+        // become an artificial lift force when contact turns the cape flat.
+        this.flutterDirection.copy(this.normal).setY(0);
         position.addScaledVector(
-          this.normal,
+          this.flutterDirection,
           fabricFlutter * movementBlend * CAPE_FLUTTER_ACCELERATION * deltaSquared,
         );
         position.addScaledVector(
@@ -347,6 +349,7 @@ export class CapeSimulation {
       }
     }
 
+    this.reconcileBodyContactVelocity();
     this.measureStepMotion();
     const horizontallySettled = this.getMaximumLowerCapeHorizontalOffset()
       < MAXIMUM_SETTLED_HORIZONTAL_OFFSET;
@@ -844,6 +847,28 @@ export class CapeSimulation {
     target.lerpVectors(anchors.left, anchors.right, progress);
     target.y += neckline * CAPE.attachment.necklineRise;
     target.addScaledVector(anchors.back, neckline * CAPE.attachment.necklineDepth);
+  }
+
+  /**
+   * Body projection is positional and intentionally resolves penetration in
+   * full. Repeated constraint/contact passes can nevertheless encode that
+   * projection as Verlet velocity. Treat sustained body contact as inelastic
+   * so a boot can push cloth aside without catapulting it on the next step.
+   */
+  private reconcileBodyContactVelocity(): void {
+    for (let index = CAPE.columns; index < this.positions.length; index += 1) {
+      const correction = this.contactSolver.getBodyCorrectionUsed(index);
+      if (correction <= BODY_CONTACT_RECONCILIATION_START) continue;
+      const position = this.positions[index];
+      const previous = this.previous[index];
+      if (!position || !previous) continue;
+      const strength = THREE.MathUtils.smoothstep(
+        correction,
+        BODY_CONTACT_RECONCILIATION_START,
+        BODY_CONTACT_RECONCILIATION_FULL,
+      ) * BODY_CONTACT_RECONCILIATION_STRENGTH;
+      previous.lerp(position, strength);
+    }
   }
 
   private dampResidualMotion(strength: number): void {

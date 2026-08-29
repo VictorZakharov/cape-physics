@@ -221,6 +221,19 @@ declare global {
           readonly hemDrop: number;
           readonly hemBackOffset: number;
           readonly maximumParticleMotion: number;
+          readonly particleMotion: {
+            readonly particleIndex: number;
+            readonly displacement: readonly [number, number, number];
+            readonly verticalParticleIndex: number;
+            readonly verticalDelta: number;
+            readonly rockContact: {
+              readonly pointCorrection: number;
+              readonly faceCorrection: number;
+              readonly swept: boolean;
+              readonly bodyPointCorrection: number;
+              readonly bodyFaceCorrection: number;
+            };
+          };
           readonly maximumLowerParticleHeight: number;
           readonly maximumLowerHorizontalOffset: number;
           readonly centerlineDeviation: number;

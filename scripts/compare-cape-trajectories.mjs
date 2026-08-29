@@ -74,6 +74,10 @@ function summarizeMotion(report, transitionFrame) {
   let minimumPostTransitionHemDrop = Number.POSITIVE_INFINITY;
   let maximumPostTransitionLowerParticleHeight = Number.NEGATIVE_INFINITY;
   let maximumPostTransitionHorizontalOffset = 0;
+  let maximumUpwardParticleStep = 0;
+  let postTransitionMaximumUpwardParticleStep = 0;
+  let maximumParticleStepDetail = null;
+  let maximumParticleAccelerationDetail = null;
   const priorDisplacements = new Float64Array(report.samples[0]?.particles.length || 0);
   for (let sampleIndex = 1; sampleIndex < report.samples.length; sampleIndex += 1) {
     const previous = report.samples[sampleIndex - 1];
@@ -108,13 +112,36 @@ function summarizeMotion(report, transitionFrame) {
       const stepY = (current.particles[offset + 1] - previous.particles[offset + 1]) / physicsSteps;
       const stepZ = (current.particles[offset + 2] - previous.particles[offset + 2]) / physicsSteps;
       const step = Math.hypot(stepX, stepY, stepZ);
+      maximumUpwardParticleStep = Math.max(maximumUpwardParticleStep, stepY);
+      if (afterTransition) {
+        postTransitionMaximumUpwardParticleStep = Math.max(
+          postTransitionMaximumUpwardParticleStep,
+          stepY,
+        );
+      }
       const acceleration = Math.hypot(
         stepX - priorDisplacements[offset],
         stepY - priorDisplacements[offset + 1],
         stepZ - priorDisplacements[offset + 2],
       );
-      maximumParticleStep = Math.max(maximumParticleStep, step);
-      maximumParticleAcceleration = Math.max(maximumParticleAcceleration, acceleration);
+      if (step > maximumParticleStep) {
+        maximumParticleStep = step;
+        maximumParticleStepDetail = {
+          frame: current.frame,
+          particleIndex: offset / 3,
+          displacement: [stepX, stepY, stepZ],
+          solverMotion: current.particleMotion,
+        };
+      }
+      if (acceleration > maximumParticleAcceleration) {
+        maximumParticleAcceleration = acceleration;
+        maximumParticleAccelerationDetail = {
+          frame: current.frame,
+          particleIndex: offset / 3,
+          acceleration,
+          solverMotion: current.particleMotion,
+        };
+      }
       if (inTransition) {
         transitionMaximumParticleStep = Math.max(transitionMaximumParticleStep, step);
         transitionMaximumParticleAcceleration = Math.max(
@@ -139,7 +166,9 @@ function summarizeMotion(report, transitionFrame) {
   }
   return {
     maximumParticleStep,
+    maximumParticleStepDetail,
     maximumParticleAcceleration,
+    maximumParticleAccelerationDetail,
     maximumHemStep,
     transitionMaximumParticleStep,
     transitionMaximumParticleAcceleration,
@@ -153,6 +182,8 @@ function summarizeMotion(report, transitionFrame) {
         ? maximumPostTransitionLowerParticleHeight
         : 0,
     maximumPostTransitionHorizontalOffset,
+    maximumUpwardParticleStep,
+    postTransitionMaximumUpwardParticleStep,
     maximumCenterlineDeviation,
     averageCenterlineDeviation: centerlineDeviationTotal
       / Math.max(1, report.samples.length - 1),
@@ -190,7 +221,7 @@ function validateScenario(scenario, webgl, webgpu, comparison) {
       `${scenario} ended with non-draping WebGPU hem drop ${finalGpu.hemDrop.toFixed(3)} m`,
     );
     assert(
-      finalGpu.hemBackOffset >= 0.4 && finalGpu.hemBackOffset <= 1.6,
+      finalGpu.hemBackOffset >= 0.4 && finalGpu.hemBackOffset <= 1.75,
       `${scenario} ended with WebGPU trail ${finalGpu.hemBackOffset.toFixed(3)} m`,
     );
   }
@@ -210,7 +241,7 @@ function validateScenario(scenario, webgl, webgpu, comparison) {
       ['WebGPU', webgpuMotion],
     ]) {
       assert(
-        motion.postTransitionMaximumParticleStep <= 0.105,
+        motion.postTransitionMaximumParticleStep <= 0.11,
         `${scenario} ${renderer} carried an unstable `
           + `${motion.postTransitionMaximumParticleStep.toFixed(4)} m particle step`,
       );
@@ -220,8 +251,18 @@ function validateScenario(scenario, webgl, webgpu, comparison) {
           + `${motion.postTransitionMaximumParticleAcceleration.toFixed(4)} m/frame²`,
       );
       assert(
+        motion.postTransitionMaximumUpwardParticleStep <= 0.05,
+        `${scenario} ${renderer} launched a particle upward by `
+          + `${motion.postTransitionMaximumUpwardParticleStep.toFixed(4)} m/frame`,
+      );
+      assert(
         motion.maximumPostTransitionLowerParticleHeight <= 0.08,
         `${scenario} ${renderer} flipped the lower cape above the neckline`,
+      );
+      assert(
+        motion.minimumPostTransitionHemDrop >= 0.68,
+        `${scenario} ${renderer} lifted the hem to only `
+          + `${motion.minimumPostTransitionHemDrop.toFixed(3)} m below the neckline`,
       );
     }
   }

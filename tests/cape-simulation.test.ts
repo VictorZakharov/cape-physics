@@ -354,7 +354,9 @@ describe('CapeSimulation', () => {
     const cave = new CaveWorld(createRockTextures(16));
     const character = new Character();
     const collision = new WorldCollisionResolver(cave.worldColliders);
-    character.root.position.set(1.68, 0, -31.6);
+    // Start just beyond the deterministic lower formation so the walking
+    // trail must brush it even with speed-proportional cloth drag.
+    character.root.position.set(1.68, 0, -31.4);
     collision.resolvePlayer(character.root.position);
     character.root.updateMatrixWorld(true);
     let characterAnchors = character.getCapeAnchors();

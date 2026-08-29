@@ -493,6 +493,11 @@ export class CapeContactSolver {
     return { lastStep: this.worldContactsLastStep, total: this.worldContactEvents };
   }
 
+  public getBodyCorrectionUsed(index: number): number {
+    return (this.bodyCorrectionUsed[index] ?? 0)
+      + this.bodyFaceCollision.getCorrectionUsed(index);
+  }
+
   public getParticleRockCorrectionDiagnostics(index: number) {
     return {
       pointCorrection: this.rockCorrectionUsed[index] ?? 0,
