@@ -105,6 +105,16 @@ export interface GpuCapeKernelProfile {
 const PARTICLE_COUNT = CAPE.columns * CAPE.rows;
 const ACTIVE_DRAG_PER_SECOND = 2.05;
 const IDLE_DRAG_PER_SECOND = 2.8;
+// A graph-colored sweep resolves overlapping lengthwise bend links much more
+// completely than the serial WebGL sweep. Relax only those non-structural
+// links so both solvers retain the same authored flex; structural constraints,
+// collision projection, and the user stiffness multiplier remain unchanged.
+const GPU_LENGTHWISE_BEND_RELAXATION = 0.12;
+// The moving-frame path otherwise retains only one previous player step while
+// WebGL's world-space cloth carries its forward momentum through braking. Apply
+// the measured anchor deceleration as an inertial impulse; this is zero during
+// steady locomotion and does not select a cape pose.
+const GPU_BRAKING_INERTIA_TRANSFER = 20;
 const WAKE_SPEED = 0.08;
 const MAX_BODY_COLLIDERS = 32;
 const MAX_WORLD_SPHERES = 512;
@@ -159,6 +169,7 @@ export class GpuCapeSimulation {
   private readonly airflowUniform = uniform(new THREE.Vector3());
   private readonly anchorDisplacementUniform = uniform(new THREE.Vector3());
   private readonly anchorAccelerationDisplacementUniform = uniform(new THREE.Vector3());
+  private readonly brakingCorrectionUniform = uniform(new THREE.Vector3());
   private readonly stiffnessUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.stiffness);
   private readonly dampingUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.damping);
   private readonly weightUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.weight);
@@ -173,6 +184,7 @@ export class GpuCapeSimulation {
   private readonly anchorDisplacement = new THREE.Vector3();
   private readonly previousAnchorDisplacement = new THREE.Vector3();
   private readonly anchorAccelerationDisplacement = new THREE.Vector3();
+  private readonly brakingCorrection = new THREE.Vector3();
   private readonly anchorTarget = new THREE.Vector3();
   private readonly worldCandidateCenter = new THREE.Vector3(
     Number.POSITIVE_INFINITY,
@@ -426,10 +438,27 @@ export class GpuCapeSimulation {
       .sub(this.anchorCenter);
     this.anchorAccelerationDisplacement.copy(this.anchorDisplacement)
       .sub(this.previousAnchorDisplacement);
+    this.brakingCorrection.set(0, 0, 0);
+    const planarAccelerationDotDisplacement = this.anchorAccelerationDisplacement.x
+      * this.anchorDisplacement.x
+      + this.anchorAccelerationDisplacement.z * this.anchorDisplacement.z;
+    if (
+      planarSpeed < PLAYER.walkSpeed * 0.92
+      && planarAccelerationDotDisplacement < 0
+    ) {
+      this.brakingCorrection.set(
+        this.anchorAccelerationDisplacement.x * (GPU_BRAKING_INERTIA_TRANSFER - 1),
+        0,
+        this.anchorAccelerationDisplacement.z * (GPU_BRAKING_INERTIA_TRANSFER - 1),
+      );
+      this.anchorAccelerationDisplacement.x *= GPU_BRAKING_INERTIA_TRANSFER;
+      this.anchorAccelerationDisplacement.z *= GPU_BRAKING_INERTIA_TRANSFER;
+    }
     this.anchorDisplacementUniform.value.copy(this.anchorDisplacement);
     this.anchorAccelerationDisplacementUniform.value.copy(
       this.anchorAccelerationDisplacement,
     );
+    this.brakingCorrectionUniform.value.copy(this.brakingCorrection);
     this.updateAnchorBuffer(anchors);
     this.updateBodyBuffers(bodyColliders, anchors.back);
     this.updateWorldBuffers(worldColliders);
@@ -736,7 +765,7 @@ export class GpuCapeSimulation {
         this.movementBlendUniform,
       ).mul(this.dampingUniform);
       velocity.mulAssign(drag.mul(this.deltaTimeUniform).negate().exp());
-      previous.assign(vec4(currentPosition, 0));
+      previous.assign(vec4(currentPosition.sub(this.brakingCorrectionUniform), 0));
 
       const topologyMetadata = this.topologyBuffer.element(
         index.mul(uint(TOPOLOGY_METADATA_STRIDE)),
@@ -2685,11 +2714,23 @@ export class GpuCapeSimulation {
         }
         if (column + 2 < CAPE.columns) addConstraint(column, row, column + 2, row, 0.58);
         if (row + 2 < CAPE.rows) {
-          addConstraint(column, row, column, row + 2, 0.82);
+          addConstraint(
+            column,
+            row,
+            column,
+            row + 2,
+            0.82 * GPU_LENGTHWISE_BEND_RELAXATION,
+          );
         }
         if (column + 3 < CAPE.columns) addConstraint(column, row, column + 3, row, 0.16);
         if (row + 3 < CAPE.rows) {
-          addConstraint(column, row, column, row + 3, 0.38);
+          addConstraint(
+            column,
+            row,
+            column,
+            row + 3,
+            0.38 * GPU_LENGTHWISE_BEND_RELAXATION,
+          );
         }
       }
     }
