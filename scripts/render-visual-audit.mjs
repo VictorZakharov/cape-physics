@@ -672,13 +672,27 @@ try {
   await capture('character-walking');
   assertCapeWavy(walkMotionState, 'walking');
   await setMovement(0, 0);
-  await advance(0.18, 1 / 120);
+  const sampleFallResponse = process.env.CAPE_AUDIT_SAMPLE_FALL_RESPONSE === 'true';
+  const postWalkFallResponse = [];
+  if (sampleFallResponse) {
+    for (let sampleIndex = 0; sampleIndex < 9; sampleIndex += 1) {
+      const sample = await advance(0.02, 1 / 120);
+      postWalkFallResponse.push({
+        elapsed: (sampleIndex + 1) * 0.02,
+        hemDrop: sample.cape.hemDrop,
+        hemBackOffset: sample.cape.hemBackOffset,
+      });
+    }
+  } else {
+    await advance(0.18, 1 / 120);
+  }
   const afterWalk = await setView(0.18, 0.46, 4.65);
   console.log('Post-walk cape shape:', JSON.stringify({
     centerlineDeviation: afterWalk.cape.capeCenterlineDeviation,
     hemDrop: afterWalk.cape.hemDrop,
     hemBackOffset: afterWalk.cape.hemBackOffset,
     maximumRowCurlRatio: afterWalk.cape.maximumLowerCapeRowCurlRatio,
+    ...(sampleFallResponse ? { fallResponse: postWalkFallResponse } : {}),
   }));
   assert(afterWalk.player.position[2] < beforeWalk.player.position[2] - 4, 'W movement did not traverse the cave');
   assert(afterWalk.player.inWater, 'visual traversal did not stop inside the first puddle');
@@ -709,6 +723,17 @@ try {
     afterWalk.cape.hemDrop - walkMotionState.cape.hemDrop > 0.14,
     `cape descended too slowly after walking (${(afterWalk.cape.hemDrop - walkMotionState.cape.hemDrop).toFixed(4)} m in 0.18 s)`,
   );
+  if (sampleFallResponse) {
+    const fallIntervals = postWalkFallResponse.map((sample, index) => (
+      sample.hemDrop - (index === 0
+        ? walkMotionState.cape.hemDrop
+        : postWalkFallResponse[index - 1].hemDrop)
+    ));
+    assert(
+      Math.max(...fallIntervals) < 0.045,
+      `cape snapped downward after walking (${Math.max(...fallIntervals).toFixed(4)} m maximum 0.02 s drop)`,
+    );
+  }
   assert(
     Math.abs(afterWalk.cape.hemCenter[2] - beforeWalk.cape.hemCenter[2]) > 1,
     'cape hem did not respond dynamically to traversal',

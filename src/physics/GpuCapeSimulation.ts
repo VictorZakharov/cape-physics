@@ -112,9 +112,11 @@ const IDLE_DRAG_PER_SECOND = 2.8;
 const GPU_LENGTHWISE_BEND_RELAXATION = 0.12;
 // The moving-frame path otherwise retains only one previous player step while
 // WebGL's world-space cloth carries its forward momentum through braking. Apply
-// the measured anchor deceleration as an inertial impulse; this is zero during
-// steady locomotion and does not select a cape pose.
+// the measured anchor deceleration as a short inertial response; this is zero
+// during steady locomotion and does not select a cape pose. Low-pass the
+// response so stopping cannot collapse the entire release into one frame.
 const GPU_BRAKING_INERTIA_TRANSFER = 20;
+const GPU_BRAKING_RESPONSE_PER_SECOND = 30;
 const WAKE_SPEED = 0.08;
 const MAX_BODY_COLLIDERS = 32;
 const MAX_WORLD_SPHERES = 512;
@@ -185,6 +187,7 @@ export class GpuCapeSimulation {
   private readonly previousAnchorDisplacement = new THREE.Vector3();
   private readonly anchorAccelerationDisplacement = new THREE.Vector3();
   private readonly brakingCorrection = new THREE.Vector3();
+  private readonly brakingCorrectionTarget = new THREE.Vector3();
   private readonly anchorTarget = new THREE.Vector3();
   private readonly worldCandidateCenter = new THREE.Vector3(
     Number.POSITIVE_INFINITY,
@@ -438,7 +441,7 @@ export class GpuCapeSimulation {
       .sub(this.anchorCenter);
     this.anchorAccelerationDisplacement.copy(this.anchorDisplacement)
       .sub(this.previousAnchorDisplacement);
-    this.brakingCorrection.set(0, 0, 0);
+    this.brakingCorrectionTarget.set(0, 0, 0);
     const planarAccelerationDotDisplacement = this.anchorAccelerationDisplacement.x
       * this.anchorDisplacement.x
       + this.anchorAccelerationDisplacement.z * this.anchorDisplacement.z;
@@ -446,14 +449,18 @@ export class GpuCapeSimulation {
       planarSpeed < PLAYER.walkSpeed * 0.92
       && planarAccelerationDotDisplacement < 0
     ) {
-      this.brakingCorrection.set(
+      this.brakingCorrectionTarget.set(
         this.anchorAccelerationDisplacement.x * (GPU_BRAKING_INERTIA_TRANSFER - 1),
         0,
         this.anchorAccelerationDisplacement.z * (GPU_BRAKING_INERTIA_TRANSFER - 1),
       );
-      this.anchorAccelerationDisplacement.x *= GPU_BRAKING_INERTIA_TRANSFER;
-      this.anchorAccelerationDisplacement.z *= GPU_BRAKING_INERTIA_TRANSFER;
     }
+    this.brakingCorrection.lerp(
+      this.brakingCorrectionTarget,
+      1 - Math.exp(-GPU_BRAKING_RESPONSE_PER_SECOND * deltaTime),
+    );
+    this.anchorAccelerationDisplacement.x += this.brakingCorrection.x;
+    this.anchorAccelerationDisplacement.z += this.brakingCorrection.z;
     this.anchorDisplacementUniform.value.copy(this.anchorDisplacement);
     this.anchorAccelerationDisplacementUniform.value.copy(
       this.anchorAccelerationDisplacement,
@@ -478,6 +485,8 @@ export class GpuCapeSimulation {
     this.writeStorage(this.previousBuffer.value, state);
     this.updateAnchorBuffer(anchors);
     this.previousAnchorDisplacement.set(0, 0, 0);
+    this.brakingCorrection.set(0, 0, 0);
+    this.brakingCorrectionTarget.set(0, 0, 0);
     this.submittedSteps = 0;
     this.worldContactsLastStep = 0;
     this.worldContactEventOffset = this.worldContactEvents;
@@ -504,6 +513,8 @@ export class GpuCapeSimulation {
     this.writeStorage(this.constraintBuffer.value, topology.coloredConstraints);
     this.updateAnchorBuffer(anchors);
     this.previousAnchorDisplacement.set(0, 0, 0);
+    this.brakingCorrection.set(0, 0, 0);
+    this.brakingCorrectionTarget.set(0, 0, 0);
     this.submittedSteps = 0;
     this.worldContactsLastStep = 0;
     this.worldContactEventOffset = this.worldContactEvents;
