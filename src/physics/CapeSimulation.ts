@@ -325,11 +325,14 @@ export class CapeSimulation {
         }
         // Final world/body reconciliation can push a triangle interior back
         // through the curved cave side while all of its vertices stay valid.
-        // Recheck the cave face, then finish on the animated body: unlike the
-        // fixed cave shell, the limbs can move into the cloth after the last
-        // world pass, and must not remain visible through a pinned cape.
+        // Recheck the cave face, then alternate the compatible moving-body and
+        // fixed-world constraints to convergence. Always end on the fixed
+        // world so the rendered cloth cannot remain inside a floor formation.
         this.contactSolver.solveCave();
-        this.contactSolver.solveBody(bodyColliders, anchors.back);
+        for (let pass = 0; pass < 4; pass += 1) {
+          this.contactSolver.solveBody(bodyColliders, anchors.back);
+          if (this.contactSolver.solvePostCaveWorldContacts() === 0) break;
+        }
       }
       if (profileActive) {
         const profileNow = performance.now();
