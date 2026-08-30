@@ -121,6 +121,11 @@ const GPU_MAXIMUM_NECKLINE_ROTATION_PER_STEP = 0.025;
 // breaking than the ordered solver. Restore that measured loss without
 // applying any vertical lift or locomotion-specific pose.
 const GPU_FLUTTER_COMPENSATION = 2;
+// Graph-colored bend pairs converge much more completely than WebGL's
+// interleaved row-major sweep. Retain the measured compliance that produced
+// travelling waves instead of promoting span-2/3 links into stiff column
+// wavefronts.
+const GPU_LENGTHWISE_BEND_RELAXATION = 0.12;
 // Jacobi-style graph colors converge slightly less per authored pass than the
 // ordered CPU sweep. This factor matches structural extension without adding
 // another compute pass or changing the public stiffness scale.
@@ -1012,45 +1017,35 @@ export class GpuCapeSimulation {
   ): THREE.ComputeNode {
     return Fn(() => {
       const constraintIndex = instanceIndex;
-      // Preserve WebGL's row-major dependency order for the structural and
-      // lengthwise bend links. Each row is a race-free column wavefront; the
-      // barrier between spans makes the authored span-2/3 constraints observe
-      // the same just-corrected row state as the ordered CPU solver.
-      const solveLengthwiseLink = (
-        row: number,
-        span: 1 | 2 | 3,
-        authoredStiffness: number,
-        label: string,
-      ): void => {
+      // Structural links transmit the moving neckline top-to-bottom, matching
+      // WebGL's dependency direction. Longer bend links remain in the
+      // race-free graph colors below; promoting them into this wavefront made
+      // every column move as a rod and removed the cloth wave.
+      const solveLengthwiseStructuralLink = (row: number): void => {
         If(constraintIndex.lessThan(uint(CAPE.columns)), () => {
           const firstIndex = uint(row * CAPE.columns).add(constraintIndex);
-          const secondIndex = firstIndex.add(uint(span * CAPE.columns));
+          const secondIndex = firstIndex.add(uint(CAPE.columns));
           const firstState = buffer.element(firstIndex);
           const secondState = buffer.element(secondIndex);
-          const first = firstState.xyz.toVar(`${label}First${row}`);
-          const second = secondState.xyz.toVar(`${label}Second${row}`);
-          const delta = second.sub(first).toVar(`${label}Delta${row}`);
-          const length = delta.length().toVar(`${label}Length${row}`);
+          const first = firstState.xyz.toVar(`lengthwiseStructuralFirst${row}`);
+          const second = secondState.xyz.toVar(`lengthwiseStructuralSecond${row}`);
+          const delta = second.sub(first).toVar(`lengthwiseStructuralDelta${row}`);
+          const length = delta.length().toVar(`lengthwiseStructuralLength${row}`);
           const firstWeight = select(firstIndex.lessThan(uint(CAPE.columns)), 0, 1);
           const totalWeight = firstWeight.add(1);
           If(length.greaterThan(0.000_001), () => {
-            const topologyIndex = firstIndex.mul(uint(TOPOLOGY_METADATA_STRIDE));
-            const metadata = this.topologyBuffer.element(topologyIndex);
-            const lengthwiseRestLengths = this.topologyBuffer.element(topologyIndex.add(1));
-            const restLength = span === 1
-              ? metadata.y
-              : span === 2
-                ? lengthwiseRestLengths.z
-                : lengthwiseRestLengths.w;
+            const restLength = this.topologyBuffer.element(
+              firstIndex.mul(uint(TOPOLOGY_METADATA_STRIDE)),
+            ).y;
             const correction = delta.mul(
               length.sub(restLength)
                 .div(length)
                 .mul(
-                  float(authoredStiffness * GPU_CONSTRAINT_STIFFNESS_COMPENSATION)
+                  float(0.96 * GPU_CONSTRAINT_STIFFNESS_COMPENSATION)
                     .mul(this.stiffnessUniform)
                     .min(0.999),
                 ),
-            ).toVar(`${label}Correction${row}`);
+            ).toVar(`lengthwiseStructuralCorrection${row}`);
 
             const firstCorrection = correction.mul(firstWeight.div(totalWeight));
             const secondCorrection = correction.div(totalWeight);
@@ -1078,13 +1073,7 @@ export class GpuCapeSimulation {
         storageBarrier();
       };
       for (let row = 0; row < CAPE.rows - 1; row += 1) {
-        solveLengthwiseLink(row, 1, 0.96, 'lengthwiseStructural');
-        if (row + 2 < CAPE.rows) {
-          solveLengthwiseLink(row, 2, 0.82, 'lengthwiseBendTwo');
-        }
-        if (row + 3 < CAPE.rows) {
-          solveLengthwiseLink(row, 3, 0.38, 'lengthwiseBendThree');
-        }
+        solveLengthwiseStructuralLink(row);
       }
       for (const range of this.coloredConstraintRanges) {
         If(constraintIndex.lessThan(uint(range.count)), () => {
@@ -3086,9 +3075,25 @@ export class GpuCapeSimulation {
           addConstraint(column + 1, row, column, row + 1, 0.8);
         }
         if (column + 2 < CAPE.columns) addConstraint(column, row, column + 2, row, 0.58);
-        // Lengthwise bend links use the ordered row wavefront in the compute
-        // kernel, matching the CPU solver's dependency direction.
+        if (row + 2 < CAPE.rows) {
+          addConstraint(
+            column,
+            row,
+            column,
+            row + 2,
+            0.82 * GPU_LENGTHWISE_BEND_RELAXATION,
+          );
+        }
         if (column + 3 < CAPE.columns) addConstraint(column, row, column + 3, row, 0.16);
+        if (row + 3 < CAPE.rows) {
+          addConstraint(
+            column,
+            row,
+            column,
+            row + 3,
+            0.38 * GPU_LENGTHWISE_BEND_RELAXATION,
+          );
+        }
       }
     }
     const normalNeighbors = new Uint32Array(PARTICLE_COUNT * 4);

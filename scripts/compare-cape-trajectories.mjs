@@ -21,7 +21,10 @@ import {
   waitForExpression,
 } from './audit/cdp-client.mjs';
 import { close, createStaticServer, listen } from './audit/static-server.mjs';
-import { validateNecklineAttachment } from './cape-trajectory-invariants.mjs';
+import {
+  validateNecklineAttachment,
+  validateTravellingWave,
+} from './cape-trajectory-invariants.mjs';
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const temporaryParent = join(repositoryRoot, 'artifacts', '.tmp');
@@ -100,6 +103,8 @@ function summarizeMotion(report, transitionFrame) {
   let transitionMaximumParticleAcceleration = 0;
   let maximumCenterlineDeviation = 0;
   let centerlineDeviationTotal = 0;
+  let maximumRowTwistRange = 0;
+  let rowTwistRangeTotal = 0;
   let maximumNecklineAttachmentError = 0;
   let maximumBodyPenetration = 0;
   let maximumStructuralError = 0;
@@ -124,6 +129,8 @@ function summarizeMotion(report, transitionFrame) {
       sample.centerlineDeviation,
     );
     centerlineDeviationTotal += sample.centerlineDeviation;
+    maximumRowTwistRange = Math.max(maximumRowTwistRange, sample.rowTwistRange);
+    rowTwistRangeTotal += sample.rowTwistRange;
     maximumNecklineAttachmentError = Math.max(
       maximumNecklineAttachmentError,
       sample.maximumNecklineAttachmentError,
@@ -246,6 +253,8 @@ function summarizeMotion(report, transitionFrame) {
     transitionMaximumUpwardParticleStep,
     postTransitionMaximumUpwardParticleStep,
     maximumCenterlineDeviation,
+    maximumRowTwistRange,
+    averageRowTwistRange: rowTwistRangeTotal / Math.max(1, report.samples.length),
     maximumNecklineAttachmentError,
     maximumBodyPenetration,
     maximumStructuralError,
@@ -370,6 +379,11 @@ function validateScenario(scenario, webgl, webgpu, comparison) {
     );
   }
   if (scenario === 'reverse' || scenario === 'back-and-forth') {
+    validateTravellingWave({
+      scenario,
+      webglAverageRowTwist: webglMotion.averageRowTwistRange,
+      webgpuAverageRowTwist: webgpuMotion.averageRowTwistRange,
+    });
     for (const [renderer, motion] of [
       ['WebGL', webglMotion],
       ['WebGPU', webgpuMotion],
