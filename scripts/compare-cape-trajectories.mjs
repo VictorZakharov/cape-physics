@@ -251,7 +251,7 @@ function validateScenario(scenario, webgl, webgpu, comparison) {
     ['WebGPU', webgpuMotion],
   ]) {
     assert(
-      motion.maximumBodyPenetration <= 0.01,
+      motion.maximumBodyPenetration <= 0.003,
       `${scenario} ${renderer} penetrated the animated body by `
         + `${motion.maximumBodyPenetration.toFixed(4)} m`,
     );
@@ -344,7 +344,7 @@ function validateScenario(scenario, webgl, webgpu, comparison) {
           + `${motion.postTransitionMaximumParticleAcceleration.toFixed(4)} m/frame²`,
       );
       assert(
-        motion.postTransitionMaximumUpwardParticleStep <= 0.05,
+        motion.postTransitionMaximumUpwardParticleStep <= 0.035,
         `${scenario} ${renderer} launched a particle upward by `
           + `${motion.postTransitionMaximumUpwardParticleStep.toFixed(4)} m/frame`,
       );
