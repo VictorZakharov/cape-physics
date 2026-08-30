@@ -95,6 +95,7 @@ interface CapeTrajectorySample {
   readonly maximumLowerHorizontalOffset: number;
   readonly centerlineDeviation: number;
   readonly rowTwistRange: number;
+  readonly maximumNecklineAttachmentError: number;
   readonly maximumBodyPenetration: number;
   readonly bodyPenetrationByKind: ReturnType<CapeSimulation['getBodyPenetrationDiagnostics']>;
   readonly bodyPenetrationByCollider: Readonly<Record<string, number>>;
@@ -711,6 +712,10 @@ export class CapeDemo {
         this.cape.getMaximumBodyPenetration([collider], anchors.back),
       ]),
     );
+    const maximumNecklineAttachmentError = Math.max(
+      this.cape.getParticlePosition(0, 0).distanceTo(anchors.left),
+      this.cape.getParticlePosition(CAPE.columns - 1, 0).distanceTo(anchors.right),
+    );
     return {
       frame,
       time: this.fixedTime,
@@ -726,6 +731,7 @@ export class CapeDemo {
       maximumLowerHorizontalOffset: this.cape.getMaximumLowerCapeHorizontalOffset(),
       centerlineDeviation: this.cape.getCapeCenterlineDeviation(),
       rowTwistRange: this.cape.getCapeRowTwistRange(anchors),
+      maximumNecklineAttachmentError,
       maximumBodyPenetration: bodyPenetrationByKind.maximum,
       bodyPenetrationByKind,
       bodyPenetrationByCollider,

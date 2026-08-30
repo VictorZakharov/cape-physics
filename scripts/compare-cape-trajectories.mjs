@@ -1,6 +1,15 @@
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { createHash } from 'node:crypto';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   closeBrowserProcess,
@@ -12,9 +21,29 @@ import {
   waitForExpression,
 } from './audit/cdp-client.mjs';
 import { close, createStaticServer, listen } from './audit/static-server.mjs';
+import { validateNecklineAttachment } from './cape-trajectory-invariants.mjs';
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const temporaryParent = join(repositoryRoot, 'artifacts', '.tmp');
+const trajectoryInvariantsPath = fileURLToPath(
+  new URL('./cape-trajectory-invariants.mjs', import.meta.url),
+);
+const validationSourcePaths = [
+  ...readdirSync(join(repositoryRoot, 'src', 'physics'))
+    .filter((name) => name.endsWith('.ts'))
+    .map((name) => join(repositoryRoot, 'src', 'physics', name)),
+  join(repositoryRoot, 'src', 'CapeDemo.ts'),
+  fileURLToPath(import.meta.url),
+  trajectoryInvariantsPath,
+].sort();
+const validationSourceHash = validationSourcePaths.reduce(
+  (hash, path) => hash
+    .update(relative(repositoryRoot, path).replaceAll('\\', '/'))
+    .update('\0')
+    .update(readFileSync(path))
+    .update('\0'),
+  createHash('sha256'),
+).digest('hex');
 const distRoot = resolve(process.env.CAPE_TRAJECTORY_DIST_ROOT ?? join(repositoryRoot, 'dist'));
 if (!existsSync(join(distRoot, 'index.html'))) throw new Error(`Production build missing at ${distRoot}.`);
 
@@ -71,6 +100,7 @@ function summarizeMotion(report, transitionFrame) {
   let transitionMaximumParticleAcceleration = 0;
   let maximumCenterlineDeviation = 0;
   let centerlineDeviationTotal = 0;
+  let maximumNecklineAttachmentError = 0;
   let maximumBodyPenetration = 0;
   let maximumStructuralError = 0;
   let minimumSelfSeparation = Number.POSITIVE_INFINITY;
@@ -88,23 +118,29 @@ function summarizeMotion(report, transitionFrame) {
   let maximumParticleStepDetail = null;
   let maximumParticleAccelerationDetail = null;
   const priorDisplacements = new Float64Array(report.samples[0]?.particles.length || 0);
+  for (const sample of report.samples) {
+    maximumCenterlineDeviation = Math.max(
+      maximumCenterlineDeviation,
+      sample.centerlineDeviation,
+    );
+    centerlineDeviationTotal += sample.centerlineDeviation;
+    maximumNecklineAttachmentError = Math.max(
+      maximumNecklineAttachmentError,
+      sample.maximumNecklineAttachmentError,
+    );
+    maximumBodyPenetration = Math.max(maximumBodyPenetration, sample.maximumBodyPenetration);
+    maximumStructuralError = Math.max(maximumStructuralError, sample.maximumStructuralError);
+    minimumSelfSeparation = Math.min(minimumSelfSeparation, sample.minimumSelfSeparation);
+    maximumUpwardFold = Math.max(maximumUpwardFold, sample.maximumUpwardFold);
+    minimumLowerCapeSpanRatio = Math.min(minimumLowerCapeSpanRatio, sample.lowerCapeSpanRatio);
+    maximumLowerCapeRowCurlRatio = Math.max(
+      maximumLowerCapeRowCurlRatio,
+      sample.lowerCapeRowCurlRatio,
+    );
+  }
   for (let sampleIndex = 1; sampleIndex < report.samples.length; sampleIndex += 1) {
     const previous = report.samples[sampleIndex - 1];
     const current = report.samples[sampleIndex];
-    maximumCenterlineDeviation = Math.max(
-      maximumCenterlineDeviation,
-      current.centerlineDeviation,
-    );
-    centerlineDeviationTotal += current.centerlineDeviation;
-    maximumBodyPenetration = Math.max(maximumBodyPenetration, current.maximumBodyPenetration);
-    maximumStructuralError = Math.max(maximumStructuralError, current.maximumStructuralError);
-    minimumSelfSeparation = Math.min(minimumSelfSeparation, current.minimumSelfSeparation);
-    maximumUpwardFold = Math.max(maximumUpwardFold, current.maximumUpwardFold);
-    minimumLowerCapeSpanRatio = Math.min(minimumLowerCapeSpanRatio, current.lowerCapeSpanRatio);
-    maximumLowerCapeRowCurlRatio = Math.max(
-      maximumLowerCapeRowCurlRatio,
-      current.lowerCapeRowCurlRatio,
-    );
     maximumHemStep = Math.max(maximumHemStep, Math.abs(current.hemDrop - previous.hemDrop));
     const inTransition = transitionFrame !== null
       && current.frame >= transitionFrame
@@ -210,6 +246,7 @@ function summarizeMotion(report, transitionFrame) {
     transitionMaximumUpwardParticleStep,
     postTransitionMaximumUpwardParticleStep,
     maximumCenterlineDeviation,
+    maximumNecklineAttachmentError,
     maximumBodyPenetration,
     maximumStructuralError,
     minimumSelfSeparation: Number.isFinite(minimumSelfSeparation) ? minimumSelfSeparation : 0,
@@ -218,8 +255,7 @@ function summarizeMotion(report, transitionFrame) {
       ? minimumLowerCapeSpanRatio
       : 0,
     maximumLowerCapeRowCurlRatio,
-    averageCenterlineDeviation: centerlineDeviationTotal
-      / Math.max(1, report.samples.length - 1),
+    averageCenterlineDeviation: centerlineDeviationTotal / Math.max(1, report.samples.length),
   };
 }
 
@@ -250,6 +286,11 @@ function validateScenario(scenario, webgl, webgpu, comparison) {
     ['WebGL', webglMotion],
     ['WebGPU', webgpuMotion],
   ]) {
+    validateNecklineAttachment({
+      scenario,
+      renderer,
+      maximumError: motion.maximumNecklineAttachmentError,
+    });
     assert(
       motion.maximumBodyPenetration <= 0.01,
       `${scenario} ${renderer} penetrated the animated body by `
@@ -526,6 +567,14 @@ try {
   }
   const result = {
     generatedAt: new Date().toISOString(),
+    validationReceipt: {
+      sourceHashAlgorithm: 'sha256',
+      sourceHash: validationSourceHash,
+      sourceFiles: validationSourcePaths.map(
+        (path) => relative(repositoryRoot, path).replaceAll('\\', '/'),
+      ),
+      passed: enforce,
+    },
     browser: browserExecutable,
     scenarios: requestedScenarios,
     enforced: enforce,

@@ -240,6 +240,7 @@ declare global {
           readonly maximumLowerHorizontalOffset: number;
           readonly centerlineDeviation: number;
           readonly rowTwistRange: number;
+          readonly maximumNecklineAttachmentError: number;
           readonly maximumBodyPenetration: number;
           readonly bodyPenetrationByKind: {
             readonly point: number;
