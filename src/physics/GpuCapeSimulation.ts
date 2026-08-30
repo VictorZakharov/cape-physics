@@ -5,6 +5,9 @@ import {
   Loop,
   Return,
   attribute,
+  atomicLoad,
+  atomicOr,
+  atomicStore,
   bool,
   cross,
   float,
@@ -168,6 +171,8 @@ export class GpuCapeSimulation {
   private readonly positionBuffer;
   private readonly scratchBuffer;
   private readonly previousBuffer;
+  private readonly predictedVerticalBuffer;
+  private readonly materialContactFlagBuffer;
   private readonly anchorBuffer;
   private readonly topologyBuffer;
   private readonly constraintBuffer;
@@ -229,6 +234,8 @@ export class GpuCapeSimulation {
     this.positionBuffer = instancedArray(initialState.slice(), 'vec4');
     this.scratchBuffer = instancedArray(initialState.slice(), 'vec4');
     this.previousBuffer = instancedArray(initialState.slice(), 'vec4');
+    this.predictedVerticalBuffer = instancedArray(PARTICLE_COUNT, 'float');
+    this.materialContactFlagBuffer = instancedArray(1, 'uint').toAtomic();
     this.anchorBuffer = instancedArray(CAPE.columns, 'vec4');
 
     const topology = this.createTopology(initialState);
@@ -248,6 +255,7 @@ export class GpuCapeSimulation {
     this.updateAnchorBuffer(initialAnchors);
 
     this.computeSequence.push(
+      this.createMaterialContactFlagResetKernel(),
       this.createPredictionKernel(),
       this.createIdleDrapeRecoveryKernel(),
     );
@@ -333,6 +341,8 @@ export class GpuCapeSimulation {
     );
     const reconcileBodyContactVelocity =
       this.createBodyContactReconciliationKernel();
+    const reconcileProjectionVerticalVelocity =
+      this.createProjectionVerticalVelocityReconciliationKernel();
 
     // One workgroup executes race-free pair colors for the same distance,
     // self-collision, and fold constraints used by the CPU/WebGL solver. The
@@ -384,6 +394,7 @@ export class GpuCapeSimulation {
       positionBodyFaces,
       positionRockFaces,
       reconcileBodyContactVelocity,
+      reconcileProjectionVerticalVelocity,
     );
     this.profileNoOpKernel = Fn(() => {})()
       .compute(PARTICLE_COUNT, [PARTICLE_COUNT])
@@ -879,6 +890,7 @@ export class GpuCapeSimulation {
         const anchor = this.anchorBuffer.element(index);
         target.assign(anchor);
         previous.assign(anchor);
+        this.predictedVerticalBuffer.element(index).assign(float(0));
         Return();
       });
 
@@ -970,6 +982,9 @@ export class GpuCapeSimulation {
         this.airflowUniform
           .mul(float(0.048).add(turbulence.mul(0.011)))
           .mul(deltaSquared),
+      );
+      this.predictedVerticalBuffer.element(index).assign(
+        predicted.y.sub(currentPosition.y),
       );
       // The state lane accumulates body-contact work for final reconciliation.
       target.assign(vec4(predicted, 0));
@@ -1233,6 +1248,12 @@ export class GpuCapeSimulation {
     })().compute(PARTICLE_COUNT, [PARTICLE_COUNT]).setName(name);
   }
 
+  private createMaterialContactFlagResetKernel(): THREE.ComputeNode {
+    return Fn(() => {
+      atomicStore(this.materialContactFlagBuffer.element(uint(0)), uint(0));
+    })().compute(1).setName('Cape reset material contact flag');
+  }
+
   private createBodyContactReconciliationKernel(): THREE.ComputeNode {
     return Fn(() => {
       const index = instanceIndex;
@@ -1254,6 +1275,38 @@ export class GpuCapeSimulation {
         this.positionBuffer.element(index).assign(vec4(position.xyz, 0));
       });
     })().compute(PARTICLE_COUNT).setName('Cape reconcile body contact velocity');
+  }
+
+  /**
+   * Match CapeSimulation.reconcileProjectionVerticalVelocity. If physical
+   * prediction was falling, a later positional length repair must not become
+   * upward Verlet velocity. Material contact disables the phase for the whole
+   * step because world/body projection may legitimately need upward motion.
+   */
+  private createProjectionVerticalVelocityReconciliationKernel(): THREE.ComputeNode {
+    return Fn(() => {
+      const index = instanceIndex;
+      const hasMaterialContact = atomicLoad(
+        this.materialContactFlagBuffer.element(uint(0)),
+      ).greaterThan(uint(0));
+      If(
+        index.greaterThanEqual(uint(CAPE.columns))
+          .and(hasMaterialContact.not())
+          .and(this.predictedVerticalBuffer.element(index).lessThan(0)),
+        () => {
+          const position = this.positionBuffer.element(index);
+          const previous = this.previousBuffer.element(index);
+          If(position.y.greaterThan(previous.y), () => {
+            this.previousBuffer.element(index).assign(vec4(
+              previous.x,
+              position.y,
+              previous.z,
+              previous.w,
+            ));
+          });
+        },
+      );
+    })().compute(PARTICLE_COUNT).setName('Cape reconcile projection vertical velocity');
   }
   private createProjectionKernel(
     source: typeof this.positionBuffer,
@@ -1507,6 +1560,7 @@ export class GpuCapeSimulation {
       });
       position.addAssign(bodyManifoldCorrection);
       bodyCorrectionUsed.addAssign(bodyManifoldCorrection.length());
+      const worldContactStart = position.toVar('worldContactStart');
 
       position.z.assign(position.z.clamp(CAVE.endZ + 0.08, CAVE.startZ - 0.08));
       const caveSegmentPosition = float(CAVE.startZ).sub(position.z)
@@ -1993,6 +2047,15 @@ export class GpuCapeSimulation {
       });
       position.x.assign(position.x.clamp(minimumX, maximumX));
       const contactCorrection = position.sub(contactStart).toVar('contactCorrection');
+      const worldContactCorrection = position.sub(worldContactStart)
+        .toVar('worldContactCorrection');
+      If(
+        bodyManifoldCorrection.length().greaterThan(BODY_CONTACT_RECONCILIATION_START)
+          .or(worldContactCorrection.dot(worldContactCorrection).greaterThan(0.000_000_1)),
+        () => {
+          atomicOr(this.materialContactFlagBuffer.element(uint(0)), uint(1));
+        },
+      );
       previousPosition.addAssign(contactCorrection);
       If(contactCorrection.dot(contactCorrection).greaterThan(0.000_000_1), () => {
         const contactNormal = contactCorrection.normalize().toVar('contactNormal');
@@ -2622,6 +2685,9 @@ export class GpuCapeSimulation {
         If(correctionLength.greaterThan(0.015), () => {
           faceCorrection.mulAssign(float(0.015).div(correctionLength));
         });
+        If(hadFaceContact, () => {
+          atomicOr(this.materialContactFlagBuffer.element(uint(0)), uint(1));
+        });
         If(hadFaceContact.and(previousTriangleSafe), () => {
           const restorePrevious = (
             particleIndex: THREE.Node<'uint'>,
@@ -2879,6 +2945,9 @@ export class GpuCapeSimulation {
               float(MAXIMUM_BODY_CONTACT_CORRECTION_PER_PASS)
                 .div(faceCorrectionLength.max(0.000_001)),
             );
+          });
+          If(faceCorrection.length().greaterThan(BODY_CONTACT_RECONCILIATION_START), () => {
+            atomicOr(this.materialContactFlagBuffer.element(uint(0)), uint(1));
           });
           const boundedCorrected = start.add(faceCorrection);
           buffer.element(particleIndex).assign(vec4(

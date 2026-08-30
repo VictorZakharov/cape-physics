@@ -8,6 +8,7 @@ import {
   MAXIMUM_CAPE_PARTICLE_SPEED,
 } from './CapeAerodynamics';
 import { CAPE_DISTANCE_CONSTRAINTS } from './CapeConstraintTopology';
+import { reconcileCapeProjectionPreviousY } from './CapeProjectionVelocity';
 import { caveGroundHeightAt } from '../world/caveProfile';
 import {
   CapeContactSolver,
@@ -355,12 +356,10 @@ export class CapeSimulation {
     this.reconcileBodyContactVelocity();
     // Fixed-world and material body contacts are authoritative. Their
     // projection may need upward velocity to clear a rock, floor, or boot.
-    if (
-      this.contactSolver.getDiagnostics().lastStep === 0
-      && !this.hasMaterialBodyContactCorrection()
-    ) {
-      this.reconcileProjectionVerticalVelocity();
-    }
+    this.reconcileProjectionVerticalVelocity(
+      this.contactSolver.getDiagnostics().lastStep > 0
+        || this.hasMaterialBodyContactCorrection(),
+    );
     this.measureStepMotion();
     const horizontallySettled = this.getMaximumLowerCapeHorizontalOffset()
       < MAXIMUM_SETTLED_HORIZONTAL_OFFSET;
@@ -884,12 +883,17 @@ export class CapeSimulation {
    * an upward Verlet velocity for the next step. Upward physical prediction,
    * planar response, and the corrected position itself remain unchanged.
    */
-  private reconcileProjectionVerticalVelocity(): void {
+  private reconcileProjectionVerticalVelocity(hasMaterialContact: boolean): void {
     for (let index = CAPE.columns; index < this.positions.length; index += 1) {
-      if ((this.predictedVerticalDisplacement[index] ?? 0) >= 0) continue;
       const position = this.positions[index];
       const previous = this.previous[index];
-      if (position && previous && position.y > previous.y) previous.y = position.y;
+      if (!position || !previous) continue;
+      previous.y = reconcileCapeProjectionPreviousY({
+        predictedVerticalDisplacement: this.predictedVerticalDisplacement[index] ?? 0,
+        projectedPositionY: position.y,
+        previousPositionY: previous.y,
+        hasMaterialContact,
+      });
     }
   }
 
