@@ -109,13 +109,6 @@ export interface GpuCapeKernelProfile {
 
 const PARTICLE_COUNT = CAPE.columns * CAPE.rows;
 
-// The vertical row wavefront already transmits the pinned neckline transform
-// through the free cloth. A second rigid transform in prediction duplicates
-// that impulse and launches the cape during reversals, so free particles keep
-// their inertia exactly like the ordered CPU/WebGL solver.
-const GPU_NECKLINE_TRANSLATION_TRANSFER = 0;
-const GPU_NECKLINE_ROTATION_TRANSFER = 0;
-const GPU_MAXIMUM_NECKLINE_ROTATION_PER_STEP = 0.025;
 const GPU_MAXIMUM_PLANAR_PARTICLE_SPEED = 9.6;
 const GPU_MAXIMUM_VERTICAL_PARTICLE_SPEED = 12;
 
@@ -161,8 +154,8 @@ const CAVE_LOWER_RADIAL_START = Math.floor(CAVE.radialSegments / 2);
  * Distance constraints use WebGL's exact shared row-major Gauss-Seidel stream
  * so projection order and Verlet velocity agree between backends. Expensive
  * self, body, cave, and formation collision work remains parallel on the GPU.
- * Movement affects only authored forces; projection never selects or steers
- * toward a locomotion-specific shape.
+ * Character translation is integrated as a moving reference frame; projection
+ * never selects or steers toward a locomotion-specific shape.
  */
 export class GpuCapeSimulation {
   public readonly mesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshPhysicalNodeMaterial>;
@@ -187,10 +180,9 @@ export class GpuCapeSimulation {
   private readonly idleDrapeRecoveryUniform = uniform(0);
   private readonly dragPerSecondUniform = uniform(CAPE_DRAG_PER_SECOND);
   private readonly airflowUniform = uniform(new THREE.Vector3());
-  private readonly necklineMotionUniform = uniform(new THREE.Vector3());
-  private readonly necklineRotationCenterUniform = uniform(new THREE.Vector3());
-  private readonly necklineRotationSinUniform = uniform(0);
-  private readonly necklineRotationCosUniform = uniform(1);
+  private readonly anchorCenterUniform = uniform(new THREE.Vector3());
+  private readonly anchorDisplacementUniform = uniform(new THREE.Vector3());
+  private readonly anchorAccelerationDisplacementUniform = uniform(new THREE.Vector3());
   private readonly stiffnessUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.stiffness);
   private readonly dampingUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.damping);
   private readonly weightUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.weight);
@@ -204,9 +196,8 @@ export class GpuCapeSimulation {
   private readonly anchorCenter = new THREE.Vector3();
   private readonly nextAnchorCenter = new THREE.Vector3();
   private readonly anchorDisplacement = new THREE.Vector3();
-  private readonly necklineMotion = new THREE.Vector3();
-  private readonly previousBack = new THREE.Vector3(0, 0, 1);
-  private pendingNecklineYaw = 0;
+  private readonly previousAnchorDisplacement = new THREE.Vector3();
+  private readonly anchorAccelerationDisplacement = new THREE.Vector3();
   private readonly anchorTarget = new THREE.Vector3();
   private readonly worldCandidateCenter = new THREE.Vector3(
     Number.POSITIVE_INFINITY,
@@ -502,32 +493,17 @@ export class GpuCapeSimulation {
     this.dragPerSecondUniform.value = CAPE_DRAG_PER_SECOND;
     this.nextAnchorCenter.copy(anchors.left).add(anchors.right).multiplyScalar(0.5);
     this.anchorDisplacement.copy(this.nextAnchorCenter).sub(this.anchorCenter);
-    this.necklineMotion.copy(this.anchorDisplacement)
-      .multiplyScalar(GPU_NECKLINE_TRANSLATION_TRANSFER);
-    this.necklineMotionUniform.value.copy(this.necklineMotion);
-    this.necklineRotationCenterUniform.value.copy(this.anchorCenter);
-    const backDot = THREE.MathUtils.clamp(
-      this.previousBack.x * anchors.back.x + this.previousBack.z * anchors.back.z,
-      -1,
-      1,
+    this.anchorAccelerationDisplacement.copy(this.anchorDisplacement)
+      .sub(this.previousAnchorDisplacement);
+    this.anchorDisplacementUniform.value.copy(this.anchorDisplacement);
+    this.anchorAccelerationDisplacementUniform.value.copy(
+      this.anchorAccelerationDisplacement,
     );
-    const backCrossY = this.previousBack.z * anchors.back.x
-      - this.previousBack.x * anchors.back.z;
-    this.pendingNecklineYaw += Math.atan2(backCrossY, backDot)
-      * GPU_NECKLINE_ROTATION_TRANSFER;
-    const transferredYaw = THREE.MathUtils.clamp(
-      this.pendingNecklineYaw,
-      -GPU_MAXIMUM_NECKLINE_ROTATION_PER_STEP,
-      GPU_MAXIMUM_NECKLINE_ROTATION_PER_STEP,
-    );
-    this.pendingNecklineYaw -= transferredYaw;
-    this.necklineRotationSinUniform.value = Math.sin(transferredYaw);
-    this.necklineRotationCosUniform.value = Math.cos(transferredYaw);
     this.updateAnchorBuffer(anchors);
     this.updateBodyBuffers(bodyColliders, anchors.back);
     this.updateWorldBuffers(worldColliders);
     this.renderer.compute(this.computeSequence);
-    this.previousBack.copy(anchors.back);
+    this.previousAnchorDisplacement.copy(this.anchorDisplacement);
     this.submittedSteps += 1;
   }
 
@@ -541,8 +517,7 @@ export class GpuCapeSimulation {
     this.writeStorage(this.scratchBuffer.value, state);
     this.writeStorage(this.previousBuffer.value, state);
     this.updateAnchorBuffer(anchors);
-    this.previousBack.copy(anchors.back);
-    this.pendingNecklineYaw = 0;
+    this.previousAnchorDisplacement.set(0, 0, 0);
     this.submittedSteps = 0;
     this.idleDrapeRecoverySeconds = 0;
     this.idleDrapeRecoveryUniform.value = 0;
@@ -569,8 +544,7 @@ export class GpuCapeSimulation {
     this.writeStorage(this.topologyBuffer.value, topology.packed);
     this.writeStorage(this.constraintBuffer.value, topology.orderedConstraints);
     this.updateAnchorBuffer(anchors);
-    this.previousBack.copy(anchors.back);
-    this.pendingNecklineYaw = 0;
+    this.previousAnchorDisplacement.set(0, 0, 0);
     this.submittedSteps = 0;
     this.idleDrapeRecoverySeconds = 0;
     this.idleDrapeRecoveryUniform.value = 0;
@@ -610,6 +584,7 @@ export class GpuCapeSimulation {
     this.writeStorage(this.scratchBuffer.value, positionData);
     this.writeStorage(this.previousBuffer.value, previousData);
     this.diagnosticMirror.overwriteStateForHarness(positionData, previousData);
+    this.previousAnchorDisplacement.set(0, 0, 0);
     this.submittedSteps = 0;
     this.idleDrapeRecoverySeconds = 0;
     this.idleDrapeRecoveryUniform.value = 0;
@@ -847,11 +822,11 @@ export class GpuCapeSimulation {
           }
           rowCenter.divAssign(CAPE.columns);
           const horizontalOffset = rowCenter
-            .sub(this.necklineRotationCenterUniform)
+            .sub(this.anchorCenterUniform)
             .mul(vec3(1, 0, 1))
             .toVar('idleDrapeHorizontalOffset');
           If(
-            rowCenter.y.lessThan(this.necklineRotationCenterUniform.y)
+            rowCenter.y.lessThan(this.anchorCenterUniform.y)
               .and(horizontalOffset.length().greaterThan(IDLE_DRAPE_RECOVERY_TARGET)),
             () => {
               const down = float(row).div(CAPE.rows - 1);
@@ -894,8 +869,12 @@ export class GpuCapeSimulation {
         Return();
       });
 
-      const currentPosition = current.xyz.toVar('currentPosition');
-      const previousPosition = previous.xyz;
+      // Work in the character's translating reference frame. Advecting both
+      // Verlet states preserves cloth velocity, while subtracting the change
+      // in frame displacement retains inertia on start, stop, and reversal.
+      const currentPosition = current.xyz.add(this.anchorDisplacementUniform)
+        .toVar('currentPosition');
+      const previousPosition = previous.xyz.add(this.anchorDisplacementUniform);
       const velocity = currentPosition.sub(previousPosition).toVar('velocity');
       const drag = this.dragPerSecondUniform.mul(this.dampingUniform);
       velocity.mulAssign(drag.mul(this.deltaTimeUniform).negate().exp());
@@ -952,18 +931,7 @@ export class GpuCapeSimulation {
         .mul(flutterEnvelope);
       const deltaSquared = this.deltaTimeUniform.mul(this.deltaTimeUniform);
       const predicted = currentPosition.add(velocity).toVar('predicted');
-      predicted.addAssign(this.necklineMotionUniform);
-      const relativeToNeckline = currentPosition
-        .sub(this.necklineRotationCenterUniform)
-        .toVar('relativeToNeckline');
-      const rotatedAroundNeckline = vec3(
-        relativeToNeckline.x.mul(this.necklineRotationCosUniform)
-          .add(relativeToNeckline.z.mul(this.necklineRotationSinUniform)),
-        relativeToNeckline.y,
-        relativeToNeckline.z.mul(this.necklineRotationCosUniform)
-          .sub(relativeToNeckline.x.mul(this.necklineRotationSinUniform)),
-      );
-      predicted.addAssign(rotatedAroundNeckline.sub(relativeToNeckline));
+      predicted.subAssign(this.anchorAccelerationDisplacementUniform);
       predicted.y.subAssign(
         deltaSquared.mul(9.81).mul(this.weightUniform),
       );
@@ -3083,6 +3051,7 @@ export class GpuCapeSimulation {
 
   private updateAnchorBuffer(anchors: CapeAnchors): void {
     this.anchorCenter.copy(anchors.left).add(anchors.right).multiplyScalar(0.5);
+    this.anchorCenterUniform.value.copy(this.anchorCenter);
     this.diagnosticMirror.synchronizeAnchorDiagnostics(anchors);
     const array = this.anchorBuffer.value.array as Float32Array;
     for (let column = 0; column < CAPE.columns; column += 1) {
