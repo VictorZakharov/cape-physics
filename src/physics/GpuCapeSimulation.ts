@@ -2945,9 +2945,14 @@ export class GpuCapeSimulation {
             atomicOr(this.materialContactFlagBuffer.element(uint(0)), uint(1));
           });
           const boundedCorrected = start.add(faceCorrection);
+          // Match WebGL's correction accounting: triangle-face projection is
+          // already velocity-neutral below, but it is not sustained point
+          // penetration and must not feed the final inelastic point-contact
+          // reconciliation. Counting it here damps lateral travelling waves
+          // a second time whenever the cape slides over the shoulders.
           buffer.element(particleIndex).assign(vec4(
             boundedCorrected,
-            state.w.add(faceCorrection.length()),
+            state.w,
           ));
 
           const previousState = this.previousBuffer.element(particleIndex);
