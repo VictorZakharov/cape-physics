@@ -1437,10 +1437,16 @@ export class GpuCapeSimulation {
       }
 
       if (includeContacts) {
-      const contactStart = position.toVar('contactStart');
-      const bodyContactStart = position.toVar('bodyContactStart');
-      const bodyManifoldCorrection = vec3(0).toVar('bodyManifoldCorrection');
-      const bodyManifoldLength = float(0).toVar('bodyManifoldLength');
+      const bodyCorrectionThisPass = float(0).toVar('bodyCorrectionThisPass');
+      const topologySide = float(particleColumn)
+        .div(CAPE.columns - 1)
+        .sub(0.5)
+        .toVar('bodyTopologySide');
+      const bodyRight = vec3(
+        this.backUniform.z,
+        0,
+        this.backUniform.x.negate(),
+      ).normalize().toVar('bodyRight');
 
       Loop(
         { start: uint(0), end: uint(this.bodyCountUniform), type: 'uint', condition: '<' },
@@ -1451,10 +1457,10 @@ export class GpuCapeSimulation {
           const lateralAxis = this.bodyBuffer.element(bodyBase.add(2));
           const verticalBounds = this.bodyBuffer.element(bodyBase.add(3));
           If(
-            bodyContactStart.y.greaterThanEqual(verticalBounds.x)
-              .and(bodyContactStart.y.lessThanEqual(verticalBounds.y)),
+            position.y.greaterThanEqual(verticalBounds.x)
+              .and(position.y.lessThanEqual(verticalBounds.y)),
             () => {
-              const fromStart = bodyContactStart.sub(startRadius.xyz).toVar('bodyFromStart');
+              const fromStart = position.sub(startRadius.xyz).toVar('bodyFromStart');
               const particleDepth = fromStart.dot(this.backUniform).toVar('bodyParticleDepth');
               const particleLateral = fromStart
                 .sub(this.backUniform.mul(particleDepth))
@@ -1465,7 +1471,7 @@ export class GpuCapeSimulation {
                 0,
               );
               const closest = startRadius.xyz.add(axisDepth.xyz.mul(progress));
-              const bodyDelta = bodyContactStart.sub(closest).toVar('bodyDelta');
+              const bodyDelta = position.sub(closest).toVar('bodyDelta');
               const depth = bodyDelta.dot(this.backUniform).toVar('bodyDepth');
               const lateralSquared = bodyDelta.dot(bodyDelta)
                 .sub(depth.mul(depth))
@@ -1476,41 +1482,69 @@ export class GpuCapeSimulation {
                 const normalizedLateral = lateralSquared.div(radiusSquared).clamp(0, 1);
                 const surfaceDepth = axisDepth.w.mul(float(1).sub(normalizedLateral).sqrt());
                 const backCorrection = surfaceDepth.sub(depth).max(0);
-                const bodyCorrection = vec3(0).toVar('bodyCorrection');
                 If(
                   backCorrection.greaterThan(0)
                     .and(depth.greaterThan(axisDepth.w.negate())),
                   () => {
-                    bodyCorrection.assign(this.backUniform.mul(backCorrection));
+                    const contactNormal = this.backUniform.toVar('bodyContactNormal');
+                    const penetration = backCorrection.toVar('bodyPenetration');
                     If(depth.lessThan(0), () => {
                       // A front-side vertex exits laterally instead of being
-                      // teleported through the full body depth.
+                      // teleported through the full body depth. Match WebGL's
+                      // topology-stable side; the center column falls back to
+                      // the particle's prior spatial side.
                       const depthRatio = depth.div(axisDepth.w).clamp(-1, 0);
                       const lateralBoundary = startRadius.w.mul(
                         float(1).sub(depthRatio.mul(depthRatio)).max(0).sqrt(),
                       );
-                      const right = vec3(
-                        this.backUniform.z,
-                        0,
-                        this.backUniform.x.negate(),
-                      );
-                      const currentSide = bodyDelta.dot(right);
-                      // If relative motion crossed the capsule within one
-                      // fixed step, resolve to the nearest current surface.
-                      // Preserving the obsolete side would teleport a vertex
-                      // across the full limb diameter and inject energy.
-                      const sideSign = select(currentSide.greaterThanEqual(0), 1, -1);
-                      const lateralNormal = right.mul(sideSign);
-                      const lateralCorrection = lateralBoundary
-                        .sub(bodyDelta.dot(lateralNormal));
-                      If(lateralCorrection.greaterThan(0), () => {
-                        bodyCorrection.assign(lateralNormal.mul(lateralCorrection));
+                      const spatialSide = previousPosition
+                        .sub(this.anchorCenterUniform)
+                        .dot(bodyRight);
+                      const preferredSide = select(
+                        topologySide.abs().greaterThan(0.000_001),
+                        topologySide,
+                        spatialSide,
+                      ).toVar('bodyPreferredSide');
+                      If(preferredSide.abs().greaterThan(0.000_001), () => {
+                        contactNormal.assign(bodyRight.mul(
+                          select(preferredSide.greaterThan(0), 1, -1),
+                        ));
+                      }).Else(() => {
+                        const preferredDelta = previousPosition.sub(closest)
+                          .toVar('bodyPreferredDelta');
+                        const preferredDepth = preferredDelta.dot(this.backUniform);
+                        const preferredLateral = preferredDelta
+                          .sub(this.backUniform.mul(preferredDepth))
+                          .mul(vec3(1, 0, 1))
+                          .toVar('bodyPreferredLateral');
+                        If(preferredLateral.length().greaterThan(0.000_001), () => {
+                          contactNormal.assign(preferredLateral.normalize());
+                        }).ElseIf(lateralSquared.greaterThan(0.000_001), () => {
+                          contactNormal.assign(
+                            bodyDelta.sub(this.backUniform.mul(depth)).normalize(),
+                          );
+                        }).Else(() => {
+                          contactNormal.assign(bodyRight);
+                        });
                       });
+                      const lateralCorrection = lateralBoundary
+                        .sub(bodyDelta.dot(contactNormal));
+                      penetration.assign(select(
+                        lateralCorrection.greaterThan(0),
+                        lateralCorrection,
+                        backCorrection,
+                      ));
                     });
-                    const correctionLength = bodyCorrection.length();
-                    If(correctionLength.greaterThan(bodyManifoldLength), () => {
-                      bodyManifoldCorrection.assign(bodyCorrection);
-                      bodyManifoldLength.assign(correctionLength);
+                    If(penetration.greaterThan(0), () => {
+                      const correction = contactNormal.mul(penetration);
+                      position.addAssign(correction);
+                      previousPosition.addAssign(correction);
+                      const inwardMotion = position.sub(previousPosition)
+                        .dot(contactNormal)
+                        .min(0);
+                      previousPosition.addAssign(contactNormal.mul(inwardMotion));
+                      bodyCorrectionUsed.addAssign(penetration);
+                      bodyCorrectionThisPass.addAssign(penetration);
                     });
                   },
                 );
@@ -1520,14 +1554,6 @@ export class GpuCapeSimulation {
         },
       );
 
-      If(bodyManifoldLength.greaterThan(MAXIMUM_BODY_CONTACT_CORRECTION_PER_PASS), () => {
-        bodyManifoldCorrection.mulAssign(
-          float(MAXIMUM_BODY_CONTACT_CORRECTION_PER_PASS)
-            .div(bodyManifoldLength.max(0.000_001)),
-        );
-      });
-      position.addAssign(bodyManifoldCorrection);
-      bodyCorrectionUsed.addAssign(bodyManifoldCorrection.length());
       const worldContactStart = position.toVar('worldContactStart');
 
       position.z.assign(position.z.clamp(CAVE.endZ + 0.08, CAVE.startZ - 0.08));
@@ -2014,19 +2040,20 @@ export class GpuCapeSimulation {
         maximumX.assign(center.add(0.08));
       });
       position.x.assign(position.x.clamp(minimumX, maximumX));
-      const contactCorrection = position.sub(contactStart).toVar('contactCorrection');
       const worldContactCorrection = position.sub(worldContactStart)
         .toVar('worldContactCorrection');
       If(
-        bodyManifoldCorrection.length().greaterThan(BODY_CONTACT_RECONCILIATION_START)
+        bodyCorrectionThisPass.greaterThan(BODY_CONTACT_RECONCILIATION_START)
           .or(worldContactCorrection.dot(worldContactCorrection).greaterThan(0.000_000_1)),
         () => {
           atomicOr(this.materialContactFlagBuffer.element(uint(0)), uint(1));
         },
       );
-      previousPosition.addAssign(contactCorrection);
-      If(contactCorrection.dot(contactCorrection).greaterThan(0.000_000_1), () => {
-        const contactNormal = contactCorrection.normalize().toVar('contactNormal');
+      // Point-body corrections already updated previousPosition sequentially,
+      // exactly like WebGL. Only the later fixed-world displacement remains.
+      previousPosition.addAssign(worldContactCorrection);
+      If(worldContactCorrection.dot(worldContactCorrection).greaterThan(0.000_000_1), () => {
+        const contactNormal = worldContactCorrection.normalize().toVar('contactNormal');
         const inwardMotion = position.sub(previousPosition)
           .dot(contactNormal)
           .min(0)
