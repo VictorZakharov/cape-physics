@@ -34,6 +34,7 @@ import {
   CAPE_DRAG_PER_SECOND,
   CAPE_FLUTTER_ACCELERATION,
 } from './CapeAerodynamics';
+import { CAPE_DISTANCE_CONSTRAINTS } from './CapeConstraintTopology';
 import { CapeSimulation } from './CapeSimulation';
 import {
   CAPE_ROW_CURL_RELAXATION,
@@ -72,11 +73,6 @@ interface ConstraintDefinition {
   readonly second: number;
   readonly restLength: number;
   readonly stiffness: number;
-}
-
-interface ColoredConstraintRange {
-  readonly offset: number;
-  readonly count: number;
 }
 
 interface KernelTimestampBackend {
@@ -121,15 +117,6 @@ const GPU_MAXIMUM_NECKLINE_ROTATION_PER_STEP = 0.025;
 // breaking than the ordered solver. Restore that measured loss without
 // applying any vertical lift or locomotion-specific pose.
 const GPU_FLUTTER_COMPENSATION = 2;
-// Graph-colored bend pairs converge much more completely than WebGL's
-// interleaved row-major sweep. Retain the measured compliance that produced
-// travelling waves instead of promoting span-2/3 links into stiff column
-// wavefronts.
-const GPU_LENGTHWISE_BEND_RELAXATION = 0.12;
-// Jacobi-style graph colors converge slightly less per authored pass than the
-// ordered CPU sweep. This factor matches structural extension without adding
-// another compute pass or changing the public stiffness scale.
-const GPU_CONSTRAINT_STIFFNESS_COMPENSATION = 1.025;
 const GPU_MAXIMUM_PLANAR_PARTICLE_SPEED = 9.6;
 const GPU_MAXIMUM_VERTICAL_PARTICLE_SPEED = 12;
 // Parallel projection removes a small amount of downward energy that the
@@ -137,13 +124,6 @@ const GPU_MAXIMUM_VERTICAL_PARTICLE_SPEED = 12;
 // weight multiplier and fixed-step gravity remain shared with WebGL.
 const GPU_GRAVITY_COMPENSATION = 1.05;
 
-// Match WebGL's Verlet semantics by retaining the planar velocity created as
-// a moving neckline pulls distance constraints. Neutralizing that correction
-// leaves free particles fixed in world space and stretches the cape into a
-// horizontal Superman pose. Vertical projection remains velocity-neutral so
-// numerical length repair cannot reverse an already-falling cape upward.
-const GPU_PLANAR_CONSTRAINT_VELOCITY_NEUTRALIZATION = 0;
-const GPU_VERTICAL_CONSTRAINT_VELOCITY_NEUTRALIZATION = 1;
 const BODY_CONTACT_RECONCILIATION_START = 0.000_5;
 const BODY_CONTACT_RECONCILIATION_FULL = 0.025;
 const MAXIMUM_BODY_CONTACT_CORRECTION_PER_PASS = 0.08;
@@ -183,10 +163,11 @@ const CAVE_LOWER_RADIAL_START = Math.floor(CAVE.radialSegments / 2);
  * WebGPU cape path. Particle state never leaves storage buffers while the
  * game is running; readback is reserved for explicit harness diagnostics.
  *
- * Distance, self-collision, and fold constraints use race-free pair colors.
- * They apply the same shared PBD rules as WebGL while keeping the performance
- * benefit of a parallel GPU sweep. Movement affects only authored forces;
- * projection never selects or steers toward a locomotion-specific shape.
+ * Distance constraints use WebGL's exact shared row-major Gauss-Seidel stream
+ * so projection order and Verlet velocity agree between backends. Expensive
+ * self, body, cave, and formation collision work remains parallel on the GPU.
+ * Movement affects only authored forces; projection never selects or steers
+ * toward a locomotion-specific shape.
  */
 export class GpuCapeSimulation {
   public readonly mesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshPhysicalNodeMaterial>;
@@ -198,7 +179,7 @@ export class GpuCapeSimulation {
   private readonly anchorBuffer;
   private readonly topologyBuffer;
   private readonly constraintBuffer;
-  private readonly coloredConstraintRanges: readonly ColoredConstraintRange[];
+  private readonly constraintCount: number;
   private readonly bodyBuffer;
   private readonly caveShellBuffer;
   private readonly worldSphereBuffer;
@@ -260,8 +241,8 @@ export class GpuCapeSimulation {
 
     const topology = this.createTopology(initialState);
     this.topologyBuffer = instancedArray(topology.packed, 'vec4');
-    this.constraintBuffer = instancedArray(topology.coloredConstraints, 'vec4');
-    this.coloredConstraintRanges = topology.coloredConstraintRanges;
+    this.constraintBuffer = instancedArray(topology.orderedConstraints, 'vec4');
+    this.constraintCount = topology.orderedConstraints.length / 4;
     this.bodyBuffer = instancedArray(MAX_BODY_COLLIDERS * BODY_BUFFER_STRIDE, 'vec4');
     const caveSamples = getCaveShellSampleData();
     const packedCaveSamples = new Float32Array(caveSamples.x.length * 2);
@@ -589,7 +570,7 @@ export class GpuCapeSimulation {
     this.writeStorage(this.scratchBuffer.value, state);
     this.writeStorage(this.previousBuffer.value, state);
     this.writeStorage(this.topologyBuffer.value, topology.packed);
-    this.writeStorage(this.constraintBuffer.value, topology.coloredConstraints);
+    this.writeStorage(this.constraintBuffer.value, topology.orderedConstraints);
     this.updateAnchorBuffer(anchors);
     this.previousBack.copy(anchors.back);
     this.pendingNecklineYaw = 0;
@@ -1017,116 +998,47 @@ export class GpuCapeSimulation {
   ): THREE.ComputeNode {
     return Fn(() => {
       const constraintIndex = instanceIndex;
-      // Structural links transmit the moving neckline top-to-bottom, matching
-      // WebGL's dependency direction. Longer bend links remain in the
-      // race-free graph colors below; promoting them into this wavefront made
-      // every column move as a rod and removed the cloth wave.
-      const solveLengthwiseStructuralLink = (row: number): void => {
-        If(constraintIndex.lessThan(uint(CAPE.columns)), () => {
-          const firstIndex = uint(row * CAPE.columns).add(constraintIndex);
-          const secondIndex = firstIndex.add(uint(CAPE.columns));
-          const firstState = buffer.element(firstIndex);
-          const secondState = buffer.element(secondIndex);
-          const first = firstState.xyz.toVar(`lengthwiseStructuralFirst${row}`);
-          const second = secondState.xyz.toVar(`lengthwiseStructuralSecond${row}`);
-          const delta = second.sub(first).toVar(`lengthwiseStructuralDelta${row}`);
-          const length = delta.length().toVar(`lengthwiseStructuralLength${row}`);
-          const firstWeight = select(firstIndex.lessThan(uint(CAPE.columns)), 0, 1);
-          const totalWeight = firstWeight.add(1);
-          If(length.greaterThan(0.000_001), () => {
-            const restLength = this.topologyBuffer.element(
-              firstIndex.mul(uint(TOPOLOGY_METADATA_STRIDE)),
-            ).y;
-            const correction = delta.mul(
-              length.sub(restLength)
-                .div(length)
-                .mul(
-                  float(0.96 * GPU_CONSTRAINT_STIFFNESS_COMPENSATION)
-                    .mul(this.stiffnessUniform)
-                    .min(0.999),
-                ),
-            ).toVar(`lengthwiseStructuralCorrection${row}`);
-
-            const firstCorrection = correction.mul(firstWeight.div(totalWeight));
-            const secondCorrection = correction.div(totalWeight);
-            first.addAssign(firstCorrection);
-            second.subAssign(secondCorrection);
-            buffer.element(firstIndex).assign(vec4(first, firstState.w));
-            buffer.element(secondIndex).assign(vec4(second, secondState.w));
-            const neutralization = vec3(
-              GPU_PLANAR_CONSTRAINT_VELOCITY_NEUTRALIZATION,
-              GPU_VERTICAL_CONSTRAINT_VELOCITY_NEUTRALIZATION,
-              GPU_PLANAR_CONSTRAINT_VELOCITY_NEUTRALIZATION,
-            );
-            const firstPreviousState = this.previousBuffer.element(firstIndex);
-            const secondPreviousState = this.previousBuffer.element(secondIndex);
-            this.previousBuffer.element(firstIndex).assign(vec4(
-              firstPreviousState.xyz.add(firstCorrection.mul(neutralization)),
-              firstPreviousState.w,
-            ));
-            this.previousBuffer.element(secondIndex).assign(vec4(
-              secondPreviousState.xyz.sub(secondCorrection.mul(neutralization)),
-              secondPreviousState.w,
-            ));
-          });
-        });
-        storageBarrier();
-      };
-      for (let row = 0; row < CAPE.rows - 1; row += 1) {
-        solveLengthwiseStructuralLink(row);
-      }
-      for (const range of this.coloredConstraintRanges) {
-        If(constraintIndex.lessThan(uint(range.count)), () => {
-          const definition = this.constraintBuffer.element(
-            uint(range.offset).add(constraintIndex),
-          );
-          const firstIndex = uint(definition.x);
-          const secondIndex = uint(definition.y);
-          const firstState = buffer.element(firstIndex);
-          const secondState = buffer.element(secondIndex);
-          const first = firstState.xyz.toVar();
-          const second = secondState.xyz.toVar();
-          const delta = second.sub(first).toVar();
-          const length = delta.length().toVar();
-          const firstWeight = select(firstIndex.lessThan(uint(CAPE.columns)), 0, 1);
-          const secondWeight = select(secondIndex.lessThan(uint(CAPE.columns)), 0, 1);
-          const totalWeight = firstWeight.add(secondWeight);
-          If(length.greaterThan(0.000_001).and(totalWeight.greaterThan(0)), () => {
-            const stiffness = definition.w
-              .mul(GPU_CONSTRAINT_STIFFNESS_COMPENSATION)
-              .mul(this.stiffnessUniform)
-              .min(0.999);
-            const correction = delta.mul(
-              length.sub(definition.z).div(length).mul(stiffness),
-            ).toVar(`coloredConstraintCorrection${range.offset}`);
-
-            const firstCorrection = correction.mul(firstWeight.div(totalWeight))
-              .toVar('constraintFirstCorrection' + range.offset);
-            const secondCorrection = correction.mul(secondWeight.div(totalWeight))
-              .toVar('constraintSecondCorrection' + range.offset);
-            first.addAssign(firstCorrection);
-            second.subAssign(secondCorrection);
-            buffer.element(firstIndex).assign(vec4(first, firstState.w));
-            buffer.element(secondIndex).assign(vec4(second, secondState.w));
-            const neutralization = vec3(
-              GPU_PLANAR_CONSTRAINT_VELOCITY_NEUTRALIZATION,
-              GPU_VERTICAL_CONSTRAINT_VELOCITY_NEUTRALIZATION,
-              GPU_PLANAR_CONSTRAINT_VELOCITY_NEUTRALIZATION,
-            );
-            const firstPreviousState = this.previousBuffer.element(firstIndex);
-            const secondPreviousState = this.previousBuffer.element(secondIndex);
-            this.previousBuffer.element(firstIndex).assign(vec4(
-              firstPreviousState.xyz.add(firstCorrection.mul(neutralization)),
-              firstPreviousState.w,
-            ));
-            this.previousBuffer.element(secondIndex).assign(vec4(
-              secondPreviousState.xyz.sub(secondCorrection.mul(neutralization)),
-              secondPreviousState.w,
-            ));
-          });
-        });
-        storageBarrier();
-      }
+      // This small fixed grid spends the overwhelming majority of its GPU
+      // time in collision work, not 1,626 distance links. One invocation can
+      // therefore reproduce WebGL's exact row-major Gauss-Seidel stream while
+      // the expensive self/body/world phases below remain parallel.
+      If(constraintIndex.equal(uint(0)), () => {
+        Loop(
+          {
+            start: uint(0),
+            end: uint(this.constraintCount),
+            type: 'uint',
+            condition: '<',
+          },
+          ({ i }) => {
+            const definition = this.constraintBuffer.element(i);
+            const firstIndex = uint(definition.x);
+            const secondIndex = uint(definition.y);
+            const firstState = buffer.element(firstIndex);
+            const secondState = buffer.element(secondIndex);
+            const first = firstState.xyz.toVar('orderedConstraintFirst');
+            const second = secondState.xyz.toVar('orderedConstraintSecond');
+            const delta = second.sub(first).toVar('orderedConstraintDelta');
+            const length = delta.length().toVar('orderedConstraintLength');
+            const firstWeight = select(firstIndex.lessThan(uint(CAPE.columns)), 0, 1);
+            const secondWeight = select(secondIndex.lessThan(uint(CAPE.columns)), 0, 1);
+            const totalWeight = firstWeight.add(secondWeight);
+            If(length.greaterThan(0.000_001).and(totalWeight.greaterThan(0)), () => {
+              const stiffness = definition.w.mul(this.stiffnessUniform).min(0.999);
+              const correction = delta.mul(
+                length.sub(definition.z).div(length).mul(stiffness),
+              ).toVar('orderedConstraintCorrection');
+              const firstCorrection = correction.mul(firstWeight.div(totalWeight));
+              const secondCorrection = correction.mul(secondWeight.div(totalWeight));
+              first.addAssign(firstCorrection);
+              second.subAssign(secondCorrection);
+              buffer.element(firstIndex).assign(vec4(first, firstState.w));
+              buffer.element(secondIndex).assign(vec4(second, secondState.w));
+            });
+          },
+        );
+      });
+      storageBarrier();
 
       if (includeSelfCollision) {
         const rotatingParticleCount = uint(PARTICLE_COUNT - 1);
@@ -3041,8 +2953,7 @@ export class GpuCapeSimulation {
   private createTopology(initialState: Float32Array): {
     readonly packed: Float32Array;
     readonly normalNeighbors: Uint32Array;
-    readonly coloredConstraints: Float32Array;
-    readonly coloredConstraintRanges: readonly ColoredConstraintRange[];
+    readonly orderedConstraints: Float32Array;
   } {
     const constraints: ConstraintDefinition[] = [];
     const readPosition = (index: number): THREE.Vector3 => new THREE.Vector3(
@@ -3066,35 +2977,14 @@ export class GpuCapeSimulation {
         stiffness,
       });
     };
-    for (let row = 0; row < CAPE.rows; row += 1) {
-      for (let column = 0; column < CAPE.columns; column += 1) {
-        if (column + 1 < CAPE.columns) addConstraint(column, row, column + 1, row, 0.93);
-        // Vertical structural pairs are solved by the ordered row wavefront.
-        if (column + 1 < CAPE.columns && row + 1 < CAPE.rows) {
-          addConstraint(column, row, column + 1, row + 1, 0.8);
-          addConstraint(column + 1, row, column, row + 1, 0.8);
-        }
-        if (column + 2 < CAPE.columns) addConstraint(column, row, column + 2, row, 0.58);
-        if (row + 2 < CAPE.rows) {
-          addConstraint(
-            column,
-            row,
-            column,
-            row + 2,
-            0.82 * GPU_LENGTHWISE_BEND_RELAXATION,
-          );
-        }
-        if (column + 3 < CAPE.columns) addConstraint(column, row, column + 3, row, 0.16);
-        if (row + 3 < CAPE.rows) {
-          addConstraint(
-            column,
-            row,
-            column,
-            row + 3,
-            0.38 * GPU_LENGTHWISE_BEND_RELAXATION,
-          );
-        }
-      }
+    for (const definition of CAPE_DISTANCE_CONSTRAINTS) {
+      addConstraint(
+        definition.firstColumn,
+        definition.firstRow,
+        definition.secondColumn,
+        definition.secondRow,
+        definition.stiffness,
+      );
     }
     const normalNeighbors = new Uint32Array(PARTICLE_COUNT * 4);
     for (let row = 0; row < CAPE.rows; row += 1) {
@@ -3130,40 +3020,19 @@ export class GpuCapeSimulation {
         : 0;
     }
 
-    const colors: ConstraintDefinition[][] = [];
-    const occupiedByColor: Set<number>[] = [];
-    for (const constraint of constraints) {
-      let color = occupiedByColor.findIndex(
-        (occupied) => !occupied.has(constraint.first) && !occupied.has(constraint.second),
-      );
-      if (color < 0) {
-        color = colors.length;
-        colors.push([]);
-        occupiedByColor.push(new Set<number>());
-      }
-      colors[color]?.push(constraint);
-      occupiedByColor[color]?.add(constraint.first);
-      occupiedByColor[color]?.add(constraint.second);
-    }
-    const coloredConstraints = new Float32Array(constraints.length * 4);
-    const coloredConstraintRanges: ColoredConstraintRange[] = [];
-    let constraintOffset = 0;
-    for (const color of colors) {
-      coloredConstraintRanges.push({ offset: constraintOffset, count: color.length });
-      for (const constraint of color) {
-        const offset = constraintOffset * 4;
-        coloredConstraints[offset] = constraint.first;
-        coloredConstraints[offset + 1] = constraint.second;
-        coloredConstraints[offset + 2] = constraint.restLength;
-        coloredConstraints[offset + 3] = constraint.stiffness;
-        constraintOffset += 1;
-      }
+    const orderedConstraints = new Float32Array(constraints.length * 4);
+    for (let index = 0; index < constraints.length; index += 1) {
+      const constraint = constraints[index]!;
+      const offset = index * 4;
+      orderedConstraints[offset] = constraint.first;
+      orderedConstraints[offset + 1] = constraint.second;
+      orderedConstraints[offset + 2] = constraint.restLength;
+      orderedConstraints[offset + 3] = constraint.stiffness;
     }
     return {
       packed,
       normalNeighbors,
-      coloredConstraints,
-      coloredConstraintRanges,
+      orderedConstraints,
     };
   }
 

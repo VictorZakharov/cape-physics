@@ -7,6 +7,7 @@ import {
   CAPE_FLUTTER_ACCELERATION,
   MAXIMUM_CAPE_PARTICLE_SPEED,
 } from './CapeAerodynamics';
+import { CAPE_DISTANCE_CONSTRAINTS } from './CapeConstraintTopology';
 import { caveGroundHeightAt } from '../world/caveProfile';
 import {
   CapeContactSolver,
@@ -773,19 +774,15 @@ export class CapeSimulation {
   }
 
   private createConstraints(): void {
-    for (let row = 0; row < CAPE.rows; row += 1) {
-      for (let column = 0; column < CAPE.columns; column += 1) {
-        if (column + 1 < CAPE.columns) this.addConstraint(column, row, column + 1, row, 0.93, true);
-        if (row + 1 < CAPE.rows) this.addConstraint(column, row, column, row + 1, 0.96, true);
-        if (column + 1 < CAPE.columns && row + 1 < CAPE.rows) {
-          this.addConstraint(column, row, column + 1, row + 1, 0.8, false);
-          this.addConstraint(column + 1, row, column, row + 1, 0.8, false);
-        }
-        if (column + 2 < CAPE.columns) this.addConstraint(column, row, column + 2, row, 0.58, false);
-        if (row + 2 < CAPE.rows) this.addConstraint(column, row, column, row + 2, 0.82, false);
-        if (column + 3 < CAPE.columns) this.addConstraint(column, row, column + 3, row, 0.16, false);
-        if (row + 3 < CAPE.rows) this.addConstraint(column, row, column, row + 3, 0.38, false);
-      }
+    for (const definition of CAPE_DISTANCE_CONSTRAINTS) {
+      this.addConstraint(
+        definition.firstColumn,
+        definition.firstRow,
+        definition.secondColumn,
+        definition.secondRow,
+        definition.stiffness,
+        definition.structural,
+      );
     }
   }
 
