@@ -72,6 +72,7 @@ interface ScenePhaseTotals {
 
 type CapeTrajectoryScenario =
   | 'raised-drop'
+  | 'falling-forward-start'
   | 'forward-start'
   | 'forward-stop'
   | 'reverse'
@@ -757,12 +758,14 @@ export class CapeDemo {
         : DEFAULT_CAPE_PHYSICS_SETTINGS.weight,
     }, anchors);
     this.cape.reset(anchors);
-    if (scenario === 'raised-drop') await this.raiseCapeForHarness();
+    if (scenario === 'raised-drop' || scenario === 'falling-forward-start') {
+      await this.raiseCapeForHarness();
+    }
 
     const samples: CapeTrajectorySample[] = [];
     for (let frame = 0; frame <= frameCount; frame += 1) {
       if (scenario !== 'raised-drop') {
-        if (scenario === 'forward-start') {
+        if (scenario === 'forward-start' || scenario === 'falling-forward-start') {
           this.input.setVirtualMovement(0, frame >= 30 ? 1 : 0);
         } else if (scenario === 'forward-stop' || scenario === 'lightweight-stop') {
           this.input.setVirtualMovement(0, frame >= 30 && frame < 90 ? 1 : 0);

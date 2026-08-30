@@ -23,7 +23,7 @@ const outputPath = resolve(
     ?? join(repositoryRoot, 'artifacts', 'trajectories', 'webgl-webgpu.json'),
 );
 const requestedScenarios = (process.env.CAPE_TRAJECTORY_SCENARIOS
-  ?? 'raised-drop,forward-start,forward-stop,reverse,back-and-forth,lightweight-stop')
+  ?? 'raised-drop,falling-forward-start,forward-start,forward-stop,reverse,back-and-forth,lightweight-stop')
   .split(',')
   .map((value) => value.trim())
   .filter(Boolean);
@@ -34,6 +34,7 @@ if (!Number.isInteger(sampleEvery) || sampleEvery < 1 || sampleEvery > 12) {
 }
 const scenarioFrames = {
   'raised-drop': 120,
+  'falling-forward-start': 180,
   'forward-start': 300,
   'forward-stop': 130,
   reverse: 130,
@@ -82,6 +83,7 @@ function summarizeMotion(report, transitionFrame) {
   let maximumPostTransitionLowerParticleHeight = Number.NEGATIVE_INFINITY;
   let maximumPostTransitionHorizontalOffset = 0;
   let maximumUpwardParticleStep = 0;
+  let transitionMaximumUpwardParticleStep = 0;
   let postTransitionMaximumUpwardParticleStep = 0;
   let maximumParticleStepDetail = null;
   let maximumParticleAccelerationDetail = null;
@@ -129,6 +131,12 @@ function summarizeMotion(report, transitionFrame) {
       const stepZ = (current.particles[offset + 2] - previous.particles[offset + 2]) / physicsSteps;
       const step = Math.hypot(stepX, stepY, stepZ);
       maximumUpwardParticleStep = Math.max(maximumUpwardParticleStep, stepY);
+      if (inTransition) {
+        transitionMaximumUpwardParticleStep = Math.max(
+          transitionMaximumUpwardParticleStep,
+          stepY,
+        );
+      }
       if (afterTransition) {
         postTransitionMaximumUpwardParticleStep = Math.max(
           postTransitionMaximumUpwardParticleStep,
@@ -199,6 +207,7 @@ function summarizeMotion(report, transitionFrame) {
         : 0,
     maximumPostTransitionHorizontalOffset,
     maximumUpwardParticleStep,
+    transitionMaximumUpwardParticleStep,
     postTransitionMaximumUpwardParticleStep,
     maximumCenterlineDeviation,
     maximumBodyPenetration,
@@ -257,7 +266,9 @@ function validateScenario(scenario, webgl, webgpu, comparison) {
         + `${motion.minimumSelfSeparation.toFixed(4)} m`,
     );
     assert(
-      motion.maximumUpwardFold <= (scenario === 'raised-drop' ? 0.23 : 0.08),
+      motion.maximumUpwardFold <= (
+        scenario === 'raised-drop' || scenario === 'falling-forward-start' ? 0.23 : 0.08
+      ),
       `${scenario} ${renderer} folded upward by ${motion.maximumUpwardFold.toFixed(4)} m`,
     );
     assert(
@@ -268,13 +279,30 @@ function validateScenario(scenario, webgl, webgpu, comparison) {
   }
   if (scenario === 'forward-start') {
     assert(
-      finalGpu.hemDrop >= finalGl.hemDrop * 0.5,
+      finalGpu.hemDrop >= Math.max(1.05, finalGl.hemDrop * 0.78),
       `forward-start WebGPU remained too horizontal (${finalGpu.hemDrop.toFixed(3)} m drop)`,
     );
     assert(
-      finalGpu.hemBackOffset <= finalGl.hemBackOffset + 0.5,
+      finalGpu.hemBackOffset <= finalGl.hemBackOffset + 0.3,
       `forward-start WebGPU trailed ${finalGpu.hemBackOffset.toFixed(3)} m behind`,
     );
+    assert(
+      finalGpu.maximumLowerHorizontalOffset <= 1.15,
+      `forward-start WebGPU held a Superman pose `
+        + `${finalGpu.maximumLowerHorizontalOffset.toFixed(3)} m from the neckline`,
+    );
+  }
+  if (scenario === 'falling-forward-start') {
+    for (const [renderer, motion] of [
+      ['WebGL', webglMotion],
+      ['WebGPU', webgpuMotion],
+    ]) {
+      assert(
+        motion.transitionMaximumUpwardParticleStep <= 0.035,
+        `falling-forward-start ${renderer} reversed downward momentum by `
+          + `${motion.transitionMaximumUpwardParticleStep.toFixed(4)} m/frame`,
+      );
+    }
   }
   if (
     scenario !== 'raised-drop'
@@ -476,6 +504,7 @@ try {
   const webgpu = await captureRenderer('webgpu', staticPort);
   const transitions = {
     'raised-drop': 0,
+    'falling-forward-start': 30,
     'forward-start': 30,
     'forward-stop': 90,
     reverse: 90,

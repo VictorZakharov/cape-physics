@@ -4,6 +4,7 @@ import { CAPE, PHYSICS_STEP, PLAYER } from '../src/config';
 import { createRockTextures } from '../src/graphics/proceduralTextures';
 import { CapeSimulation } from '../src/physics/CapeSimulation';
 import { CLOTH_BODY_CLEARANCE } from '../src/physics/ClothBodyCollision';
+import { CLOTH_THICKNESS } from '../src/physics/ClothSelfCollision';
 import {
   CLOTH_WORLD_CLEARANCE,
   getClothWorldClearance,
@@ -41,6 +42,92 @@ describe('CapeSimulation', () => {
     expect(cape.getMaximumStructuralError()).toBeLessThan(0.035);
     expect(cape.getAverageLowerCapeSpanRatio(anchors)).toBeGreaterThan(0.45);
     expect(Number.isFinite(cape.getParticlePosition(6, CAPE.rows - 1).lengthSq())).toBe(true);
+  });
+
+  test('preserves a falling cape\'s downward momentum when forward movement begins', () => {
+    const cape = new CapeSimulation(anchors);
+    const dynamicAnchors: CapeAnchors = {
+      left: anchors.left.clone(),
+      right: anchors.right.clone(),
+      back: anchors.back.clone(),
+    };
+    const positionData = new Float32Array(CAPE.columns * CAPE.rows * 4);
+    const previousY = new Float64Array(CAPE.columns * CAPE.rows);
+    const center = anchors.left.clone().add(anchors.right).multiplyScalar(0.5);
+    for (let row = 0; row < CAPE.rows; row += 1) {
+      for (let column = 0; column < CAPE.columns; column += 1) {
+        const index = row * CAPE.columns + column;
+        const position = cape.getParticlePosition(column, row);
+        const offset = position.clone().sub(center);
+        if (row > 0) position.y = center.y + Math.abs(offset.y);
+        position.toArray(positionData, index * 4);
+        previousY[index] = position.y;
+      }
+    }
+    cape.overwriteStateForHarness(positionData, positionData);
+
+    const characterVelocity = new THREE.Vector3();
+    const firstLowerRow = Math.floor(CAPE.rows * 0.5);
+    const captureLowerVerticalStep = (): { average: number; maximum: number } => {
+      let total = 0;
+      let count = 0;
+      let maximum = Number.NEGATIVE_INFINITY;
+      for (let row = firstLowerRow; row < CAPE.rows; row += 1) {
+        for (let column = 0; column < CAPE.columns; column += 1) {
+          const index = row * CAPE.columns + column;
+          const currentY = cape.getParticlePosition(column, row).y;
+          const verticalStep = currentY - (previousY[index] ?? currentY);
+          total += verticalStep;
+          count += 1;
+          maximum = Math.max(maximum, verticalStep);
+          previousY[index] = currentY;
+        }
+      }
+      return { average: total / Math.max(1, count), maximum };
+    };
+
+    let preStartAverageVerticalStep = 0;
+    for (let frame = 0; frame < 30; frame += 1) {
+      cape.step(
+        PHYSICS_STEP,
+        dynamicAnchors,
+        [],
+        [],
+        characterVelocity,
+        frame * PHYSICS_STEP,
+      );
+      preStartAverageVerticalStep = captureLowerVerticalStep().average;
+    }
+
+    let forwardSpeed = 0;
+    let maximumLowerUpwardStep = 0;
+    let maximumAverageLowerUpwardStep = Number.NEGATIVE_INFINITY;
+    for (let frame = 0; frame < 30; frame += 1) {
+      const velocityBlend = 1 - Math.exp(-PLAYER.acceleration * PHYSICS_STEP);
+      forwardSpeed = THREE.MathUtils.lerp(forwardSpeed, PLAYER.walkSpeed, velocityBlend);
+      characterVelocity.set(0, 0, -forwardSpeed);
+      const forwardStep = forwardSpeed * PHYSICS_STEP;
+      dynamicAnchors.left.z -= forwardStep;
+      dynamicAnchors.right.z -= forwardStep;
+      cape.step(
+        PHYSICS_STEP,
+        dynamicAnchors,
+        [],
+        [],
+        characterVelocity,
+        (frame + 30) * PHYSICS_STEP,
+      );
+      const verticalStep = captureLowerVerticalStep();
+      maximumLowerUpwardStep = Math.max(maximumLowerUpwardStep, verticalStep.maximum);
+      maximumAverageLowerUpwardStep = Math.max(
+        maximumAverageLowerUpwardStep,
+        verticalStep.average,
+      );
+    }
+
+    expect(preStartAverageVerticalStep).toBeLessThan(-0.000_5);
+    expect(maximumAverageLowerUpwardStep).toBeLessThan(0.001);
+    expect(maximumLowerUpwardStep).toBeLessThan(CLOTH_THICKNESS);
   });
 
   test('opens a tubular row collapse without flattening normal cloth', () => {

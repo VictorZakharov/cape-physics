@@ -194,6 +194,7 @@ declare global {
       traceCapeScenario: (options: {
         scenario:
           | 'raised-drop'
+          | 'falling-forward-start'
           | 'forward-start'
           | 'forward-stop'
           | 'reverse'
@@ -204,6 +205,7 @@ declare global {
       }) => Promise<{
         readonly scenario:
           | 'raised-drop'
+          | 'falling-forward-start'
           | 'forward-start'
           | 'forward-stop'
           | 'reverse'

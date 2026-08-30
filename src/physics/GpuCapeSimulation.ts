@@ -132,11 +132,13 @@ const GPU_MAXIMUM_VERTICAL_PARTICLE_SPEED = 12;
 // weight multiplier and fixed-step gravity remain shared with WebGL.
 const GPU_GRAVITY_COMPENSATION = 1.05;
 
-// Parallel graph colors retain more projection energy than WebGL's ordered
-// sweep. Preserve more planar response for travelling waves while damping the
-// vertical component enough to prevent an artificial airborne equilibrium.
-const GPU_PLANAR_CONSTRAINT_VELOCITY_NEUTRALIZATION = 0.8;
-const GPU_VERTICAL_CONSTRAINT_VELOCITY_NEUTRALIZATION = 0.95;
+// Match WebGL's Verlet semantics by retaining the planar velocity created as
+// a moving neckline pulls distance constraints. Neutralizing that correction
+// leaves free particles fixed in world space and stretches the cape into a
+// horizontal Superman pose. Vertical projection remains velocity-neutral so
+// numerical length repair cannot reverse an already-falling cape upward.
+const GPU_PLANAR_CONSTRAINT_VELOCITY_NEUTRALIZATION = 0;
+const GPU_VERTICAL_CONSTRAINT_VELOCITY_NEUTRALIZATION = 1;
 const BODY_CONTACT_RECONCILIATION_START = 0.000_5;
 const BODY_CONTACT_RECONCILIATION_FULL = 0.025;
 const MAXIMUM_BODY_CONTACT_CORRECTION_PER_PASS = 0.08;

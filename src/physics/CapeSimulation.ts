@@ -63,6 +63,7 @@ export class CapeSimulation {
   private readonly positions: THREE.Vector3[] = [];
   private readonly previous: THREE.Vector3[] = [];
   private readonly inverseMass: Float32Array;
+  private readonly predictedVerticalDisplacement: Float32Array;
   private readonly constraints: DistanceConstraint[] = [];
   private readonly positionAttribute: THREE.BufferAttribute;
   private readonly selfCollision: ClothSelfCollision;
@@ -110,6 +111,7 @@ export class CapeSimulation {
     this.settings = normalizeCapePhysicsSettings(settings);
     const particleCount = CAPE.columns * CAPE.rows;
     this.inverseMass = new Float32Array(particleCount);
+    this.predictedVerticalDisplacement = new Float32Array(particleCount);
     this.selfCollision = new ClothSelfCollision(particleCount, CAPE.columns);
     this.foldGuard = new ClothFoldGuard(CAPE.columns, CAPE.rows);
     this.contactSolver = new CapeContactSolver(this.positions, this.previous, this.inverseMass);
@@ -249,6 +251,7 @@ export class CapeSimulation {
           this.airflow,
           (0.048 + turbulence * 0.011) * deltaSquared,
         );
+        this.predictedVerticalDisplacement[index] = position.y - previous.y;
       }
     }
     if (profileActive) {
@@ -349,6 +352,14 @@ export class CapeSimulation {
     }
 
     this.reconcileBodyContactVelocity();
+    // Fixed-world and material body contacts are authoritative. Their
+    // projection may need upward velocity to clear a rock, floor, or boot.
+    if (
+      this.contactSolver.getDiagnostics().lastStep === 0
+      && !this.hasMaterialBodyContactCorrection()
+    ) {
+      this.reconcileProjectionVerticalVelocity();
+    }
     this.measureStepMotion();
     const horizontallySettled = this.getMaximumLowerCapeHorizontalOffset()
       < MAXIMUM_SETTLED_HORIZONTAL_OFFSET;
@@ -868,6 +879,31 @@ export class CapeSimulation {
       );
       previous.lerp(position, strength);
     }
+  }
+
+  /**
+   * Projection may repair a stretched link upward even though physical
+   * prediction was still descending. Do not encode that positional repair as
+   * an upward Verlet velocity for the next step. Upward physical prediction,
+   * planar response, and the corrected position itself remain unchanged.
+   */
+  private reconcileProjectionVerticalVelocity(): void {
+    for (let index = CAPE.columns; index < this.positions.length; index += 1) {
+      if ((this.predictedVerticalDisplacement[index] ?? 0) >= 0) continue;
+      const position = this.positions[index];
+      const previous = this.previous[index];
+      if (position && previous && position.y > previous.y) previous.y = position.y;
+    }
+  }
+
+  private hasMaterialBodyContactCorrection(): boolean {
+    for (let index = CAPE.columns; index < this.positions.length; index += 1) {
+      if (
+        this.contactSolver.getBodyCorrectionUsed(index)
+          > BODY_CONTACT_RECONCILIATION_START
+      ) return true;
+    }
+    return false;
   }
 
   private dampResidualMotion(strength: number): void {
