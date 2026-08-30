@@ -585,6 +585,7 @@ export class CapeContactSolver {
         preferredDeltaY - back.y * preferredDepth,
         preferredDeltaZ - back.z * preferredDepth,
       );
+      this.contactNormal.y = 0;
       if (this.contactNormal.lengthSq() > 0.000_001) this.contactNormal.normalize();
       else if (lateralSquared > 0.000_001) {
         this.contactNormal.set(

@@ -238,6 +238,18 @@ declare global {
           readonly maximumLowerHorizontalOffset: number;
           readonly centerlineDeviation: number;
           readonly rowTwistRange: number;
+          readonly maximumBodyPenetration: number;
+          readonly bodyPenetrationByKind: {
+            readonly point: number;
+            readonly face: number;
+            readonly maximum: number;
+          };
+          readonly bodyPenetrationByCollider: Readonly<Record<string, number>>;
+          readonly maximumStructuralError: number;
+          readonly minimumSelfSeparation: number;
+          readonly maximumUpwardFold: number;
+          readonly lowerCapeSpanRatio: number;
+          readonly lowerCapeRowCurlRatio: number;
         }[];
       }>;
       profile: (options: {

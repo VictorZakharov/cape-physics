@@ -2,6 +2,62 @@ import { createServer } from 'node:http';
 
 export const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
+async function waitForChildExit(child, timeoutMilliseconds) {
+  if (child.exitCode !== null) return true;
+  return await new Promise((resolve) => {
+    const onExit = () => {
+      clearTimeout(timeout);
+      resolve(true);
+    };
+    const timeout = setTimeout(() => {
+      child.off('exit', onExit);
+      resolve(false);
+    }, timeoutMilliseconds);
+    child.once('exit', onExit);
+    if (child.exitCode !== null) {
+      child.off('exit', onExit);
+      clearTimeout(timeout);
+      resolve(true);
+    }
+  });
+}
+
+export async function runCleanupSteps(steps) {
+  const errors = [];
+  for (const [label, cleanup] of steps) {
+    try {
+      await cleanup();
+    } catch (error) {
+      errors.push(new Error(`${label}: ${error.message}`, { cause: error }));
+    }
+  }
+  if (errors.length > 0) throw new AggregateError(errors, 'Audit cleanup failed.');
+}
+
+export async function closeBrowserProcess(browser, debuggerConnection) {
+  await runCleanupSteps([
+    ['request browser shutdown', async () => {
+      if (!debuggerConnection) return;
+      await Promise.race([
+        debuggerConnection.command('Browser.close').catch(() => undefined),
+        delay(1_500),
+      ]);
+    }],
+    ['close debugger socket', async () => {
+      debuggerConnection?.socket.close();
+    }],
+    ['terminate browser process', async () => {
+      if (await waitForChildExit(browser, 2_000)) return;
+      if (!browser.kill() && browser.exitCode === null) {
+        throw new Error('Browser process rejected termination.');
+      }
+      if (!await waitForChildExit(browser, 5_000)) {
+        throw new Error(`Browser process ${browser.pid ?? 'unknown'} did not exit.`);
+      }
+    }],
+  ]);
+}
+
 export async function reservePort() {
   const server = createServer();
   const port = await new Promise((resolve, reject) => {

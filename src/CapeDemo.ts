@@ -94,6 +94,14 @@ interface CapeTrajectorySample {
   readonly maximumLowerHorizontalOffset: number;
   readonly centerlineDeviation: number;
   readonly rowTwistRange: number;
+  readonly maximumBodyPenetration: number;
+  readonly bodyPenetrationByKind: ReturnType<CapeSimulation['getBodyPenetrationDiagnostics']>;
+  readonly bodyPenetrationByCollider: Readonly<Record<string, number>>;
+  readonly maximumStructuralError: number;
+  readonly minimumSelfSeparation: number;
+  readonly maximumUpwardFold: number;
+  readonly lowerCapeSpanRatio: number;
+  readonly lowerCapeRowCurlRatio: number;
 }
 
 interface CapeTrajectoryReport {
@@ -691,6 +699,17 @@ export class CapeDemo {
         }
       }
     }
+    const bodyColliders = this.character.getCapeColliders();
+    const bodyPenetrationByKind = this.cape.getBodyPenetrationDiagnostics(
+      bodyColliders,
+      anchors.back,
+    );
+    const bodyPenetrationByCollider = Object.fromEntries(
+      bodyColliders.map((collider) => [
+        collider.name,
+        this.cape.getMaximumBodyPenetration([collider], anchors.back),
+      ]),
+    );
     return {
       frame,
       time: this.fixedTime,
@@ -706,6 +725,14 @@ export class CapeDemo {
       maximumLowerHorizontalOffset: this.cape.getMaximumLowerCapeHorizontalOffset(),
       centerlineDeviation: this.cape.getCapeCenterlineDeviation(),
       rowTwistRange: this.cape.getCapeRowTwistRange(anchors),
+      maximumBodyPenetration: bodyPenetrationByKind.maximum,
+      bodyPenetrationByKind,
+      bodyPenetrationByCollider,
+      maximumStructuralError: this.cape.getMaximumStructuralError(),
+      minimumSelfSeparation: this.cape.getMinimumSelfSeparation(),
+      maximumUpwardFold: this.cape.getMaximumUpwardFold(),
+      lowerCapeSpanRatio: this.cape.getAverageLowerCapeSpanRatio(anchors),
+      lowerCapeRowCurlRatio: this.cape.getMaximumLowerCapeRowCurlRatio(anchors),
     };
   }
 

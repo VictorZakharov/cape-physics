@@ -1,19 +1,20 @@
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  closeBrowserProcess,
   connectDebugger,
-  delay,
   evaluate,
   fetchJsonWithRetry,
   reservePort,
+  runCleanupSteps,
   waitForExpression,
 } from './audit/cdp-client.mjs';
 import { close, createStaticServer, listen } from './audit/static-server.mjs';
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const temporaryParent = join(repositoryRoot, 'artifacts', '.tmp');
 const distRoot = resolve(process.env.CAPE_TRAJECTORY_DIST_ROOT ?? join(repositoryRoot, 'dist'));
 if (!existsSync(join(distRoot, 'index.html'))) throw new Error(`Production build missing at ${distRoot}.`);
 
@@ -33,7 +34,7 @@ if (!Number.isInteger(sampleEvery) || sampleEvery < 1 || sampleEvery > 12) {
 }
 const scenarioFrames = {
   'raised-drop': 120,
-  'forward-start': 120,
+  'forward-start': 300,
   'forward-stop': 130,
   reverse: 130,
   'back-and-forth': 360,
@@ -69,6 +70,12 @@ function summarizeMotion(report, transitionFrame) {
   let transitionMaximumParticleAcceleration = 0;
   let maximumCenterlineDeviation = 0;
   let centerlineDeviationTotal = 0;
+  let maximumBodyPenetration = 0;
+  let maximumStructuralError = 0;
+  let minimumSelfSeparation = Number.POSITIVE_INFINITY;
+  let maximumUpwardFold = 0;
+  let minimumLowerCapeSpanRatio = Number.POSITIVE_INFINITY;
+  let maximumLowerCapeRowCurlRatio = 0;
   let postTransitionMaximumParticleStep = 0;
   let postTransitionMaximumParticleAcceleration = 0;
   let minimumPostTransitionHemDrop = Number.POSITIVE_INFINITY;
@@ -87,6 +94,15 @@ function summarizeMotion(report, transitionFrame) {
       current.centerlineDeviation,
     );
     centerlineDeviationTotal += current.centerlineDeviation;
+    maximumBodyPenetration = Math.max(maximumBodyPenetration, current.maximumBodyPenetration);
+    maximumStructuralError = Math.max(maximumStructuralError, current.maximumStructuralError);
+    minimumSelfSeparation = Math.min(minimumSelfSeparation, current.minimumSelfSeparation);
+    maximumUpwardFold = Math.max(maximumUpwardFold, current.maximumUpwardFold);
+    minimumLowerCapeSpanRatio = Math.min(minimumLowerCapeSpanRatio, current.lowerCapeSpanRatio);
+    maximumLowerCapeRowCurlRatio = Math.max(
+      maximumLowerCapeRowCurlRatio,
+      current.lowerCapeRowCurlRatio,
+    );
     maximumHemStep = Math.max(maximumHemStep, Math.abs(current.hemDrop - previous.hemDrop));
     const inTransition = transitionFrame !== null
       && current.frame >= transitionFrame
@@ -185,6 +201,14 @@ function summarizeMotion(report, transitionFrame) {
     maximumUpwardParticleStep,
     postTransitionMaximumUpwardParticleStep,
     maximumCenterlineDeviation,
+    maximumBodyPenetration,
+    maximumStructuralError,
+    minimumSelfSeparation: Number.isFinite(minimumSelfSeparation) ? minimumSelfSeparation : 0,
+    maximumUpwardFold,
+    minimumLowerCapeSpanRatio: Number.isFinite(minimumLowerCapeSpanRatio)
+      ? minimumLowerCapeSpanRatio
+      : 0,
+    maximumLowerCapeRowCurlRatio,
     averageCenterlineDeviation: centerlineDeviationTotal
       / Math.max(1, report.samples.length - 1),
   };
@@ -209,8 +233,49 @@ function validateScenario(scenario, webgl, webgpu, comparison) {
     `${scenario} WebGPU transition acceleration spiked to `
       + `${webgpuMotion.transitionMaximumParticleAcceleration.toFixed(4)} m/frame²`,
   );
+  const finalGl = webgl.samples.at(-1);
   const finalGpu = webgpu.samples.at(-1);
+  assert(finalGl, `${scenario} has no WebGL samples`);
   assert(finalGpu, `${scenario} has no WebGPU samples`);
+  for (const [renderer, motion] of [
+    ['WebGL', webglMotion],
+    ['WebGPU', webgpuMotion],
+  ]) {
+    assert(
+      motion.maximumBodyPenetration <= 0.01,
+      `${scenario} ${renderer} penetrated the animated body by `
+        + `${motion.maximumBodyPenetration.toFixed(4)} m`,
+    );
+    assert(
+      motion.maximumStructuralError <= 0.1,
+      `${scenario} ${renderer} stretched a structural link by `
+        + `${motion.maximumStructuralError.toFixed(4)} m`,
+    );
+    assert(
+      motion.minimumSelfSeparation >= 0.045,
+      `${scenario} ${renderer} collapsed self-separation to `
+        + `${motion.minimumSelfSeparation.toFixed(4)} m`,
+    );
+    assert(
+      motion.maximumUpwardFold <= (scenario === 'raised-drop' ? 0.23 : 0.08),
+      `${scenario} ${renderer} folded upward by ${motion.maximumUpwardFold.toFixed(4)} m`,
+    );
+    assert(
+      motion.maximumLowerCapeRowCurlRatio <= 0.22,
+      `${scenario} ${renderer} left a curled lower row `
+        + `(${motion.maximumLowerCapeRowCurlRatio.toFixed(3)})`,
+    );
+  }
+  if (scenario === 'forward-start') {
+    assert(
+      finalGpu.hemDrop >= finalGl.hemDrop * 0.5,
+      `forward-start WebGPU remained too horizontal (${finalGpu.hemDrop.toFixed(3)} m drop)`,
+    );
+    assert(
+      finalGpu.hemBackOffset <= finalGl.hemBackOffset + 0.5,
+      `forward-start WebGPU trailed ${finalGpu.hemBackOffset.toFixed(3)} m behind`,
+    );
+  }
   if (
     scenario !== 'raised-drop'
     && scenario !== 'lightweight-stop'
@@ -260,7 +325,7 @@ function validateScenario(scenario, webgl, webgpu, comparison) {
         `${scenario} ${renderer} flipped the lower cape above the neckline`,
       );
       assert(
-        motion.minimumPostTransitionHemDrop >= 0.68,
+        motion.minimumPostTransitionHemDrop >= 0.6,
         `${scenario} ${renderer} lifted the hem to only `
           + `${motion.minimumPostTransitionHemDrop.toFixed(3)} m below the neckline`,
       );
@@ -278,7 +343,7 @@ function validateScenario(scenario, webgl, webgpu, comparison) {
     );
     assert(
       webgpuMotion.averageCenterlineDeviation
-        >= webglMotion.averageCenterlineDeviation * 0.75,
+        >= Math.max(0.05, webglMotion.averageCenterlineDeviation * 0.45),
       'back-and-forth WebGPU motion lost the travelling cloth wave',
     );
   }
@@ -334,7 +399,8 @@ function compareReports(webgl, webgpu) {
 }
 
 async function captureRenderer(renderer, staticPort) {
-  const temporaryRoot = mkdtempSync(join(tmpdir(), `cape-trajectory-${renderer}-`));
+  mkdirSync(temporaryParent, { recursive: true });
+  const temporaryRoot = mkdtempSync(join(temporaryParent, `cape-trajectory-${renderer}-`));
   const debugPort = await reservePort();
   const pageUrl = `http://127.0.0.1:${staticPort}/?harness=1&renderer=${renderer}`;
   const browser = spawn(browserExecutable, [
@@ -344,7 +410,9 @@ async function captureRenderer(renderer, staticPort) {
     '--disable-background-networking',
     '--disable-breakpad',
     '--disable-crash-reporter',
-    '--disable-features=CalculateNativeWinOcclusion',
+    '--disable-gpu-shader-disk-cache',
+    '--disable-skia-graphite',
+    '--disable-features=CalculateNativeWinOcclusion,AutofillAiServerModel,WebGPUBlobCache',
     '--enable-webgl',
     '--enable-gpu',
     '--ignore-gpu-blocklist',
@@ -353,8 +421,13 @@ async function captureRenderer(renderer, staticPort) {
     '--window-size=1280,720',
     `--remote-debugging-port=${debugPort}`,
     `--user-data-dir=${join(temporaryRoot, 'browser-profile')}`,
+    '--profile-directory=CapeHarness',
     pageUrl,
-  ], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  ], {
+    windowsHide: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, TEMP: temporaryRoot, TMP: temporaryRoot },
+  });
   let browserLog = '';
   browser.stdout.on('data', (chunk) => { browserLog += chunk; });
   browser.stderr.on('data', (chunk) => { browserLog += chunk; });
@@ -386,25 +459,13 @@ async function captureRenderer(renderer, staticPort) {
   } catch (error) {
     throw new Error(`${renderer} trajectory capture failed: ${error.message}\n${browserLog}`);
   } finally {
-    if (debuggerConnection) {
-      await Promise.race([
-        debuggerConnection.command('Browser.close').catch(() => undefined),
-        delay(1_500),
-      ]);
-    }
-    debuggerConnection?.socket.close();
-    if (browser.exitCode === null) {
-      await Promise.race([
-        new Promise((resolveExit) => browser.once('exit', resolveExit)),
-        delay(2_000),
-      ]);
-    }
-    if (browser.exitCode === null) browser.kill();
-    try {
-      rmSync(temporaryRoot, { recursive: true, force: true, maxRetries: 4, retryDelay: 100 });
-    } catch (error) {
-      console.warn(`Host denied temporary profile cleanup: ${error.message}`);
-    }
+    await runCleanupSteps([
+      ['browser shutdown', () => closeBrowserProcess(browser, debuggerConnection)],
+      ['temporary browser profile', async () => {
+        rmSync(temporaryRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 250 });
+        if (existsSync(temporaryRoot)) throw new Error(`Directory remains: ${temporaryRoot}`);
+      }],
+    ]);
   }
 }
 

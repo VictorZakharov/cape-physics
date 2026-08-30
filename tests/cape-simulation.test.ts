@@ -228,6 +228,13 @@ describe('CapeSimulation', () => {
     let maximumBodyPenetration = 0;
     let maximumRockPenetration = 0;
     let minimumBootRockGap = Number.POSITIVE_INFINITY;
+    let maximumUpwardParticleStep = 0;
+    const previousParticleY = new Float64Array(CAPE.rows * CAPE.columns);
+    for (let row = 0; row < CAPE.rows; row += 1) {
+      for (let column = 0; column < CAPE.columns; column += 1) {
+        previousParticleY[row * CAPE.columns + column] = cape.getParticlePosition(column, row).y;
+      }
+    }
     const bootAxis = new THREE.Vector3();
     const bootToRock = new THREE.Vector3();
     const closestBootPoint = new THREE.Vector3();
@@ -266,6 +273,17 @@ describe('CapeSimulation', () => {
         walkingVelocity,
         tick * PHYSICS_STEP,
       );
+      for (let row = 1; row < CAPE.rows; row += 1) {
+        for (let column = 0; column < CAPE.columns; column += 1) {
+          const particleIndex = row * CAPE.columns + column;
+          const currentY = cape.getParticlePosition(column, row).y;
+          maximumUpwardParticleStep = Math.max(
+            maximumUpwardParticleStep,
+            currentY - (previousParticleY[particleIndex] ?? currentY),
+          );
+          previousParticleY[particleIndex] = currentY;
+        }
+      }
       maximumBootPenetration = Math.max(
         maximumBootPenetration,
         cape.getMaximumBodyPenetration(bootColliders, characterAnchors.back),
@@ -286,6 +304,7 @@ describe('CapeSimulation', () => {
     expect(maximumBootPenetration).toBeLessThan(0.002);
     expect(maximumBodyPenetration).toBeLessThan(0.002);
     expect(maximumRockPenetration).toBeLessThan(0.002);
+    expect(maximumUpwardParticleStep).toBeLessThan(0.05);
   });
 
   test('keeps a maximum-length walking cape outside floor rocks every step', () => {

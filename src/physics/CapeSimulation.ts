@@ -3,8 +3,8 @@ import { CAMERA_NEAR_OPACITY, CAPE, PLAYER } from '../config';
 import { createCapeFabricTextures } from '../graphics/proceduralTextures';
 import type { CapeAnchors } from '../player/Character';
 import {
+  CAPE_DRAG_PER_SECOND,
   CAPE_FLUTTER_ACCELERATION,
-  getCapeDragPerSecond,
   MAXIMUM_CAPE_PARTICLE_SPEED,
 } from './CapeAerodynamics';
 import { caveGroundHeightAt } from '../world/caveProfile';
@@ -54,9 +54,8 @@ const IDLE_DRAPE_RECOVERY_HEM_DROP = 1.2;
 const IDLE_DRAPE_RECOVERY_DELAY_SECONDS = 0.12;
 const IDLE_DRAPE_RECOVERY_RAMP_SECONDS = 0.35;
 const MAXIMUM_SLEEP_BODY_PENETRATION = 0.001;
-const BODY_CONTACT_RECONCILIATION_START = 0.025;
-const BODY_CONTACT_RECONCILIATION_FULL = 0.18;
-const BODY_CONTACT_RECONCILIATION_STRENGTH = 0.86;
+const BODY_CONTACT_RECONCILIATION_START = 0.000_5;
+const BODY_CONTACT_RECONCILIATION_FULL = 0.025;
 const WAKE_SPEED = 0.08;
 
 export class CapeSimulation {
@@ -209,7 +208,7 @@ export class CapeSimulation {
         const previous = this.previous[index];
         if (!position || !previous) continue;
 
-        const drag = getCapeDragPerSecond(planarSpeed) * this.settings.damping;
+        const drag = CAPE_DRAG_PER_SECOND * this.settings.damping;
         this.velocity.copy(position).sub(previous).multiplyScalar(Math.exp(-drag * deltaTime));
         const particlePlanarSpeed = Math.hypot(this.velocity.x, this.velocity.z);
         const maximumPlanarDisplacement = MAXIMUM_PLANAR_CAPE_PARTICLE_SPEED * deltaTime;
@@ -866,7 +865,7 @@ export class CapeSimulation {
         correction,
         BODY_CONTACT_RECONCILIATION_START,
         BODY_CONTACT_RECONCILIATION_FULL,
-      ) * BODY_CONTACT_RECONCILIATION_STRENGTH;
+      );
       previous.lerp(position, strength);
     }
   }

@@ -31,9 +31,8 @@ import {
   type WorldCollider,
 } from './colliders';
 import {
-  CAPE_BASE_DRAG_PER_SECOND,
+  CAPE_DRAG_PER_SECOND,
   CAPE_FLUTTER_ACCELERATION,
-  getCapeDragPerSecond,
 } from './CapeAerodynamics';
 import { CapeSimulation } from './CapeSimulation';
 import {
@@ -111,11 +110,6 @@ export interface GpuCapeKernelProfile {
 
 const PARTICLE_COUNT = CAPE.columns * CAPE.rows;
 
-// A graph-colored sweep resolves overlapping lengthwise bend links much more
-// completely than the serial WebGL sweep. Relax only those non-structural
-// links so both solvers retain the same authored flex; structural constraints,
-// collision projection, and the user stiffness multiplier remain unchanged.
-const GPU_LENGTHWISE_BEND_RELAXATION = 0.12;
 // The vertical row wavefront already transmits the pinned neckline transform
 // through the free cloth. A second rigid transform in prediction duplicates
 // that impulse and launches the cape during reversals, so free particles keep
@@ -138,12 +132,14 @@ const GPU_MAXIMUM_VERTICAL_PARTICLE_SPEED = 12;
 // weight multiplier and fixed-step gravity remain shared with WebGL.
 const GPU_GRAVITY_COMPENSATION = 1.05;
 
-// Fully converged graph colors retain more projection energy than the ordered
-// CPU sweep. Dampen the gravity axis strongly to prevent vertical launch, while
-// retaining more planar constraint response so the cape can swing around the
-// body and carry travelling waves like the ordered solver.
-const GPU_PLANAR_CONSTRAINT_VELOCITY_NEUTRALIZATION = 0.9;
+// Parallel graph colors retain more projection energy than WebGL's ordered
+// sweep. Preserve more planar response for travelling waves while damping the
+// vertical component enough to prevent an artificial airborne equilibrium.
+const GPU_PLANAR_CONSTRAINT_VELOCITY_NEUTRALIZATION = 0.8;
 const GPU_VERTICAL_CONSTRAINT_VELOCITY_NEUTRALIZATION = 0.95;
+const BODY_CONTACT_RECONCILIATION_START = 0.000_5;
+const BODY_CONTACT_RECONCILIATION_FULL = 0.025;
+const MAXIMUM_BODY_CONTACT_CORRECTION_PER_PASS = 0.08;
 // Match the ordered solver's velocity-neutral idle row recovery. It supplies
 // the missing tangential settling component after projection has dissipated a
 // lightweight cape's pendulum motion.
@@ -204,7 +200,7 @@ export class GpuCapeSimulation {
   private readonly timeUniform = uniform(0);
   private readonly movementBlendUniform = uniform(0);
   private readonly idleDrapeRecoveryUniform = uniform(0);
-  private readonly dragPerSecondUniform = uniform(CAPE_BASE_DRAG_PER_SECOND);
+  private readonly dragPerSecondUniform = uniform(CAPE_DRAG_PER_SECOND);
   private readonly airflowUniform = uniform(new THREE.Vector3());
   private readonly necklineMotionUniform = uniform(new THREE.Vector3());
   private readonly necklineRotationCenterUniform = uniform(new THREE.Vector3());
@@ -235,7 +231,6 @@ export class GpuCapeSimulation {
   private worldColliderSource: readonly WorldCollider[] | null = null;
   private worldContactsLastStep = 0;
   private worldContactEvents = 0;
-  private worldContactEventOffset = 0;
   private submittedSteps = 0;
   private idleDrapeRecoverySeconds = 0;
   private settings: CapePhysicsSettings;
@@ -324,6 +319,24 @@ export class GpuCapeSimulation {
       true,
       true,
     );
+    const finalSelfPositionToScratch = this.createProjectionKernel(
+      this.positionBuffer,
+      this.scratchBuffer,
+      false,
+      'Cape final self separation',
+      true,
+      false,
+      true,
+    );
+    const finalContactScratchToPosition = this.createProjectionKernel(
+      this.scratchBuffer,
+      this.positionBuffer,
+      true,
+      'Cape final contact reconciliation',
+      false,
+      true,
+      true,
+    );
     const positionBodyFaces = this.createFaceSweepKernel(
       this.createBodyFaceColorFunction(this.positionBuffer, 'Position'),
       'Cape body faces in position',
@@ -344,6 +357,8 @@ export class GpuCapeSimulation {
       this.createRockFaceColorFunction(this.scratchBuffer, 'Scratch'),
       'Cape rock faces in scratch',
     );
+    const reconcileBodyContactVelocity =
+      this.createBodyContactReconciliationKernel();
 
     // One workgroup executes race-free pair colors for the same distance,
     // self-collision, and fold constraints used by the CPU/WebGL solver. The
@@ -355,7 +370,7 @@ export class GpuCapeSimulation {
         currentBufferIsPosition ? positionToScratch : scratchToPosition,
       );
       currentBufferIsPosition = !currentBufferIsPosition;
-      if (iteration >= CAPE.solverIterations - 6) {
+      if (iteration >= CAPE.solverIterations - 3) {
         this.computeSequence.push(
           currentBufferIsPosition ? positionBodyFaces : scratchBodyFaces,
         );
@@ -390,6 +405,11 @@ export class GpuCapeSimulation {
       hardPositionToScratch,
       hardScratchToPosition,
       positionRockFaces,
+      finalSelfPositionToScratch,
+      finalContactScratchToPosition,
+      positionBodyFaces,
+      positionRockFaces,
+      reconcileBodyContactVelocity,
     );
     this.profileNoOpKernel = Fn(() => {})()
       .compute(PARTICLE_COUNT, [PARTICLE_COUNT])
@@ -494,7 +514,7 @@ export class GpuCapeSimulation {
       IDLE_DRAPE_RECOVERY_DELAY_SECONDS,
       IDLE_DRAPE_RECOVERY_DELAY_SECONDS + IDLE_DRAPE_RECOVERY_RAMP_SECONDS,
     );
-    this.dragPerSecondUniform.value = getCapeDragPerSecond(planarSpeed);
+    this.dragPerSecondUniform.value = CAPE_DRAG_PER_SECOND;
     this.nextAnchorCenter.copy(anchors.left).add(anchors.right).multiplyScalar(0.5);
     this.anchorDisplacement.copy(this.nextAnchorCenter).sub(this.anchorCenter);
     this.necklineMotion.copy(this.anchorDisplacement)
@@ -542,7 +562,6 @@ export class GpuCapeSimulation {
     this.idleDrapeRecoverySeconds = 0;
     this.idleDrapeRecoveryUniform.value = 0;
     this.worldContactsLastStep = 0;
-    this.worldContactEventOffset = this.worldContactEvents;
   }
 
   public updateSettings(
@@ -571,7 +590,6 @@ export class GpuCapeSimulation {
     this.idleDrapeRecoverySeconds = 0;
     this.idleDrapeRecoveryUniform.value = 0;
     this.worldContactsLastStep = 0;
-    this.worldContactEventOffset = this.worldContactEvents;
   }
 
   public getSettings(): CapePhysicsSettings {
@@ -587,17 +605,12 @@ export class GpuCapeSimulation {
       this.renderer.getArrayBufferAsync(this.previousBuffer.value),
     ]);
     const positionData = new Float32Array(positions);
+
     this.diagnosticMirror.overwriteStateFromGpu(positionData, new Float32Array(previous));
-    let gpuContactEvents = 0;
-    for (let index = CAPE.columns; index < PARTICLE_COUNT; index += 1) {
-      gpuContactEvents += Math.round(positionData[index * 4 + 3] ?? 0);
-    }
-    const cumulativeContactEvents = this.worldContactEventOffset + gpuContactEvents;
-    this.worldContactsLastStep = Math.max(
-      0,
-      cumulativeContactEvents - this.worldContactEvents,
-    );
-    this.worldContactEvents = cumulativeContactEvents;
+    // The position state lane stores body-contact work during a GPU step; it
+    // is not a world-contact counter. World contact totals remain unavailable
+    // without adding a readback-only storage binding to the hot compute path.
+    this.worldContactsLastStep = 0;
   }
 
   /** Harness-only state injection; production simulation never performs this upload. */
@@ -616,7 +629,6 @@ export class GpuCapeSimulation {
     this.idleDrapeRecoverySeconds = 0;
     this.idleDrapeRecoveryUniform.value = 0;
     this.worldContactsLastStep = 0;
-    this.worldContactEventOffset = this.worldContactEvents;
   }
 
   public getParticlePosition(column: number, row: number): THREE.Vector3 {
@@ -985,10 +997,8 @@ export class GpuCapeSimulation {
           .mul(float(0.048).add(turbulence.mul(0.011)))
           .mul(deltaSquared),
       );
-      // Keep a monotonic event count in the otherwise-unused state lane so
-      // contacts that begin and end between explicit diagnostic readbacks are
-      // still observable without a new storage binding or a GPU fence.
-      target.assign(vec4(predicted, current.w));
+      // The state lane accumulates body-contact work for final reconciliation.
+      target.assign(vec4(predicted, 0));
     })().compute(PARTICLE_COUNT).setName('Cape predict');
   }
 
@@ -1000,65 +1010,79 @@ export class GpuCapeSimulation {
   ): THREE.ComputeNode {
     return Fn(() => {
       const constraintIndex = instanceIndex;
-      // WebGL visits particles top-to-bottom, so its vertical structural
-      // constraints transmit neckline motion through the whole cape during a
-      // single iteration. Preserve that dependency as a row wavefront while
-      // solving every column in parallel. The remaining independent pairs use
-      // the graph colors below.
-      for (let row = 0; row < CAPE.rows - 1; row += 1) {
+      // Preserve WebGL's row-major dependency order for the structural and
+      // lengthwise bend links. Each row is a race-free column wavefront; the
+      // barrier between spans makes the authored span-2/3 constraints observe
+      // the same just-corrected row state as the ordered CPU solver.
+      const solveLengthwiseLink = (
+        row: number,
+        span: 1 | 2 | 3,
+        authoredStiffness: number,
+        label: string,
+      ): void => {
         If(constraintIndex.lessThan(uint(CAPE.columns)), () => {
           const firstIndex = uint(row * CAPE.columns).add(constraintIndex);
-          const secondIndex = firstIndex.add(uint(CAPE.columns));
+          const secondIndex = firstIndex.add(uint(span * CAPE.columns));
           const firstState = buffer.element(firstIndex);
           const secondState = buffer.element(secondIndex);
-          const first = firstState.xyz.toVar('verticalFirst' + row);
-          const second = secondState.xyz.toVar('verticalSecond' + row);
-          const delta = second.sub(first).toVar('verticalDelta' + row);
-          const length = delta.length().toVar('verticalLength' + row);
+          const first = firstState.xyz.toVar(`${label}First${row}`);
+          const second = secondState.xyz.toVar(`${label}Second${row}`);
+          const delta = second.sub(first).toVar(`${label}Delta${row}`);
+          const length = delta.length().toVar(`${label}Length${row}`);
           const firstWeight = select(firstIndex.lessThan(uint(CAPE.columns)), 0, 1);
           const totalWeight = firstWeight.add(1);
           If(length.greaterThan(0.000_001), () => {
-            const restLength = this.topologyBuffer.element(
-              firstIndex.mul(uint(TOPOLOGY_METADATA_STRIDE)),
-            ).y;
+            const topologyIndex = firstIndex.mul(uint(TOPOLOGY_METADATA_STRIDE));
+            const metadata = this.topologyBuffer.element(topologyIndex);
+            const lengthwiseRestLengths = this.topologyBuffer.element(topologyIndex.add(1));
+            const restLength = span === 1
+              ? metadata.y
+              : span === 2
+                ? lengthwiseRestLengths.z
+                : lengthwiseRestLengths.w;
             const correction = delta.mul(
               length.sub(restLength)
                 .div(length)
-                .mul(float(0.96 * GPU_CONSTRAINT_STIFFNESS_COMPENSATION).mul(this.stiffnessUniform).min(0.999)),
-            );
-            const firstCorrection = correction.mul(firstWeight.div(totalWeight))
-              .toVar('verticalFirstCorrection' + row);
-            const secondCorrection = correction.div(totalWeight)
-              .toVar('verticalSecondCorrection' + row);
+                .mul(
+                  float(authoredStiffness * GPU_CONSTRAINT_STIFFNESS_COMPENSATION)
+                    .mul(this.stiffnessUniform)
+                    .min(0.999),
+                ),
+            ).toVar(`${label}Correction${row}`);
+
+            const firstCorrection = correction.mul(firstWeight.div(totalWeight));
+            const secondCorrection = correction.div(totalWeight);
             first.addAssign(firstCorrection);
             second.subAssign(secondCorrection);
             buffer.element(firstIndex).assign(vec4(first, firstState.w));
             buffer.element(secondIndex).assign(vec4(second, secondState.w));
+            const neutralization = vec3(
+              GPU_PLANAR_CONSTRAINT_VELOCITY_NEUTRALIZATION,
+              GPU_VERTICAL_CONSTRAINT_VELOCITY_NEUTRALIZATION,
+              GPU_PLANAR_CONSTRAINT_VELOCITY_NEUTRALIZATION,
+            );
             const firstPreviousState = this.previousBuffer.element(firstIndex);
             const secondPreviousState = this.previousBuffer.element(secondIndex);
-              this.previousBuffer.element(firstIndex).assign(vec4(
-              firstPreviousState.xyz.add(
-                firstCorrection.mul(vec3(
-                  GPU_PLANAR_CONSTRAINT_VELOCITY_NEUTRALIZATION,
-                  GPU_VERTICAL_CONSTRAINT_VELOCITY_NEUTRALIZATION,
-                  GPU_PLANAR_CONSTRAINT_VELOCITY_NEUTRALIZATION,
-                )),
-              ),
+            this.previousBuffer.element(firstIndex).assign(vec4(
+              firstPreviousState.xyz.add(firstCorrection.mul(neutralization)),
               firstPreviousState.w,
             ));
-              this.previousBuffer.element(secondIndex).assign(vec4(
-              secondPreviousState.xyz.sub(
-                secondCorrection.mul(vec3(
-                  GPU_PLANAR_CONSTRAINT_VELOCITY_NEUTRALIZATION,
-                  GPU_VERTICAL_CONSTRAINT_VELOCITY_NEUTRALIZATION,
-                  GPU_PLANAR_CONSTRAINT_VELOCITY_NEUTRALIZATION,
-                )),
-              ),
+            this.previousBuffer.element(secondIndex).assign(vec4(
+              secondPreviousState.xyz.sub(secondCorrection.mul(neutralization)),
               secondPreviousState.w,
             ));
           });
         });
         storageBarrier();
+      };
+      for (let row = 0; row < CAPE.rows - 1; row += 1) {
+        solveLengthwiseLink(row, 1, 0.96, 'lengthwiseStructural');
+        if (row + 2 < CAPE.rows) {
+          solveLengthwiseLink(row, 2, 0.82, 'lengthwiseBendTwo');
+        }
+        if (row + 3 < CAPE.rows) {
+          solveLengthwiseLink(row, 3, 0.38, 'lengthwiseBendThree');
+        }
       }
       for (const range of this.coloredConstraintRanges) {
         If(constraintIndex.lessThan(uint(range.count)), () => {
@@ -1083,7 +1107,8 @@ export class GpuCapeSimulation {
               .min(0.999);
             const correction = delta.mul(
               length.sub(definition.z).div(length).mul(stiffness),
-            );
+            ).toVar(`coloredConstraintCorrection${range.offset}`);
+
             const firstCorrection = correction.mul(firstWeight.div(totalWeight))
               .toVar('constraintFirstCorrection' + range.offset);
             const secondCorrection = correction.mul(secondWeight.div(totalWeight))
@@ -1092,26 +1117,19 @@ export class GpuCapeSimulation {
             second.subAssign(secondCorrection);
             buffer.element(firstIndex).assign(vec4(first, firstState.w));
             buffer.element(secondIndex).assign(vec4(second, secondState.w));
+            const neutralization = vec3(
+              GPU_PLANAR_CONSTRAINT_VELOCITY_NEUTRALIZATION,
+              GPU_VERTICAL_CONSTRAINT_VELOCITY_NEUTRALIZATION,
+              GPU_PLANAR_CONSTRAINT_VELOCITY_NEUTRALIZATION,
+            );
             const firstPreviousState = this.previousBuffer.element(firstIndex);
             const secondPreviousState = this.previousBuffer.element(secondIndex);
-              this.previousBuffer.element(firstIndex).assign(vec4(
-              firstPreviousState.xyz.add(
-                firstCorrection.mul(vec3(
-                  GPU_PLANAR_CONSTRAINT_VELOCITY_NEUTRALIZATION,
-                  GPU_VERTICAL_CONSTRAINT_VELOCITY_NEUTRALIZATION,
-                  GPU_PLANAR_CONSTRAINT_VELOCITY_NEUTRALIZATION,
-                )),
-              ),
+            this.previousBuffer.element(firstIndex).assign(vec4(
+              firstPreviousState.xyz.add(firstCorrection.mul(neutralization)),
               firstPreviousState.w,
             ));
-              this.previousBuffer.element(secondIndex).assign(vec4(
-              secondPreviousState.xyz.sub(
-                secondCorrection.mul(vec3(
-                  GPU_PLANAR_CONSTRAINT_VELOCITY_NEUTRALIZATION,
-                  GPU_VERTICAL_CONSTRAINT_VELOCITY_NEUTRALIZATION,
-                  GPU_PLANAR_CONSTRAINT_VELOCITY_NEUTRALIZATION,
-                )),
-              ),
+            this.previousBuffer.element(secondIndex).assign(vec4(
+              secondPreviousState.xyz.sub(secondCorrection.mul(neutralization)),
               secondPreviousState.w,
             ));
           });
@@ -1172,16 +1190,22 @@ export class GpuCapeSimulation {
                 const distanceSquared = separation.dot(separation).toVar('selfDistanceSquared');
                 If(distanceSquared.lessThan(CLOTH_THICKNESS ** 2), () => {
                   const distance = distanceSquared.sqrt().toVar('selfDistance');
+                  const planarSeparation = vec3(
+                    separation.x,
+                    0,
+                    separation.z,
+                  ).toVar('selfPlanarSeparation');
+                  const planarDistance = planarSeparation.length();
                   const normal = vec3(1, 0, 0).toVar('selfNormal');
-                  If(distance.greaterThan(0.000_001), () => {
-                    normal.assign(separation.div(distance));
+                  If(planarDistance.greaterThan(0.000_001), () => {
+                    normal.assign(planarSeparation.div(planarDistance));
                   }).Else(() => {
                     const phase = float(firstIndex)
                       .mul(0.754_877_666)
                       .add(float(secondIndex).mul(0.569_840_291));
                     normal.assign(vec3(
                       phase.sin(),
-                      phase.mul(1.37).cos(),
+                      0,
                       phase.mul(0.73).add(1.1).sin(),
                     ).normalize());
                   });
@@ -1326,6 +1350,28 @@ export class GpuCapeSimulation {
     })().compute(PARTICLE_COUNT, [PARTICLE_COUNT]).setName(name);
   }
 
+  private createBodyContactReconciliationKernel(): THREE.ComputeNode {
+    return Fn(() => {
+      const index = instanceIndex;
+      If(index.greaterThanEqual(uint(CAPE.columns)), () => {
+        const position = this.positionBuffer.element(index);
+        const correction = position.w;
+        If(correction.greaterThan(BODY_CONTACT_RECONCILIATION_START), () => {
+          const previous = this.previousBuffer.element(index);
+          const strength = smoothstep(
+            BODY_CONTACT_RECONCILIATION_START,
+            BODY_CONTACT_RECONCILIATION_FULL,
+            correction,
+          );
+          this.previousBuffer.element(index).assign(vec4(
+            mix(previous.xyz, position.xyz, strength),
+            previous.w,
+          ));
+        });
+        this.positionBuffer.element(index).assign(vec4(position.xyz, 0));
+      });
+    })().compute(PARTICLE_COUNT).setName('Cape reconcile body contact velocity');
+  }
   private createProjectionKernel(
     source: typeof this.positionBuffer,
     target: typeof this.positionBuffer,
@@ -1398,7 +1444,7 @@ export class GpuCapeSimulation {
         target.element(index).assign(source.element(index));
       }).Else(() => {
       const position = source.element(index).xyz.toVar('position');
-      const worldContactEvents = source.element(index).w.toVar('worldContactEvents');
+      const bodyCorrectionUsed = source.element(index).w.toVar('bodyCorrectionUsed');
       const previousState = this.previousBuffer.element(index);
       const previousPosition = previousState.xyz.toVar('previousPosition');
       const rockSweepResolved = previousState.w.greaterThanEqual(0.5)
@@ -1458,16 +1504,22 @@ export class GpuCapeSimulation {
             const distanceSquared = separation.dot(separation).toVar('selfDistanceSquared');
             If(distanceSquared.lessThan(CLOTH_THICKNESS ** 2), () => {
               const distance = distanceSquared.sqrt().toVar('selfDistance');
+              const planarSeparation = vec3(
+                separation.x,
+                0,
+                separation.z,
+              ).toVar('selfPlanarSeparation');
+              const planarDistance = planarSeparation.length();
               const normal = vec3(1, 0, 0).toVar('selfNormal');
-              If(distance.greaterThan(0.000_001), () => {
-                normal.assign(separation.div(distance));
+              If(planarDistance.greaterThan(0.000_001), () => {
+                normal.assign(planarSeparation.div(planarDistance));
               }).Else(() => {
                 const phase = float(index)
                   .mul(0.754_877_666)
                   .add(float(i).mul(0.569_840_291));
                 normal.assign(vec3(
                   phase.sin(),
-                  phase.mul(1.37).cos(),
+                  0,
                   phase.mul(0.73).add(1.1).sin(),
                 ).normalize());
               });
@@ -1486,6 +1538,10 @@ export class GpuCapeSimulation {
 
       if (includeContacts) {
       const contactStart = position.toVar('contactStart');
+      const bodyContactStart = position.toVar('bodyContactStart');
+      const bodyManifoldCorrection = vec3(0).toVar('bodyManifoldCorrection');
+      const bodyManifoldLength = float(0).toVar('bodyManifoldLength');
+
       Loop(
         { start: uint(0), end: uint(this.bodyCountUniform), type: 'uint', condition: '<' },
         ({ i }) => {
@@ -1495,10 +1551,10 @@ export class GpuCapeSimulation {
           const lateralAxis = this.bodyBuffer.element(bodyBase.add(2));
           const verticalBounds = this.bodyBuffer.element(bodyBase.add(3));
           If(
-            position.y.greaterThanEqual(verticalBounds.x)
-              .and(position.y.lessThanEqual(verticalBounds.y)),
+            bodyContactStart.y.greaterThanEqual(verticalBounds.x)
+              .and(bodyContactStart.y.lessThanEqual(verticalBounds.y)),
             () => {
-              const fromStart = position.sub(startRadius.xyz).toVar('bodyFromStart');
+              const fromStart = bodyContactStart.sub(startRadius.xyz).toVar('bodyFromStart');
               const particleDepth = fromStart.dot(this.backUniform).toVar('bodyParticleDepth');
               const particleLateral = fromStart
                 .sub(this.backUniform.mul(particleDepth))
@@ -1509,7 +1565,7 @@ export class GpuCapeSimulation {
                 0,
               );
               const closest = startRadius.xyz.add(axisDepth.xyz.mul(progress));
-              const bodyDelta = position.sub(closest).toVar('bodyDelta');
+              const bodyDelta = bodyContactStart.sub(closest).toVar('bodyDelta');
               const depth = bodyDelta.dot(this.backUniform).toVar('bodyDepth');
               const lateralSquared = bodyDelta.dot(bodyDelta)
                 .sub(depth.mul(depth))
@@ -1519,46 +1575,59 @@ export class GpuCapeSimulation {
               If(lateralSquared.lessThan(radiusSquared), () => {
                 const normalizedLateral = lateralSquared.div(radiusSquared).clamp(0, 1);
                 const surfaceDepth = axisDepth.w.mul(float(1).sub(normalizedLateral).sqrt());
-                const penetration = surfaceDepth.sub(depth).max(0);
-                const frontDepthRatio = depth.div(axisDepth.w).clamp(-1, 0);
-                const lateralBoundary = startRadius.w.mul(
-                  float(1).sub(frontDepthRatio.mul(frontDepthRatio)).max(0).sqrt(),
+                const backCorrection = surfaceDepth.sub(depth).max(0);
+                const bodyCorrection = vec3(0).toVar('bodyCorrection');
+                If(
+                  backCorrection.greaterThan(0)
+                    .and(depth.greaterThan(axisDepth.w.negate())),
+                  () => {
+                    bodyCorrection.assign(this.backUniform.mul(backCorrection));
+                    If(depth.lessThan(0), () => {
+                      // A front-side vertex exits laterally instead of being
+                      // teleported through the full body depth.
+                      const depthRatio = depth.div(axisDepth.w).clamp(-1, 0);
+                      const lateralBoundary = startRadius.w.mul(
+                        float(1).sub(depthRatio.mul(depthRatio)).max(0).sqrt(),
+                      );
+                      const right = vec3(
+                        this.backUniform.z,
+                        0,
+                        this.backUniform.x.negate(),
+                      );
+                      const currentSide = bodyDelta.dot(right);
+                      // If relative motion crossed the capsule within one
+                      // fixed step, resolve to the nearest current surface.
+                      // Preserving the obsolete side would teleport a vertex
+                      // across the full limb diameter and inject energy.
+                      const sideSign = select(currentSide.greaterThanEqual(0), 1, -1);
+                      const lateralNormal = right.mul(sideSign);
+                      const lateralCorrection = lateralBoundary
+                        .sub(bodyDelta.dot(lateralNormal));
+                      If(lateralCorrection.greaterThan(0), () => {
+                        bodyCorrection.assign(lateralNormal.mul(lateralCorrection));
+                      });
+                    });
+                    const correctionLength = bodyCorrection.length();
+                    If(correctionLength.greaterThan(bodyManifoldLength), () => {
+                      bodyManifoldCorrection.assign(bodyCorrection);
+                      bodyManifoldLength.assign(correctionLength);
+                    });
+                  },
                 );
-                const lateralDistance = lateralSquared.sqrt();
-                const previousBodyDelta = previousPosition.sub(closest).toVar('previousBodyDelta');
-                const previousDepth = previousBodyDelta.dot(this.backUniform);
-                const preferredLateral = previousBodyDelta
-                  .sub(this.backUniform.mul(previousDepth))
-                  .toVar('preferredBodyLateral');
-                const preferredLateralDistance = preferredLateral.dot(preferredLateral).sqrt();
-                // Preserve the particle's previous continuous side of the
-                // capsule. The GPU pass owns a stable prior position for every
-                // vertex, so it does not need a topology-forced side.
-                const lateralNormal = vec3(
-                  this.backUniform.z,
-                  0,
-                  this.backUniform.x.negate(),
-                ).toVar('bodyLateralNormal');
-                If(preferredLateralDistance.greaterThan(0.000_001), () => {
-                  lateralNormal.assign(preferredLateral.div(preferredLateralDistance));
-                }).ElseIf(lateralDistance.greaterThan(0.000_001), () => {
-                  lateralNormal.assign(bodyDelta.sub(this.backUniform.mul(depth)).div(lateralDistance));
-                });
-                const lateralProjection = bodyDelta.dot(lateralNormal);
-                const lateralCorrection = lateralBoundary.sub(lateralProjection).max(0);
-                const useFrontSlide = depth.lessThan(0)
-                  .and(depth.greaterThan(axisDepth.w.negate()))
-                  .and(lateralCorrection.greaterThan(0));
-                position.addAssign(select(
-                  useFrontSlide,
-                  lateralNormal.mul(lateralCorrection),
-                  this.backUniform.mul(select(depth.lessThanEqual(axisDepth.w.negate()), 0, penetration)),
-                ));
               });
             },
           );
         },
       );
+
+      If(bodyManifoldLength.greaterThan(MAXIMUM_BODY_CONTACT_CORRECTION_PER_PASS), () => {
+        bodyManifoldCorrection.mulAssign(
+          float(MAXIMUM_BODY_CONTACT_CORRECTION_PER_PASS)
+            .div(bodyManifoldLength.max(0.000_001)),
+        );
+      });
+      position.addAssign(bodyManifoldCorrection);
+      bodyCorrectionUsed.addAssign(bodyManifoldCorrection.length());
 
       position.z.assign(position.z.clamp(CAVE.endZ + 0.08, CAVE.startZ - 0.08));
       const caveSegmentPosition = float(CAVE.startZ).sub(position.z)
@@ -1696,7 +1765,6 @@ export class GpuCapeSimulation {
           const sphereDelta = position.sub(sphere.xyz).toVar('sphereDelta');
           const sphereDistanceSquared = sphereDelta.dot(sphereDelta).toVar('sphereDistanceSquared');
           If(sphereDistanceSquared.lessThan(sphere.w.mul(sphere.w)), () => {
-            worldContactEvents.addAssign(1);
             const sphereDistance = sphereDistanceSquared.sqrt().toVar('sphereDistance');
             const sphereNormal = vec3(0, 1, 0).toVar('sphereNormal');
             If(sphereDistance.greaterThan(0.000_001), () => {
@@ -1811,7 +1879,6 @@ export class GpuCapeSimulation {
                     .and(sweepEntry.greaterThanEqual(0))
                     .and(sweepEntry.lessThanEqual(1)),
                   () => {
-                    worldContactEvents.addAssign(1);
                     rockSweepResolved.assign(bool(true));
                     const sweepHit = previousPosition.add(sweepMotion.mul(sweepEntry))
                       .toVar('rockSweepHit');
@@ -1948,7 +2015,6 @@ export class GpuCapeSimulation {
             });
             const signedRockDistance = select(insideRock, rockDistance.negate(), rockDistance);
             If(signedRockDistance.lessThan(CLOTH_ROCK_CLEARANCE), () => {
-              worldContactEvents.addAssign(1);
               const belowWalkableShoulder = position.y.lessThanEqual(rockMinimum.w);
               const trappedAtFloor = rockNormal.y.lessThan(0)
                 .and(position.y.lessThanEqual(caveFloor.add(CLOTH_ROCK_CLEARANCE * 2)));
@@ -2063,7 +2129,7 @@ export class GpuCapeSimulation {
         rockCorrectionUsed.add(select(rockSweepResolved, 1, 0)),
       ));
 
-        target.element(index).assign(vec4(position, worldContactEvents));
+        target.element(index).assign(vec4(position, bodyCorrectionUsed));
       });
       return float(0);
     }, 'float').setLayout({
@@ -2686,7 +2752,7 @@ export class GpuCapeSimulation {
               const state = buffer.element(particleIndex);
               buffer.element(particleIndex).assign(vec4(
                 previousPosition,
-                state.w.add(1),
+                state.w,
               ));
             });
           };
@@ -2700,7 +2766,7 @@ export class GpuCapeSimulation {
               const corrected = state.xyz.add(faceCorrection).toVar('correctedRockFace');
               buffer.element(particleIndex).assign(vec4(
                 corrected,
-                state.w.add(1),
+                state.w,
               ));
               const previousState = this.previousBuffer.element(particleIndex);
               const correctedPrevious = previousState.xyz
@@ -2927,12 +2993,25 @@ export class GpuCapeSimulation {
           start: THREE.Node<'vec3'>,
           corrected: THREE.Node<'vec3'>,
         ): void => {
-          buffer.element(particleIndex).assign(vec4(corrected, state.w));
+          const faceCorrection = corrected.sub(start).toVar('boundedBodyFaceCorrection');
+          const faceCorrectionLength = faceCorrection.length();
+          If(faceCorrectionLength.greaterThan(MAXIMUM_BODY_CONTACT_CORRECTION_PER_PASS), () => {
+            faceCorrection.mulAssign(
+              float(MAXIMUM_BODY_CONTACT_CORRECTION_PER_PASS)
+                .div(faceCorrectionLength.max(0.000_001)),
+            );
+          });
+          const boundedCorrected = start.add(faceCorrection);
+          buffer.element(particleIndex).assign(vec4(
+            boundedCorrected,
+            state.w.add(faceCorrection.length()),
+          ));
+
           const previousState = this.previousBuffer.element(particleIndex);
           const correctedPrevious = previousState.xyz
-            .add(corrected.sub(start))
+            .add(faceCorrection)
             .toVar('correctedPreviousBodyFace');
-          const inwardMotion = corrected.sub(correctedPrevious)
+          const inwardMotion = boundedCorrected.sub(correctedPrevious)
             .dot(this.backUniform)
             .min(0);
           correctedPrevious.addAssign(this.backUniform.mul(inwardMotion));
@@ -3005,25 +3084,9 @@ export class GpuCapeSimulation {
           addConstraint(column + 1, row, column, row + 1, 0.8);
         }
         if (column + 2 < CAPE.columns) addConstraint(column, row, column + 2, row, 0.58);
-        if (row + 2 < CAPE.rows) {
-          addConstraint(
-            column,
-            row,
-            column,
-            row + 2,
-            0.82 * GPU_LENGTHWISE_BEND_RELAXATION,
-          );
-        }
+        // Lengthwise bend links use the ordered row wavefront in the compute
+        // kernel, matching the CPU solver's dependency direction.
         if (column + 3 < CAPE.columns) addConstraint(column, row, column + 3, row, 0.16);
-        if (row + 3 < CAPE.rows) {
-          addConstraint(
-            column,
-            row,
-            column,
-            row + 3,
-            0.38 * GPU_LENGTHWISE_BEND_RELAXATION,
-          );
-        }
       }
     }
     const normalNeighbors = new Uint32Array(PARTICLE_COUNT * 4);
@@ -3052,6 +3115,12 @@ export class GpuCapeSimulation {
       packed[metadataOffset + 3] = normalNeighbors[neighborOffset + 1] ?? particleIndex;
       packed[metadataOffset + 4] = normalNeighbors[neighborOffset + 2] ?? particleIndex;
       packed[metadataOffset + 5] = normalNeighbors[neighborOffset + 3] ?? particleIndex;
+      packed[metadataOffset + 6] = row + 2 < CAPE.rows
+        ? readPosition(particleIndex).distanceTo(readPosition(particleIndex + CAPE.columns * 2))
+        : 0;
+      packed[metadataOffset + 7] = row + 3 < CAPE.rows
+        ? readPosition(particleIndex).distanceTo(readPosition(particleIndex + CAPE.columns * 3))
+        : 0;
     }
 
     const colors: ConstraintDefinition[][] = [];

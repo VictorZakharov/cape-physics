@@ -6,15 +6,16 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  closeBrowserProcess,
   connectDebugger,
   delay,
   evaluate,
   fetchJsonWithRetry,
   reservePort,
+  runCleanupSteps,
   waitForExpression,
 } from './audit/cdp-client.mjs';
 import { close, createStaticServer, listen } from './audit/static-server.mjs';
@@ -22,6 +23,7 @@ import { close, createStaticServer, listen } from './audit/static-server.mjs';
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const distRoot = join(repositoryRoot, 'dist');
 const outputRoot = join(repositoryRoot, 'artifacts', 'visual-audit');
+const temporaryParent = join(repositoryRoot, 'artifacts', '.tmp');
 if (!existsSync(join(distRoot, 'index.html'))) {
   throw new Error('Production build missing. Run bun run build before audit:visual.');
 }
@@ -76,7 +78,8 @@ const maximumFrameBudget = performanceProfileEnabled
   : null;
 
 const server = createStaticServer(distRoot);
-const temporaryRoot = mkdtempSync(join(tmpdir(), 'cape-physics-audit-'));
+mkdirSync(temporaryParent, { recursive: true });
+const temporaryRoot = mkdtempSync(join(temporaryParent, 'cape-physics-audit-'));
 const staticPort = await listen(server);
 const debugPort = await reservePort();
 const profile = join(temporaryRoot, 'browser-profile');
@@ -88,7 +91,9 @@ const browser = spawn(browserExecutable, [
   '--disable-background-networking',
   '--disable-breakpad',
   '--disable-crash-reporter',
-  '--disable-features=CalculateNativeWinOcclusion',
+  '--disable-gpu-shader-disk-cache',
+  '--disable-skia-graphite',
+  '--disable-features=CalculateNativeWinOcclusion,AutofillAiServerModel,WebGPUBlobCache',
   '--enable-webgl',
   '--enable-gpu',
   '--ignore-gpu-blocklist',
@@ -97,8 +102,13 @@ const browser = spawn(browserExecutable, [
   '--window-size=1600,900',
   `--remote-debugging-port=${debugPort}`,
   `--user-data-dir=${profile}`,
+  '--profile-directory=CapeHarness',
   pageUrl,
-], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+], {
+  windowsHide: true,
+  stdio: ['ignore', 'pipe', 'pipe'],
+  env: { ...process.env, TEMP: temporaryRoot, TMP: temporaryRoot },
+});
 
 let browserLog = '';
 browser.stdout.on('data', (chunk) => { browserLog += chunk; });
@@ -1683,26 +1693,14 @@ try {
       + `\nPage diagnostics:\n${relevantDebuggerEvents.join('\n')}`,
   );
 } finally {
-  if (debuggerConnection) {
-    await Promise.race([
-      debuggerConnection.command('Browser.close').catch(() => undefined),
-      delay(1_500),
-    ]);
-  }
-  debuggerConnection?.socket.close();
-  if (browser.exitCode === null) {
-    await Promise.race([
-      new Promise((resolve) => browser.once('exit', resolve)),
-      delay(2_000),
-    ]);
-  }
-  if (browser.exitCode === null) browser.kill();
-  await close(server);
-  try {
-    rmSync(temporaryRoot, { recursive: true, force: true, maxRetries: 4, retryDelay: 100 });
-  } catch (error) {
-    console.warn(`Host denied temporary audit-profile cleanup: ${error.message}`);
-  }
+  await runCleanupSteps([
+    ['browser shutdown', () => closeBrowserProcess(browser, debuggerConnection)],
+    ['static server shutdown', () => close(server)],
+    ['temporary browser profile', async () => {
+      rmSync(temporaryRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 250 });
+      if (existsSync(temporaryRoot)) throw new Error(`Directory remains: ${temporaryRoot}`);
+    }],
+  ]);
 }
 
 function assertDepthOcclusion(probe, angle) {

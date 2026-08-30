@@ -3,16 +3,11 @@
 // solvers so WebGL and WebGPU receive the same physical excitation.
 export const CAPE_FLUTTER_ACCELERATION = 10;
 
-// Cloth loses more relative motion as air speed rises. The old model reduced
-// damping while walking, allowing repeated reversals and body contact to pump
-// energy into the cape. Keep one backend-independent physical drag curve.
-export const CAPE_BASE_DRAG_PER_SECOND = 2.8;
-export const CAPE_SPEED_DRAG_PER_METER = 0.5;
-
-export function getCapeDragPerSecond(planarSpeed: number): number {
-  return CAPE_BASE_DRAG_PER_SECOND
-    + Math.max(0, planarSpeed) * CAPE_SPEED_DRAG_PER_METER;
-}
+// Material damping is independent of character speed. Raising it with player
+// speed damps particles toward the stationary world frame while the neckline
+// keeps moving, producing an artificial horizontal "Superman" equilibrium.
+// Collision and reversal energy are handled at their actual constraints.
+export const CAPE_DRAG_PER_SECOND = 2.8;
 
 // Fixed-step Verlet displacement is an implicit velocity. Constraint
 // projection can otherwise feed an arbitrarily large correction into the next

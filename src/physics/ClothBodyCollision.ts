@@ -232,6 +232,7 @@ export class ClothBodyCollision {
       this.contactNormal.copy(preferred).sub(center);
       const preferredDepth = this.contactNormal.dot(back);
       this.contactNormal.addScaledVector(back, -preferredDepth);
+      this.contactNormal.y = 0;
       if (this.contactNormal.lengthSq() > 0.000_001) this.contactNormal.normalize();
       else if (lateralSquared > 0.000_001) {
         this.contactNormal.copy(this.delta).addScaledVector(back, -depth).normalize();
