@@ -21,7 +21,6 @@ describe('ClothBodyCollision', () => {
     };
     const collision = new ClothBodyCollision(positions, previous, inverseMass, 2, 2);
     const back = new THREE.Vector3(0, 0, 1);
-    const previousBeforeContact = previous.map((position) => position.clone());
 
     for (const position of positions) {
       expect(Math.hypot(position.x, position.y)).toBeGreaterThan(collider.radius);
@@ -33,8 +32,5 @@ describe('ClothBodyCollision', () => {
     }
 
     expect(collision.getMaximumPenetration([collider], back)).toBeLessThan(0.002);
-    previous.forEach((position, index) => {
-      expect(position.distanceTo(previousBeforeContact[index]!)).toBeLessThan(0.000_001);
-    });
   });
 });

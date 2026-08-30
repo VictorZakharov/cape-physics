@@ -1,12 +1,5 @@
 import * as THREE from 'three';
 import type { CapsuleCollider } from './colliders';
-import type { MovingCapsuleCollider } from './MovingCapsuleColliders';
-
-export type BodyContactRecorder = (
-  particleIndex: number,
-  correction: THREE.Vector3,
-  colliderMotion: THREE.Vector3,
-) => void;
 
 export const CLOTH_BODY_CLEARANCE = 0.026;
 
@@ -28,8 +21,6 @@ export class ClothBodyCollision {
   private readonly barycentric = new THREE.Vector3();
   private readonly capsuleAxis = new THREE.Vector3();
   private readonly sampleCenter = new THREE.Vector3();
-  private readonly previousSampleCenter = new THREE.Vector3();
-  private readonly sampleMotion = new THREE.Vector3();
   private readonly delta = new THREE.Vector3();
   private readonly boundsMinimum = new THREE.Vector3();
   private readonly boundsMaximum = new THREE.Vector3();
@@ -61,33 +52,16 @@ export class ClothBodyCollision {
   }
 
   public solve(
-    colliders: readonly (CapsuleCollider | MovingCapsuleCollider)[],
+    colliders: readonly CapsuleCollider[],
     back: THREE.Vector3,
     sideOrigin?: THREE.Vector3,
-    recordContact?: BodyContactRecorder,
   ): void {
     this.updateBounds();
-    this.forEachMovingCapsuleSample(colliders, (
-      center,
-      lateralRadius,
-      depthRadius,
-      colliderMotion,
-    ) => {
+    this.forEachCapsuleSample(colliders, (center, lateralRadius, depthRadius) => {
       const boundsRadius = Math.max(lateralRadius, depthRadius);
       if (!this.intersectsBounds(center, boundsRadius)) return;
       this.forEachTriangle(center.y, boundsRadius, (first, second, third) => {
-        this.solveTriangle(
-          first,
-          second,
-          third,
-          center,
-          lateralRadius,
-          depthRadius,
-          back,
-          colliderMotion,
-          sideOrigin,
-          recordContact,
-        );
+        this.solveTriangle(first, second, third, center, lateralRadius, depthRadius, back, sideOrigin);
       });
     });
   }
@@ -127,9 +101,7 @@ export class ClothBodyCollision {
     lateralRadius: number,
     depthRadius: number,
     back: THREE.Vector3,
-    colliderMotion: THREE.Vector3,
     sideOrigin?: THREE.Vector3,
-    recordContact?: BodyContactRecorder,
   ): void {
     const first = this.positions[firstIndex];
     const second = this.positions[secondIndex];
@@ -178,22 +150,16 @@ export class ClothBodyCollision {
       firstIndex,
       firstWeight * this.barycentric.x * lambda,
       this.contactNormal,
-      colliderMotion,
-      recordContact,
     );
     this.applyCorrection(
       secondIndex,
       secondWeight * this.barycentric.y * lambda,
       this.contactNormal,
-      colliderMotion,
-      recordContact,
     );
     this.applyCorrection(
       thirdIndex,
       thirdWeight * this.barycentric.z * lambda,
       this.contactNormal,
-      colliderMotion,
-      recordContact,
     );
   }
 
@@ -307,50 +273,6 @@ export class ClothBodyCollision {
     }
   }
 
-  private forEachMovingCapsuleSample(
-    colliders: readonly (CapsuleCollider | MovingCapsuleCollider)[],
-    visit: (
-      center: THREE.Vector3,
-      lateralRadius: number,
-      depthRadius: number,
-      colliderMotion: THREE.Vector3,
-    ) => void,
-  ): void {
-    for (const collider of colliders) {
-      this.capsuleAxis.copy(collider.end).sub(collider.start);
-      const length = this.capsuleAxis.length();
-      const clearance = getClothBodyClearance(collider);
-      const lateralRadius = collider.radius + clearance;
-      const depthRadius = getClothBodyDepthRadius(collider);
-      const sampleSpacing = collider.faceSampleSpacing
-        ?? Math.max(0.04, lateralRadius * 0.82);
-      const segments = length < 0.000_001
-        ? 0
-        : Math.max(1, Math.ceil(length / sampleSpacing));
-      const stepLength = segments > 0 ? length / segments : 0;
-      const sampleLateralRadius = Math.hypot(lateralRadius, stepLength * 0.5);
-      const sampleDepthRadius = depthRadius * sampleLateralRadius / lateralRadius;
-      for (let sample = 0; sample <= segments; sample += 1) {
-        const progress = segments > 0 ? sample / segments : 0;
-        this.sampleCenter.lerpVectors(collider.start, collider.end, progress);
-        const previousStart = 'previousStart' in collider
-          ? collider.previousStart
-          : collider.start;
-        const previousEnd = 'previousEnd' in collider
-          ? collider.previousEnd
-          : collider.end;
-        this.previousSampleCenter.lerpVectors(previousStart, previousEnd, progress);
-        this.sampleMotion.copy(this.sampleCenter).sub(this.previousSampleCenter);
-        visit(
-          this.sampleCenter,
-          sampleLateralRadius,
-          sampleDepthRadius,
-          this.sampleMotion,
-        );
-      }
-    }
-  }
-
   private forEachTriangle(
     centerY: number,
     radius: number,
@@ -369,19 +291,15 @@ export class ClothBodyCollision {
     }
   }
 
-  private applyCorrection(
-    index: number,
-    scale: number,
-    normal: THREE.Vector3,
-    colliderMotion: THREE.Vector3,
-    recordContact?: BodyContactRecorder,
-  ): void {
+  private applyCorrection(index: number, scale: number, normal: THREE.Vector3): void {
     if (scale <= 0) return;
     const position = this.positions[index];
-    if (!position) return;
-    this.motion.copy(normal).multiplyScalar(scale);
-    position.add(this.motion);
-    recordContact?.(index, this.motion, colliderMotion);
+    const previous = this.previous[index];
+    if (!position || !previous) return;
+    position.addScaledVector(normal, scale);
+    previous.addScaledVector(normal, scale);
+    const inwardMotion = this.motion.copy(position).sub(previous).dot(normal);
+    if (inwardMotion < 0) previous.addScaledVector(normal, inwardMotion);
     this.correctionUsed[index] = (this.correctionUsed[index] ?? 0) + scale;
   }
 

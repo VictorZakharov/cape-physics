@@ -54,7 +54,8 @@ const IDLE_DRAPE_RECOVERY_HEM_DROP = 1.2;
 const IDLE_DRAPE_RECOVERY_DELAY_SECONDS = 0.12;
 const IDLE_DRAPE_RECOVERY_RAMP_SECONDS = 0.35;
 const MAXIMUM_SLEEP_BODY_PENETRATION = 0.001;
-const BODY_CONTACT_EPSILON = 0.000_001;
+const BODY_CONTACT_RECONCILIATION_START = 0.000_5;
+const BODY_CONTACT_RECONCILIATION_FULL = 0.025;
 const WAKE_SPEED = 0.08;
 
 export class CapeSimulation {
@@ -292,7 +293,7 @@ export class CapeSimulation {
           IDLE_DRAPE_RECOVERY_DELAY_SECONDS + IDLE_DRAPE_RECOVERY_RAMP_SECONDS,
         ));
       }
-      this.contactSolver.solveBody(anchors.back);
+      this.contactSolver.solveBody(bodyColliders, anchors.back);
       if (profileActive) {
         const profileNow = performance.now();
         this.profiler.record('bodyCollision', profileNow - profilePhaseStart);
@@ -321,9 +322,9 @@ export class CapeSimulation {
         // then reconcile exact world-face crossings once more. Both rock
         // point projections share one strict per-particle step budget; exact
         // face translations are independently bounded and velocity-neutral.
-        this.contactSolver.solveBody(anchors.back);
+        this.contactSolver.solveBody(bodyColliders, anchors.back);
         if (this.contactSolver.solvePostCaveWorldContacts() > 0) {
-          this.contactSolver.solveBody(anchors.back);
+          this.contactSolver.solveBody(bodyColliders, anchors.back);
           this.contactSolver.solvePostCaveWorldContacts();
         }
         // Final world/body reconciliation can push a triangle interior back
@@ -332,12 +333,8 @@ export class CapeSimulation {
         // fixed-world constraints to convergence. Always end on the fixed
         // world so the rendered cloth cannot remain inside a floor formation.
         this.contactSolver.solveCave();
-        // Alternating projections converge quickly when a boot and rock are
-        // merely adjacent. Keep a bounded safety margin for the rarer
-        // three-surface manifold instead of leaving the final world repair
-        // a fraction inside the animated body.
-        for (let pass = 0; pass < 8; pass += 1) {
-          this.contactSolver.solveBody(anchors.back);
+        for (let pass = 0; pass < 4; pass += 1) {
+          this.contactSolver.solveBody(bodyColliders, anchors.back);
           if (this.contactSolver.solvePostCaveWorldContacts() === 0) break;
         }
       }
@@ -354,7 +351,7 @@ export class CapeSimulation {
       }
     }
 
-    this.contactSolver.reconcileBodyContactVelocity();
+    this.reconcileBodyContactVelocity();
     // Fixed-world and material body contacts are authoritative. Their
     // projection may need upward velocity to clear a rock, floor, or boot.
     if (
@@ -443,7 +440,6 @@ export class CapeSimulation {
     previousData: Float32Array = positionData,
   ): void {
     this.overwriteStateFromGpu(positionData, previousData);
-    this.contactSolver.resetBodyColliderHistory();
     this.positions.forEach((position, index) => this.stepStart[index]?.copy(position));
     this.settledSeconds = 0;
     this.idleDrapeRecoverySeconds = 0;
@@ -461,7 +457,6 @@ export class CapeSimulation {
     this.positions.length = 0;
     this.previous.length = 0;
     this.initializeParticles(anchors);
-    this.contactSolver.resetBodyColliderHistory();
     this.pinAnchors(anchors);
     this.positions.forEach((position, index) => {
       const start = this.stepStart[index];
@@ -865,6 +860,28 @@ export class CapeSimulation {
   }
 
   /**
+   * Body projection is positional and intentionally resolves penetration in
+   * full. Repeated constraint/contact passes can nevertheless encode that
+   * projection as Verlet velocity. Treat sustained body contact as inelastic
+   * so a boot can push cloth aside without catapulting it on the next step.
+   */
+  private reconcileBodyContactVelocity(): void {
+    for (let index = CAPE.columns; index < this.positions.length; index += 1) {
+      const correction = this.contactSolver.getBodyCorrectionUsed(index);
+      if (correction <= BODY_CONTACT_RECONCILIATION_START) continue;
+      const position = this.positions[index];
+      const previous = this.previous[index];
+      if (!position || !previous) continue;
+      const strength = THREE.MathUtils.smoothstep(
+        correction,
+        BODY_CONTACT_RECONCILIATION_START,
+        BODY_CONTACT_RECONCILIATION_FULL,
+      );
+      previous.lerp(position, strength);
+    }
+  }
+
+  /**
    * Projection may repair a stretched link upward even though physical
    * prediction was still descending. Do not encode that positional repair as
    * an upward Verlet velocity for the next step. Upward physical prediction,
@@ -883,7 +900,7 @@ export class CapeSimulation {
     for (let index = CAPE.columns; index < this.positions.length; index += 1) {
       if (
         this.contactSolver.getBodyCorrectionUsed(index)
-          > BODY_CONTACT_EPSILON
+          > BODY_CONTACT_RECONCILIATION_START
       ) return true;
     }
     return false;

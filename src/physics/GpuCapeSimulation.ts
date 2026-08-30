@@ -46,7 +46,6 @@ import {
   getClothBodyDepthRadius,
 } from './ClothBodyCollision';
 import { FOLD_RELAXATION, MAXIMUM_LOCAL_UPWARD_FOLD } from './ClothFoldGuard';
-import { CapsuleColliderHistory } from './MovingCapsuleColliders';
 import { CLOTH_THICKNESS } from './ClothSelfCollision';
 import {
   CLOTH_ROCK_CLEARANCE,
@@ -140,6 +139,8 @@ const GPU_GRAVITY_COMPENSATION = 1.05;
 // numerical length repair cannot reverse an already-falling cape upward.
 const GPU_PLANAR_CONSTRAINT_VELOCITY_NEUTRALIZATION = 0;
 const GPU_VERTICAL_CONSTRAINT_VELOCITY_NEUTRALIZATION = 1;
+const BODY_CONTACT_RECONCILIATION_START = 0.000_5;
+const BODY_CONTACT_RECONCILIATION_FULL = 0.025;
 const MAXIMUM_BODY_CONTACT_CORRECTION_PER_PASS = 0.08;
 // Match the ordered solver's velocity-neutral idle row recovery. It supplies
 // the missing tangential settling component after projection has dissipated a
@@ -157,7 +158,7 @@ const ROCK_FACES_PER_COLLIDER = 60;
 const MAXIMUM_CONTINUOUS_ROCK_SWEEP = 0.08;
 const ROCK_SWEEP_SURFACE_OFFSET = 0.001;
 const ROCK_SWEEP_TANGENTIAL_DAMPING = 0.76;
-const BODY_BUFFER_STRIDE = 7;
+const BODY_BUFFER_STRIDE = 5;
 const ROCK_BUFFER_STRIDE = 4 + ROCK_FACES_PER_COLLIDER * 4;
 const TOPOLOGY_METADATA_STRIDE = 2;
 // A particle cannot travel farther from the neckline than the cape's maximum
@@ -194,9 +195,6 @@ export class GpuCapeSimulation {
   private readonly constraintBuffer;
   private readonly coloredConstraintRanges: readonly ColoredConstraintRange[];
   private readonly bodyBuffer;
-  private readonly bodyContactCorrectionBuffer;
-  private readonly bodyContactMotionBuffer;
-  private readonly bodyColliderHistory = new CapsuleColliderHistory();
   private readonly caveShellBuffer;
   private readonly worldSphereBuffer;
   private readonly rockBuffer;
@@ -260,8 +258,6 @@ export class GpuCapeSimulation {
     this.constraintBuffer = instancedArray(topology.coloredConstraints, 'vec4');
     this.coloredConstraintRanges = topology.coloredConstraintRanges;
     this.bodyBuffer = instancedArray(MAX_BODY_COLLIDERS * BODY_BUFFER_STRIDE, 'vec4');
-    this.bodyContactCorrectionBuffer = instancedArray(PARTICLE_COUNT, 'vec4');
-    this.bodyContactMotionBuffer = instancedArray(PARTICLE_COUNT, 'vec4');
     const caveSamples = getCaveShellSampleData();
     const packedCaveSamples = new Float32Array(caveSamples.x.length * 2);
     for (let index = 0; index < caveSamples.x.length; index += 1) {
@@ -562,7 +558,6 @@ export class GpuCapeSimulation {
     this.writeStorage(this.scratchBuffer.value, state);
     this.writeStorage(this.previousBuffer.value, state);
     this.updateAnchorBuffer(anchors);
-    this.bodyColliderHistory.reset();
     this.previousBack.copy(anchors.back);
     this.pendingNecklineYaw = 0;
     this.submittedSteps = 0;
@@ -591,7 +586,6 @@ export class GpuCapeSimulation {
     this.writeStorage(this.topologyBuffer.value, topology.packed);
     this.writeStorage(this.constraintBuffer.value, topology.coloredConstraints);
     this.updateAnchorBuffer(anchors);
-    this.bodyColliderHistory.reset();
     this.previousBack.copy(anchors.back);
     this.pendingNecklineYaw = 0;
     this.submittedSteps = 0;
@@ -633,7 +627,6 @@ export class GpuCapeSimulation {
     this.writeStorage(this.scratchBuffer.value, positionData);
     this.writeStorage(this.previousBuffer.value, previousData);
     this.diagnosticMirror.overwriteStateForHarness(positionData, previousData);
-    this.bodyColliderHistory.reset();
     this.submittedSteps = 0;
     this.idleDrapeRecoverySeconds = 0;
     this.idleDrapeRecoveryUniform.value = 0;
@@ -910,8 +903,6 @@ export class GpuCapeSimulation {
       const current = this.positionBuffer.element(index);
       const previous = this.previousBuffer.element(index);
       const target = this.scratchBuffer.element(index);
-      this.bodyContactCorrectionBuffer.element(index).assign(vec4(0));
-      this.bodyContactMotionBuffer.element(index).assign(vec4(0));
       If(index.lessThan(uint(CAPE.columns)), () => {
         const anchor = this.anchorBuffer.element(index);
         target.assign(anchor);
@@ -1366,27 +1357,22 @@ export class GpuCapeSimulation {
       const index = instanceIndex;
       If(index.greaterThanEqual(uint(CAPE.columns)), () => {
         const position = this.positionBuffer.element(index);
-        const contact = this.bodyContactCorrectionBuffer.element(index);
-        If(contact.w.greaterThan(0.000_001), () => {
+        const correction = position.w;
+        If(correction.greaterThan(BODY_CONTACT_RECONCILIATION_START), () => {
           const previous = this.previousBuffer.element(index);
-          const correctionLength = contact.xyz.length();
-          const normal = contact.xyz.div(correctionLength.max(0.000_001));
-          const colliderMotion = this.bodyContactMotionBuffer.element(index).xyz
-            .div(contact.w);
-          const velocity = position.xyz.sub(previous.xyz).sub(contact.xyz)
-            .toVar('bodyContactVelocity');
-          const inwardRelativeMotion = velocity.sub(colliderMotion)
-            .dot(normal)
-            .min(0);
-          velocity.subAssign(normal.mul(inwardRelativeMotion));
+          const strength = smoothstep(
+            BODY_CONTACT_RECONCILIATION_START,
+            BODY_CONTACT_RECONCILIATION_FULL,
+            correction,
+          );
           this.previousBuffer.element(index).assign(vec4(
-            position.xyz.sub(velocity),
+            mix(previous.xyz, position.xyz, strength),
             previous.w,
           ));
         });
         this.positionBuffer.element(index).assign(vec4(position.xyz, 0));
       });
-    })().compute(PARTICLE_COUNT).setName('Cape solve relative body contact velocity');
+    })().compute(PARTICLE_COUNT).setName('Cape reconcile body contact velocity');
   }
   private createProjectionKernel(
     source: typeof this.positionBuffer,
@@ -1553,9 +1539,9 @@ export class GpuCapeSimulation {
       }
 
       if (includeContacts) {
+      const contactStart = position.toVar('contactStart');
       const bodyContactStart = position.toVar('bodyContactStart');
       const bodyManifoldCorrection = vec3(0).toVar('bodyManifoldCorrection');
-      const bodyManifoldMotion = vec3(0).toVar('bodyManifoldMotion');
       const bodyManifoldLength = float(0).toVar('bodyManifoldLength');
 
       Loop(
@@ -1564,8 +1550,6 @@ export class GpuCapeSimulation {
           const bodyBase = i.mul(uint(BODY_BUFFER_STRIDE));
           const startRadius = this.bodyBuffer.element(bodyBase);
           const axisDepth = this.bodyBuffer.element(bodyBase.add(1));
-          const previousStart = this.bodyBuffer.element(bodyBase.add(5)).xyz;
-          const previousAxis = this.bodyBuffer.element(bodyBase.add(6)).xyz;
           const lateralAxis = this.bodyBuffer.element(bodyBase.add(2));
           const verticalBounds = this.bodyBuffer.element(bodyBase.add(3));
           If(
@@ -1583,8 +1567,6 @@ export class GpuCapeSimulation {
                 0,
               );
               const closest = startRadius.xyz.add(axisDepth.xyz.mul(progress));
-              const previousClosest = previousStart.add(previousAxis.mul(progress));
-              const colliderMotion = closest.sub(previousClosest);
               const bodyDelta = bodyContactStart.sub(closest).toVar('bodyDelta');
               const depth = bodyDelta.dot(this.backUniform).toVar('bodyDepth');
               const lateralSquared = bodyDelta.dot(bodyDelta)
@@ -1630,7 +1612,6 @@ export class GpuCapeSimulation {
                     const correctionLength = bodyCorrection.length();
                     If(correctionLength.greaterThan(bodyManifoldLength), () => {
                       bodyManifoldCorrection.assign(bodyCorrection);
-                      bodyManifoldMotion.assign(colliderMotion);
                       bodyManifoldLength.assign(correctionLength);
                     });
                   },
@@ -1649,20 +1630,6 @@ export class GpuCapeSimulation {
       });
       position.addAssign(bodyManifoldCorrection);
       bodyCorrectionUsed.addAssign(bodyManifoldCorrection.length());
-      If(bodyManifoldLength.greaterThan(0.000_001), () => {
-        const contact = this.bodyContactCorrectionBuffer.element(index);
-        const contactMotion = this.bodyContactMotionBuffer.element(index);
-        const correctionLength = bodyManifoldCorrection.length();
-        this.bodyContactCorrectionBuffer.element(index).assign(vec4(
-          contact.xyz.add(bodyManifoldCorrection),
-          contact.w.add(correctionLength),
-        ));
-        this.bodyContactMotionBuffer.element(index).assign(vec4(
-          contactMotion.xyz.add(bodyManifoldMotion.mul(correctionLength)),
-          0,
-        ));
-      });
-      const environmentContactStart = position.toVar('environmentContactStart');
 
       position.z.assign(position.z.clamp(CAVE.endZ + 0.08, CAVE.startZ - 0.08));
       const caveSegmentPosition = float(CAVE.startZ).sub(position.z)
@@ -2148,7 +2115,7 @@ export class GpuCapeSimulation {
         maximumX.assign(center.add(0.08));
       });
       position.x.assign(position.x.clamp(minimumX, maximumX));
-      const contactCorrection = position.sub(environmentContactStart).toVar('contactCorrection');
+      const contactCorrection = position.sub(contactStart).toVar('contactCorrection');
       previousPosition.addAssign(contactCorrection);
       If(contactCorrection.dot(contactCorrection).greaterThan(0.000_000_1), () => {
         const contactNormal = contactCorrection.normalize().toVar('contactNormal');
@@ -2875,12 +2842,6 @@ export class GpuCapeSimulation {
         const first = firstStart.toVar('bodyFaceFirst');
         const second = secondStart.toVar('bodyFaceSecond');
         const third = thirdStart.toVar('bodyFaceThird');
-        const firstMotionSum = vec3(0).toVar('bodyFaceFirstMotionSum');
-        const secondMotionSum = vec3(0).toVar('bodyFaceSecondMotionSum');
-        const thirdMotionSum = vec3(0).toVar('bodyFaceThirdMotionSum');
-        const firstMotionWeight = float(0).toVar('bodyFaceFirstMotionWeight');
-        const secondMotionWeight = float(0).toVar('bodyFaceSecondMotionWeight');
-        const thirdMotionWeight = float(0).toVar('bodyFaceThirdMotionWeight');
 
         const firstMass = select(firstIndex.lessThan(uint(CAPE.columns)), 0, 1);
         const secondMass = select(secondIndex.lessThan(uint(CAPE.columns)), 0, 1);
@@ -2894,8 +2855,6 @@ export class GpuCapeSimulation {
             const bodyBase = bodyIndex.mul(uint(BODY_BUFFER_STRIDE));
             const startRadius = this.bodyBuffer.element(bodyBase);
             const axisDepth = this.bodyBuffer.element(bodyBase.add(1));
-            const previousStart = this.bodyBuffer.element(bodyBase.add(5)).xyz;
-            const previousAxis = this.bodyBuffer.element(bodyBase.add(6)).xyz;
             const faceInfo = this.bodyBuffer.element(bodyBase.add(4));
             const segments = uint(faceInfo.x);
             const lateralRadius = faceInfo.y;
@@ -2920,8 +2879,6 @@ export class GpuCapeSimulation {
                     0,
                   );
                   const center = startRadius.xyz.add(axisDepth.xyz.mul(progress));
-                  const previousCenter = previousStart.add(previousAxis.mul(progress));
-                  const colliderMotion = center.sub(previousCenter);
                   const overlapsBounds = center.x.add(boundsRadius)
                     .greaterThanEqual(triangleMinimum.x)
                     .and(center.x.sub(boundsRadius).lessThanEqual(triangleMaximum.x))
@@ -3013,18 +2970,15 @@ export class GpuCapeSimulation {
                           .and(denominator.greaterThan(0.000_001)),
                         () => {
                           const lambda = penetration.div(denominator);
-                          const firstCorrection = firstMass.mul(barycentric.x).mul(lambda);
-                          const secondCorrection = secondMass.mul(barycentric.y).mul(lambda);
-                          const thirdCorrection = thirdMass.mul(barycentric.z).mul(lambda);
-                          first.addAssign(this.backUniform.mul(firstCorrection));
-                          second.addAssign(this.backUniform.mul(secondCorrection));
-                          third.addAssign(this.backUniform.mul(thirdCorrection));
-                          firstMotionSum.addAssign(colliderMotion.mul(firstCorrection));
-                          secondMotionSum.addAssign(colliderMotion.mul(secondCorrection));
-                          thirdMotionSum.addAssign(colliderMotion.mul(thirdCorrection));
-                          firstMotionWeight.addAssign(firstCorrection);
-                          secondMotionWeight.addAssign(secondCorrection);
-                          thirdMotionWeight.addAssign(thirdCorrection);
+                          first.addAssign(this.backUniform.mul(
+                            firstMass.mul(barycentric.x).mul(lambda),
+                          ));
+                          second.addAssign(this.backUniform.mul(
+                            secondMass.mul(barycentric.y).mul(lambda),
+                          ));
+                          third.addAssign(this.backUniform.mul(
+                            thirdMass.mul(barycentric.z).mul(lambda),
+                          ));
                         },
                       );
                     });
@@ -3040,8 +2994,6 @@ export class GpuCapeSimulation {
           state: THREE.Node<'vec4'>,
           start: THREE.Node<'vec3'>,
           corrected: THREE.Node<'vec3'>,
-          motionSum: THREE.Node<'vec3'>,
-          motionWeight: THREE.Node<'float'>,
         ): void => {
           const faceCorrection = corrected.sub(start).toVar('boundedBodyFaceCorrection');
           const faceCorrectionLength = faceCorrection.length();
@@ -3056,45 +3008,23 @@ export class GpuCapeSimulation {
             boundedCorrected,
             state.w.add(faceCorrection.length()),
           ));
-          const appliedCorrectionLength = faceCorrection.length();
-          If(appliedCorrectionLength.greaterThan(0.000_001), () => {
-            const contact = this.bodyContactCorrectionBuffer.element(particleIndex);
-            const contactMotion = this.bodyContactMotionBuffer.element(particleIndex);
-            const colliderMotion = motionSum.div(motionWeight.max(0.000_001));
-            this.bodyContactCorrectionBuffer.element(particleIndex).assign(vec4(
-              contact.xyz.add(faceCorrection),
-              contact.w.add(appliedCorrectionLength),
-            ));
-            this.bodyContactMotionBuffer.element(particleIndex).assign(vec4(
-              contactMotion.xyz.add(colliderMotion.mul(appliedCorrectionLength)),
-              0,
-            ));
-          });
+
+          const previousState = this.previousBuffer.element(particleIndex);
+          const correctedPrevious = previousState.xyz
+            .add(faceCorrection)
+            .toVar('correctedPreviousBodyFace');
+          const inwardMotion = boundedCorrected.sub(correctedPrevious)
+            .dot(this.backUniform)
+            .min(0);
+          correctedPrevious.addAssign(this.backUniform.mul(inwardMotion));
+          this.previousBuffer.element(particleIndex).assign(vec4(
+            correctedPrevious,
+            previousState.w,
+          ));
         };
-        storeCorrection(
-          firstIndex,
-          firstState,
-          firstStart,
-          first,
-          firstMotionSum,
-          firstMotionWeight,
-        );
-        storeCorrection(
-          secondIndex,
-          secondState,
-          secondStart,
-          second,
-          secondMotionSum,
-          secondMotionWeight,
-        );
-        storeCorrection(
-          thirdIndex,
-          thirdState,
-          thirdStart,
-          third,
-          thirdMotionSum,
-          thirdMotionWeight,
-        );
+        storeCorrection(firstIndex, firstState, firstStart, first);
+        storeCorrection(secondIndex, secondState, secondStart, second);
+        storeCorrection(thirdIndex, thirdState, thirdStart, third);
       });
       return float(0);
     }, 'float').setLayout({
@@ -3269,9 +3199,8 @@ export class GpuCapeSimulation {
     if (colliders.length > MAX_BODY_COLLIDERS) {
       throw new RangeError(`GPU cape supports at most ${MAX_BODY_COLLIDERS} body colliders.`);
     }
-    const movingColliders = this.bodyColliderHistory.capture(colliders);
     const bodyData = this.bodyBuffer.value.array as Float32Array;
-    movingColliders.forEach((collider, index) => {
+    colliders.forEach((collider, index) => {
       const axis = collider.end.clone().sub(collider.start);
       const axisDepthProjection = axis.dot(back);
       const lateralAxis = axis.clone().addScaledVector(back, -axisDepthProjection);
@@ -3310,14 +3239,8 @@ export class GpuCapeSimulation {
       bodyData[offset + 16] = faceSegments;
       bodyData[offset + 17] = faceLateralRadius;
       bodyData[offset + 18] = faceDepthRadius;
-      bodyData[offset + 20] = collider.previousStart.x;
-      bodyData[offset + 21] = collider.previousStart.y;
-      bodyData[offset + 22] = collider.previousStart.z;
-      bodyData[offset + 24] = collider.previousEnd.x - collider.previousStart.x;
-      bodyData[offset + 25] = collider.previousEnd.y - collider.previousStart.y;
-      bodyData[offset + 26] = collider.previousEnd.z - collider.previousStart.z;
     });
-    this.bodyCountUniform.value = movingColliders.length;
+    this.bodyCountUniform.value = colliders.length;
     this.backUniform.value.copy(back);
     this.bodyBuffer.value.needsUpdate = true;
   }

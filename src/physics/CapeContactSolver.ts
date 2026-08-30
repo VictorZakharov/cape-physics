@@ -21,10 +21,6 @@ import {
 import { ClothRockCollision } from './ClothRockCollision';
 import { ClothCaveCollision } from './ClothCaveCollision';
 import {
-  CapsuleColliderHistory,
-  type MovingCapsuleCollider,
-} from './MovingCapsuleColliders';
-import {
   CLOTH_ROCK_CLEARANCE,
   CLOTH_WORLD_CLEARANCE,
   ClothWorldCollision,
@@ -64,12 +60,6 @@ interface PreparedBodyCollider {
   depthRadius: number;
   minimumY: number;
   maximumY: number;
-  motionStartX: number;
-  motionStartY: number;
-  motionStartZ: number;
-  motionAxisX: number;
-  motionAxisY: number;
-  motionAxisZ: number;
 }
 
 export interface WorldContactDiagnostics {
@@ -118,17 +108,11 @@ export class CapeContactSolver {
   private readonly activeWorldSpheres: WorldSphereCollider[] = [];
   private readonly activeRocks: WorldRockCollider[] = [];
   private readonly preparedBodyColliders: PreparedBodyCollider[] = [];
-  private readonly bodyColliderHistory = new CapsuleColliderHistory();
-  private activeBodyColliders: readonly MovingCapsuleCollider[] = [];
   private readonly delta = new THREE.Vector3();
   private readonly sweep = new THREE.Vector3();
   private readonly sweepStart = new THREE.Vector3();
   private readonly hitPoint = new THREE.Vector3();
   private readonly contactNormal = new THREE.Vector3();
-  private readonly colliderMotion = new THREE.Vector3();
-  private readonly bodyCorrection = new THREE.Vector3();
-  private readonly bodyVelocity = new THREE.Vector3();
-  private readonly relativeVelocity = new THREE.Vector3();
   private readonly bodySideOrigin = new THREE.Vector3();
   private readonly remainingMotion = new THREE.Vector3();
   private readonly boundsMinimum = new THREE.Vector3();
@@ -145,13 +129,6 @@ export class CapeContactSolver {
   private readonly rockQuery = new RockColliderQuery();
   private readonly rockCorrectionUsed: Float32Array;
   private readonly bodyCorrectionUsed: Float32Array;
-  private readonly bodyCorrectionX: Float64Array;
-  private readonly bodyCorrectionY: Float64Array;
-  private readonly bodyCorrectionZ: Float64Array;
-  private readonly bodyMotionX: Float64Array;
-  private readonly bodyMotionY: Float64Array;
-  private readonly bodyMotionZ: Float64Array;
-  private readonly bodyContactWeight: Float64Array;
   private readonly rockSweepResolved: Uint8Array;
   private readonly caveFloor: Float64Array;
   private readonly caveCeilingHeight: Float64Array;
@@ -167,13 +144,6 @@ export class CapeContactSolver {
   ) {
     this.rockCorrectionUsed = new Float32Array(inverseMass.length);
     this.bodyCorrectionUsed = new Float32Array(inverseMass.length);
-    this.bodyCorrectionX = new Float64Array(inverseMass.length);
-    this.bodyCorrectionY = new Float64Array(inverseMass.length);
-    this.bodyCorrectionZ = new Float64Array(inverseMass.length);
-    this.bodyMotionX = new Float64Array(inverseMass.length);
-    this.bodyMotionY = new Float64Array(inverseMass.length);
-    this.bodyMotionZ = new Float64Array(inverseMass.length);
-    this.bodyContactWeight = new Float64Array(inverseMass.length);
     this.rockSweepResolved = new Uint8Array(inverseMass.length);
     this.caveFloor = new Float64Array(inverseMass.length);
     this.caveCeilingHeight = new Float64Array(inverseMass.length);
@@ -222,17 +192,9 @@ export class CapeContactSolver {
     this.worldContactsLastStep = 0;
     this.bodySolvePass = 0;
     this.caveSolvePass = 0;
-    this.activeBodyColliders = this.bodyColliderHistory.capture(bodyColliders);
-    this.prepareBodyColliders(this.activeBodyColliders, back);
+    this.prepareBodyColliders(bodyColliders, back);
     this.bodySideOrigin.copy(anchorCenter);
     this.bodyCorrectionUsed.fill(0);
-    this.bodyCorrectionX.fill(0);
-    this.bodyCorrectionY.fill(0);
-    this.bodyCorrectionZ.fill(0);
-    this.bodyMotionX.fill(0);
-    this.bodyMotionY.fill(0);
-    this.bodyMotionZ.fill(0);
-    this.bodyContactWeight.fill(0);
     this.bodyFaceCollision.beginStep();
     this.rockCorrectionUsed.fill(0);
     this.rockSweepResolved.fill(0);
@@ -247,7 +209,7 @@ export class CapeContactSolver {
     }
   }
 
-  public solveBody(back: THREE.Vector3): void {
+  public solveBody(colliders: readonly CapsuleCollider[], back: THREE.Vector3): void {
     for (let index = CAPE.columns; index < this.positions.length; index += 1) {
       const position = this.positions[index];
       const previous = this.previous[index];
@@ -262,61 +224,16 @@ export class CapeContactSolver {
           topologySide,
         );
         if (penetration <= 0) continue;
-        this.bodyCorrection.copy(this.contactNormal).multiplyScalar(penetration);
-        position.add(this.bodyCorrection);
-        this.recordBodyContact(index, this.bodyCorrection, this.colliderMotion);
+        position.addScaledVector(this.contactNormal, penetration);
+        previous.addScaledVector(this.contactNormal, penetration);
+        this.removeInwardMotion(position, previous, this.contactNormal);
         this.bodyCorrectionUsed[index] = (this.bodyCorrectionUsed[index] ?? 0) + penetration;
       }
     }
     this.bodySolvePass += 1;
     if (this.bodySolvePass > CAPE.solverIterations - BODY_FACE_SOLVER_PASSES) {
-      this.bodyFaceCollision.solve(
-        this.activeBodyColliders,
-        back,
-        this.bodySideOrigin,
-        this.recordBodyFaceContact,
-      );
+      this.bodyFaceCollision.solve(colliders, back, this.bodySideOrigin);
     }
-  }
-
-  /**
-   * Applies a zero-restitution velocity constraint relative to the animated
-   * body. Positional depenetration is removed before velocity is reconstructed,
-   * so projection distance can never become an outward launch impulse.
-   */
-  public reconcileBodyContactVelocity(): void {
-    for (let index = CAPE.columns; index < this.positions.length; index += 1) {
-      const weight = this.bodyContactWeight[index] ?? 0;
-      if (weight <= 0.000_001) continue;
-      const position = this.positions[index];
-      const previous = this.previous[index];
-      if (!position || !previous) continue;
-      this.bodyCorrection.set(
-        this.bodyCorrectionX[index] ?? 0,
-        this.bodyCorrectionY[index] ?? 0,
-        this.bodyCorrectionZ[index] ?? 0,
-      );
-      const correctionLength = this.bodyCorrection.length();
-      if (correctionLength <= 0.000_001) continue;
-      this.contactNormal.copy(this.bodyCorrection).multiplyScalar(1 / correctionLength);
-      this.colliderMotion.set(
-        (this.bodyMotionX[index] ?? 0) / weight,
-        (this.bodyMotionY[index] ?? 0) / weight,
-        (this.bodyMotionZ[index] ?? 0) / weight,
-      );
-      this.bodyVelocity.copy(position).sub(previous).sub(this.bodyCorrection);
-      this.relativeVelocity.copy(this.bodyVelocity).sub(this.colliderMotion);
-      const inwardMotion = this.relativeVelocity.dot(this.contactNormal);
-      if (inwardMotion < 0) {
-        this.bodyVelocity.addScaledVector(this.contactNormal, -inwardMotion);
-      }
-      previous.copy(position).sub(this.bodyVelocity);
-    }
-  }
-
-  public resetBodyColliderHistory(): void {
-    this.bodyColliderHistory.reset();
-    this.activeBodyColliders = [];
   }
 
   public solveWorld(): void {
@@ -622,11 +539,6 @@ export class CapeContactSolver {
     const closestX = prepared.startX + prepared.axisX * progress;
     const closestY = prepared.startY + prepared.axisY * progress;
     const closestZ = prepared.startZ + prepared.axisZ * progress;
-    this.colliderMotion.set(
-      prepared.motionStartX + prepared.motionAxisX * progress,
-      prepared.motionStartY + prepared.motionAxisY * progress,
-      prepared.motionStartZ + prepared.motionAxisZ * progress,
-    );
     const deltaX = position.x - closestX;
     const deltaY = position.y - closestY;
     const deltaZ = position.z - closestZ;
@@ -691,7 +603,7 @@ export class CapeContactSolver {
   }
 
   private prepareBodyColliders(
-    colliders: readonly (CapsuleCollider | MovingCapsuleCollider)[],
+    colliders: readonly CapsuleCollider[],
     back: THREE.Vector3,
   ): void {
     this.preparedBodyColliders.length = colliders.length;
@@ -713,12 +625,6 @@ export class CapeContactSolver {
         depthRadius: 0,
         minimumY: 0,
         maximumY: 0,
-        motionStartX: 0,
-        motionStartY: 0,
-        motionStartZ: 0,
-        motionAxisX: 0,
-        motionAxisY: 0,
-        motionAxisZ: 0,
       };
       const axisX = collider.end.x - collider.start.x;
       const axisY = collider.end.y - collider.start.y;
@@ -744,21 +650,6 @@ export class CapeContactSolver {
         + lateralAxisZ * lateralAxisZ;
       prepared.lateralRadius = lateralRadius;
       prepared.depthRadius = depthRadius;
-      const previousStart = 'previousStart' in collider
-        ? collider.previousStart
-        : collider.start;
-      const previousEnd = 'previousEnd' in collider
-        ? collider.previousEnd
-        : collider.end;
-      const previousAxisX = previousEnd.x - previousStart.x;
-      const previousAxisY = previousEnd.y - previousStart.y;
-      const previousAxisZ = previousEnd.z - previousStart.z;
-      prepared.motionStartX = collider.start.x - previousStart.x;
-      prepared.motionStartY = collider.start.y - previousStart.y;
-      prepared.motionStartZ = collider.start.z - previousStart.z;
-      prepared.motionAxisX = axisX - previousAxisX;
-      prepared.motionAxisY = axisY - previousAxisY;
-      prepared.motionAxisZ = axisZ - previousAxisZ;
       if (Math.abs(back.y) < 0.000_1) {
         prepared.minimumY = Math.min(collider.start.y, collider.end.y) - verticalRadius;
         prepared.maximumY = Math.max(collider.start.y, collider.end.y) + verticalRadius;
@@ -953,30 +844,6 @@ export class CapeContactSolver {
   ): void {
     const inwardMotion = this.delta.copy(position).sub(previous).dot(normal);
     if (inwardMotion < 0) previous.addScaledVector(normal, inwardMotion);
-  }
-
-  private readonly recordBodyFaceContact = (
-    index: number,
-    correction: THREE.Vector3,
-    colliderMotion: THREE.Vector3,
-  ): void => {
-    this.recordBodyContact(index, correction, colliderMotion);
-  };
-
-  private recordBodyContact(
-    index: number,
-    correction: THREE.Vector3,
-    colliderMotion: THREE.Vector3,
-  ): void {
-    const weight = correction.length();
-    if (weight <= 0.000_001) return;
-    this.bodyCorrectionX[index] = (this.bodyCorrectionX[index] ?? 0) + correction.x;
-    this.bodyCorrectionY[index] = (this.bodyCorrectionY[index] ?? 0) + correction.y;
-    this.bodyCorrectionZ[index] = (this.bodyCorrectionZ[index] ?? 0) + correction.z;
-    this.bodyMotionX[index] = (this.bodyMotionX[index] ?? 0) + colliderMotion.x * weight;
-    this.bodyMotionY[index] = (this.bodyMotionY[index] ?? 0) + colliderMotion.y * weight;
-    this.bodyMotionZ[index] = (this.bodyMotionZ[index] ?? 0) + colliderMotion.z * weight;
-    this.bodyContactWeight[index] = (this.bodyContactWeight[index] ?? 0) + weight;
   }
 
   private registerWorldContact(): void {
