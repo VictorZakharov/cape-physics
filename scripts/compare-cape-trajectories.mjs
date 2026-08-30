@@ -22,9 +22,11 @@ import {
 } from './audit/cdp-client.mjs';
 import { close, createStaticServer, listen } from './audit/static-server.mjs';
 import {
+  measureAverageCenterlineShapeChange,
   validateNecklineAttachment,
   validateTravellingWave,
 } from './cape-trajectory-invariants.mjs';
+import { CAPE } from '../src/config.ts';
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const temporaryParent = join(repositoryRoot, 'artifacts', '.tmp');
@@ -265,6 +267,12 @@ function summarizeMotion(report, transitionFrame) {
       : 0,
     maximumLowerCapeRowCurlRatio,
     averageCenterlineDeviation: centerlineDeviationTotal / Math.max(1, report.samples.length),
+    averageCenterlineShapeChange: measureAverageCenterlineShapeChange({
+      samples: report.samples,
+      columns: CAPE.columns,
+      rows: CAPE.rows,
+      startFrame: transitionFrame ?? Number.NEGATIVE_INFINITY,
+    }),
   };
 }
 
@@ -383,6 +391,8 @@ function validateScenario(scenario, webgl, webgpu, comparison) {
       scenario,
       webglAverageRowTwist: webglMotion.averageRowTwistRange,
       webgpuAverageRowTwist: webgpuMotion.averageRowTwistRange,
+      webglAverageShapeChange: webglMotion.averageCenterlineShapeChange,
+      webgpuAverageShapeChange: webgpuMotion.averageCenterlineShapeChange,
     });
     for (const [renderer, motion] of [
       ['WebGL', webglMotion],

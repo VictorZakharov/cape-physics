@@ -113,16 +113,8 @@ const PARTICLE_COUNT = CAPE.columns * CAPE.rows;
 const GPU_NECKLINE_TRANSLATION_TRANSFER = 0;
 const GPU_NECKLINE_ROTATION_TRANSFER = 0;
 const GPU_MAXIMUM_NECKLINE_ROTATION_PER_STEP = 0.025;
-// The graph-colored sweep dissipates a little more horizontal symmetry
-// breaking than the ordered solver. Restore that measured loss without
-// applying any vertical lift or locomotion-specific pose.
-const GPU_FLUTTER_COMPENSATION = 2;
 const GPU_MAXIMUM_PLANAR_PARTICLE_SPEED = 9.6;
 const GPU_MAXIMUM_VERTICAL_PARTICLE_SPEED = 12;
-// Parallel projection removes a small amount of downward energy that the
-// ordered CPU sweep retains. Restore only that measured loss; the authored
-// weight multiplier and fixed-step gravity remain shared with WebGL.
-const GPU_GRAVITY_COMPENSATION = 1.05;
 
 const BODY_CONTACT_RECONCILIATION_START = 0.000_5;
 const BODY_CONTACT_RECONCILIATION_FULL = 0.025;
@@ -278,7 +270,6 @@ export class GpuCapeSimulation {
       'Cape project scratch to position',
       false,
       true,
-      true,
     );
     const positionToScratch = this.createProjectionKernel(
       this.positionBuffer,
@@ -286,7 +277,6 @@ export class GpuCapeSimulation {
       false,
       'Cape project position to scratch',
       false,
-      true,
       true,
     );
     const hardScratchToPosition = this.createProjectionKernel(
@@ -296,7 +286,6 @@ export class GpuCapeSimulation {
       'Cape reconcile scratch to position',
       false,
       true,
-      true,
     );
     const hardPositionToScratch = this.createProjectionKernel(
       this.positionBuffer,
@@ -304,7 +293,6 @@ export class GpuCapeSimulation {
       true,
       'Cape reconcile position to scratch',
       false,
-      true,
       true,
     );
     const finalSelfPositionToScratch = this.createProjectionKernel(
@@ -314,7 +302,6 @@ export class GpuCapeSimulation {
       'Cape final self separation',
       true,
       false,
-      true,
     );
     const finalContactScratchToPosition = this.createProjectionKernel(
       this.scratchBuffer,
@@ -322,7 +309,6 @@ export class GpuCapeSimulation {
       true,
       'Cape final contact reconciliation',
       false,
-      true,
       true,
     );
     const positionBodyFaces = this.createFaceSweepKernel(
@@ -967,7 +953,7 @@ export class GpuCapeSimulation {
       );
       predicted.addAssign(rotatedAroundNeckline.sub(relativeToNeckline));
       predicted.y.subAssign(
-        deltaSquared.mul(9.81 * GPU_GRAVITY_COMPENSATION).mul(this.weightUniform),
+        deltaSquared.mul(9.81).mul(this.weightUniform),
       );
       predicted.addAssign(normal.mul(
         pressure.mul(pressure.abs()).mul(0.026).mul(deltaSquared),
@@ -977,7 +963,7 @@ export class GpuCapeSimulation {
       predicted.addAssign(flutterDirection.mul(
         fabricFlutter
           .mul(this.movementBlendUniform)
-          .mul(CAPE_FLUTTER_ACCELERATION * GPU_FLUTTER_COMPENSATION)
+          .mul(CAPE_FLUTTER_ACCELERATION)
           .mul(deltaSquared),
       ));
       predicted.addAssign(
@@ -1093,22 +1079,16 @@ export class GpuCapeSimulation {
                 const distanceSquared = separation.dot(separation).toVar('selfDistanceSquared');
                 If(distanceSquared.lessThan(CLOTH_THICKNESS ** 2), () => {
                   const distance = distanceSquared.sqrt().toVar('selfDistance');
-                  const planarSeparation = vec3(
-                    separation.x,
-                    0,
-                    separation.z,
-                  ).toVar('selfPlanarSeparation');
-                  const planarDistance = planarSeparation.length();
                   const normal = vec3(1, 0, 0).toVar('selfNormal');
-                  If(planarDistance.greaterThan(0.000_001), () => {
-                    normal.assign(planarSeparation.div(planarDistance));
+                  If(distance.greaterThan(0.000_001), () => {
+                    normal.assign(separation.div(distance));
                   }).Else(() => {
                     const phase = float(firstIndex)
                       .mul(0.754_877_666)
                       .add(float(secondIndex).mul(0.569_840_291));
                     normal.assign(vec3(
                       phase.sin(),
-                      0,
+                      phase.mul(1.37).cos(),
                       phase.mul(0.73).add(1.1).sin(),
                     ).normalize());
                   });
@@ -1282,15 +1262,17 @@ export class GpuCapeSimulation {
     name: string,
     includeSelfCollision = true,
     includeContacts = true,
-    includeFoldGuard = true,
   ): THREE.ComputeNode {
+    // Fold, row-span, and row-curl guards belong to the authored solver
+    // iteration in createConstraintKernel. Contact/copy dispatches must not
+    // solve them again: the duplicate cadence suppressed travelling waves.
     const project = this.createProjectionFunction(
       source,
       target,
       name.replaceAll(' ', ''),
       includeSelfCollision,
       includeContacts,
-      includeFoldGuard,
+      false,
     );
     return Fn(() => {
       const passResult = float(0).toVar('projectionPassResult');
@@ -1407,22 +1389,16 @@ export class GpuCapeSimulation {
             const distanceSquared = separation.dot(separation).toVar('selfDistanceSquared');
             If(distanceSquared.lessThan(CLOTH_THICKNESS ** 2), () => {
               const distance = distanceSquared.sqrt().toVar('selfDistance');
-              const planarSeparation = vec3(
-                separation.x,
-                0,
-                separation.z,
-              ).toVar('selfPlanarSeparation');
-              const planarDistance = planarSeparation.length();
               const normal = vec3(1, 0, 0).toVar('selfNormal');
-              If(planarDistance.greaterThan(0.000_001), () => {
-                normal.assign(planarSeparation.div(planarDistance));
+              If(distance.greaterThan(0.000_001), () => {
+                normal.assign(separation.div(distance));
               }).Else(() => {
                 const phase = float(index)
                   .mul(0.754_877_666)
                   .add(float(i).mul(0.569_840_291));
                 normal.assign(vec3(
                   phase.sin(),
-                  0,
+                  phase.mul(1.37).cos(),
                   phase.mul(0.73).add(1.1).sin(),
                 ).normalize());
               });
