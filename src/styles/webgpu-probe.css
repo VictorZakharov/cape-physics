@@ -1,0 +1,63 @@
+.is-webgpu-probe {
+  overflow: auto;
+  background: #05090a;
+}
+
+.is-webgpu-probe .app {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 32px;
+}
+
+.webgpu-probe {
+  width: min(760px, 100%);
+  padding: 28px;
+  color: #d5e2df;
+  background: rgba(5, 17, 18, 0.97);
+  border: 1px solid rgba(119, 216, 198, 0.3);
+  border-radius: 8px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
+}
+
+.webgpu-probe__eyebrow,
+.webgpu-probe strong,
+.webgpu-probe button {
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.webgpu-probe__eyebrow { color: #77d8c6; }
+.webgpu-probe h1 { margin: 8px 0 18px; }
+.webgpu-probe p { color: #94a3a0; line-height: 1.5; }
+.webgpu-probe canvas {
+  display: block;
+  width: 320px;
+  max-width: 100%;
+  aspect-ratio: 16 / 9;
+  margin: 20px 0;
+  background: #071012;
+  border: 1px solid rgba(119, 216, 198, 0.22);
+}
+.webgpu-probe ol { min-height: 24px; padding-left: 24px; }
+.webgpu-probe li[data-status="passed"] { color: #77d8c6; }
+.webgpu-probe li[data-status="failed"] { color: #ff8a76; }
+.webgpu-probe__actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 20px 0; }
+.webgpu-probe button {
+  padding: 10px 14px;
+  color: #cce5df;
+  background: #0a2322;
+  border: 1px solid rgba(119, 216, 198, 0.35);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.webgpu-probe button:disabled { opacity: 0.4; cursor: default; }
+.webgpu-probe pre {
+  max-height: 300px;
+  overflow: auto;
+  padding: 14px;
+  color: #9fb2ae;
+  background: #020607;
+  border-radius: 4px;
+  white-space: pre-wrap;
+}
