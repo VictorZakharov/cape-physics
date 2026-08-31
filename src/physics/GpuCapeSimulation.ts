@@ -457,6 +457,29 @@ export class GpuCapeSimulation {
     characterVelocity: THREE.Vector3,
     time: number,
   ): void {
+    this.renderer.compute(this.prepareStep(
+      deltaTime,
+      anchors,
+      bodyColliders,
+      worldColliders,
+      characterVelocity,
+      time,
+    ));
+  }
+
+  /**
+   * Updates per-cape bindings without opening a compute pass. CapeDemo uses
+   * this to concatenate every active cape's dispatch list into one command
+   * encoder/submission per fixed step.
+   */
+  public prepareStep(
+    deltaTime: number,
+    anchors: CapeAnchors,
+    bodyColliders: readonly CapsuleCollider[],
+    worldColliders: readonly WorldCollider[],
+    characterVelocity: THREE.Vector3,
+    time: number,
+  ): THREE.ComputeNode[] {
     const characterSpeed = characterVelocity.length();
     const planarSpeed = Math.hypot(characterVelocity.x, characterVelocity.z);
     const movementBlend = THREE.MathUtils.smoothstep(characterSpeed, WAKE_SPEED, 2.4);
@@ -487,8 +510,8 @@ export class GpuCapeSimulation {
     this.updateAnchorBuffer(anchors);
     this.updateBodyBuffers(bodyColliders, anchors.back);
     this.updateWorldBuffers(worldColliders);
-    this.renderer.compute(this.computeSequence);
     this.submittedSteps += 1;
+    return this.computeSequence.slice();
   }
 
   /** GPU rendering consumes the position storage buffer directly. */

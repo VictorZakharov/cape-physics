@@ -435,27 +435,62 @@ export class CapeDemo {
     if (landingImpact > 0) {
       this.water.addLandingRipple(this.character.root.position, this.fixedTime, landingImpact);
     }
-    const anchors = this.character.getCapeAnchors();
-    this.cape.step(
+    for (const bot of this.performanceBots) {
+      bot.input.update(this.fixedTime);
+      bot.controller.update(step, 0);
+    }
+
+    if (this.cape instanceof CapeSimulation) {
+      this.cape.step(
+        step,
+        this.character.getCapeAnchors(),
+        this.character.getCapeColliders(),
+        this.worldColliders,
+        this.character.velocity,
+        this.fixedTime,
+      );
+      for (const bot of this.performanceBots) {
+        if (!(bot.cape instanceof CapeSimulation)) {
+          throw new Error('Mixed CPU and GPU cape simulations are unsupported.');
+        }
+        bot.cape.step(
+          step,
+          bot.character.getCapeAnchors(),
+          bot.character.getCapeColliders(),
+          this.worldColliders,
+          bot.character.velocity,
+          this.fixedTime,
+        );
+      }
+      return;
+    }
+
+    const computeNodes = [...this.cape.prepareStep(
       step,
-      anchors,
+      this.character.getCapeAnchors(),
       this.character.getCapeColliders(),
       this.worldColliders,
       this.character.velocity,
       this.fixedTime,
-    );
+    )];
     for (const bot of this.performanceBots) {
-      bot.input.update(this.fixedTime);
-      bot.controller.update(step, 0);
-      bot.cape.step(
+      if (bot.cape instanceof CapeSimulation) {
+        throw new Error('Mixed CPU and GPU cape simulations are unsupported.');
+      }
+      computeNodes.push(...bot.cape.prepareStep(
         step,
         bot.character.getCapeAnchors(),
         bot.character.getCapeColliders(),
         this.worldColliders,
         bot.character.velocity,
         this.fixedTime,
-      );
+      ));
     }
+    const renderer = invariant(
+      this.pipeline.getWebGpuRenderer(),
+      'WebGPU renderer is missing for the GPU cape batch.',
+    );
+    renderer.compute(computeNodes);
   };
 
   private updateScene(delta: number): void {
@@ -610,7 +645,10 @@ export class CapeDemo {
     };
     this.scene.add(character.root, cape.mesh);
     this.configureCharacterRenderObjects(character, cape);
-    this.stabilizeCapeInstance(character, cape);
+    // A GPU cape starts from the authored drape already. Running twelve
+    // immediate steps here synchronously compiled every new compute graph on
+    // the range-input event and caused multi-second UI freezes.
+    if (cape instanceof CapeSimulation) this.stabilizeCapeInstance(character, cape);
     cape.syncGeometry();
     return bot;
   }
