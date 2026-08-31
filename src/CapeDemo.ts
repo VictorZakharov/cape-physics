@@ -436,7 +436,11 @@ export class CapeDemo {
       this.startupRecovery.stage('create-webgpu-lighting');
       const { WebGpuCinematicLighting } = await import('./lighting/WebGpuCinematicLighting');
       await this.loading.update(0.8, 'Creating WebGPU light pipelines');
-      this.lighting = new WebGpuCinematicLighting(this.scene);
+      const nodeRenderer = invariant(
+        this.pipeline.getNodeRenderer(),
+        'WebGPU node renderer is missing.',
+      );
+      this.lighting = new WebGpuCinematicLighting(this.scene, nodeRenderer);
       await this.loading.update(0.82, 'Binding WebGPU shadows and reflections');
     } else {
       const webGlRenderer = invariant(
