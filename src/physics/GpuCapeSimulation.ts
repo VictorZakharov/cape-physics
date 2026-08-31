@@ -38,10 +38,6 @@ import {
   CAPE_FLUTTER_ACCELERATION,
 } from './CapeAerodynamics';
 import { CAPE_DISTANCE_CONSTRAINTS } from './CapeConstraintTopology';
-import {
-  DEFAULT_GPU_CAPE_DIAGNOSTIC_OPTIONS,
-  type GpuCapeDiagnosticOptions,
-} from './GpuCapeDiagnosticOptions';
 import { CapeSimulation } from './CapeSimulation';
 import {
   CAPE_ROW_CURL_RELAXATION,
@@ -118,7 +114,6 @@ const GPU_MAXIMUM_VERTICAL_PARTICLE_SPEED = 12;
 
 const BODY_CONTACT_RECONCILIATION_START = 0.000_5;
 const BODY_CONTACT_RECONCILIATION_FULL = 0.025;
-const MAXIMUM_BODY_CONTACT_CORRECTION_PER_PASS = 0.08;
 // Match the ordered solver's velocity-neutral idle row recovery. It supplies
 // the missing tangential settling component after projection has dissipated a
 // lightweight cape's pendulum motion.
@@ -135,7 +130,7 @@ const ROCK_FACES_PER_COLLIDER = 60;
 const MAXIMUM_CONTINUOUS_ROCK_SWEEP = 0.08;
 const ROCK_SWEEP_SURFACE_OFFSET = 0.001;
 const ROCK_SWEEP_TANGENTIAL_DAMPING = 0.76;
-const BODY_BUFFER_STRIDE = 5;
+const BODY_BUFFER_STRIDE = 4;
 const ROCK_BUFFER_STRIDE = 4 + ROCK_FACES_PER_COLLIDER * 4;
 const TOPOLOGY_METADATA_STRIDE = 2;
 // A particle cannot travel farther from the neckline than the cape's maximum
@@ -214,7 +209,6 @@ export class GpuCapeSimulation {
     renderer: THREE.WebGPURenderer,
     initialAnchors: CapeAnchors,
     settings: Partial<CapePhysicsSettings> = {},
-    diagnostics: GpuCapeDiagnosticOptions = DEFAULT_GPU_CAPE_DIAGNOSTIC_OPTIONS,
   ) {
     this.renderer = renderer;
     this.settings = normalizeCapePhysicsSettings(settings);
@@ -310,14 +304,12 @@ export class GpuCapeSimulation {
       false,
       true,
     );
-    const positionBodyFaces = this.createFaceSweepKernel(
-      this.createBodyFaceColorFunction(this.positionBuffer, 'Position'),
-      'Cape body faces in position',
-    );
-    const scratchBodyFaces = this.createFaceSweepKernel(
-      this.createBodyFaceColorFunction(this.scratchBuffer, 'Scratch'),
-      'Cape body faces in scratch',
-    );
+    // Animated character contact stays particle-to-capsule inside the
+    // projection kernels. Do not invert that query by projecting sampled body
+    // points through every cloth face: overlapping torso and shoulder samples
+    // turn the triangles into a rigid manifold. If this mesh ever needs denser
+    // contact sampling, add fixed barycentric virtual cloth particles and test
+    // those against the capsules like ordinary particles.
     const positionRockFaces = this.createFaceSweepKernel(
       this.createRockFaceColorFunction(this.positionBuffer, 'Position', false, true),
       'Cape rock faces in position',
@@ -345,25 +337,12 @@ export class GpuCapeSimulation {
         currentBufferIsPosition ? positionToScratch : scratchToPosition,
       );
       currentBufferIsPosition = !currentBufferIsPosition;
-      if (
-        diagnostics.bodyFaceContactsEnabled
-        && iteration >= CAPE.solverIterations - 3
-      ) {
-        this.computeSequence.push(
-          currentBufferIsPosition ? positionBodyFaces : scratchBodyFaces,
-        );
-      }
     }
     for (let reconciliation = 0; reconciliation < 3; reconciliation += 1) {
       this.computeSequence.push(
         currentBufferIsPosition ? hardPositionToScratch : hardScratchToPosition,
       );
       currentBufferIsPosition = !currentBufferIsPosition;
-      if (diagnostics.bodyFaceContactsEnabled && reconciliation > 0) {
-        this.computeSequence.push(
-          currentBufferIsPosition ? positionBodyFaces : scratchBodyFaces,
-        );
-      }
       if (reconciliation === 0) {
         this.computeSequence.push(positionSweptRockFaces);
       } else {
@@ -385,15 +364,6 @@ export class GpuCapeSimulation {
       positionRockFaces,
       finalSelfPositionToScratch,
       finalContactScratchToPosition,
-    );
-    if (diagnostics.bodyFaceContactsEnabled) {
-      this.computeSequence.push(positionBodyFaces);
-    } else {
-      console.warn(
-        'WebGPU cape diagnostic active: cloth-triangle/body-face sweeps are disabled.',
-      );
-    }
-    this.computeSequence.push(
       positionRockFaces,
       reconcileBodyContactVelocity,
       reconcileProjectionVerticalVelocity,
@@ -1319,7 +1289,7 @@ export class GpuCapeSimulation {
   }
 
   private createFaceSweepKernel(
-    colorPass: ReturnType<GpuCapeSimulation['createBodyFaceColorFunction']>,
+    colorPass: ReturnType<GpuCapeSimulation['createRockFaceColorFunction']>,
     name: string,
   ): THREE.ComputeNode {
     return Fn(() => {
@@ -2733,250 +2703,6 @@ export class GpuCapeSimulation {
     });
   }
 
-  /**
-   * Resolves body-capsule points against cloth faces with a graph-colored
-   * triangle schedule. Triangles in one color share no vertices, so an
-   * invocation can apply the CPU solver's barycentric correction to all
-   * three particles without atomics or competing scatter writes.
-   */
-  private createBodyFaceColorFunction(
-    buffer: typeof this.positionBuffer,
-    passName: string,
-  ) {
-    return Fn<readonly [THREE.Node<'uint'>], THREE.Node<'float'>>(([color]) => {
-      const orientation = color.mod(uint(2));
-      const columnParity = color.div(uint(2)).mod(uint(2));
-      const rowParity = color.div(uint(4));
-      const coloredColumns = uint(Math.ceil((CAPE.columns - 1) / 2));
-      const coloredRows = select(
-        rowParity.equal(uint(0)),
-        uint(Math.ceil((CAPE.rows - 1) / 2)),
-        uint(Math.floor((CAPE.rows - 1) / 2)),
-      );
-      const triangleSlot = instanceIndex;
-      If(triangleSlot.lessThan(coloredRows.mul(coloredColumns)), () => {
-        const localRow = triangleSlot.div(coloredColumns);
-        const localColumn = triangleSlot.mod(coloredColumns);
-        const cellRow = rowParity.add(localRow.mul(2));
-        const cellColumn = columnParity.add(localColumn.mul(2));
-        const topLeft = cellRow.mul(uint(CAPE.columns)).add(cellColumn);
-        const bottomLeft = topLeft.add(uint(CAPE.columns));
-        const firstIndex = select(orientation.equal(uint(0)), topLeft, bottomLeft);
-        const secondIndex = select(
-          orientation.equal(uint(0)),
-          bottomLeft,
-          bottomLeft.add(1),
-        );
-        const thirdIndex = topLeft.add(1);
-        const firstState = buffer.element(firstIndex);
-        const secondState = buffer.element(secondIndex);
-        const thirdState = buffer.element(thirdIndex);
-        const firstStart = firstState.xyz.toVar('bodyFaceFirstStart');
-        const secondStart = secondState.xyz.toVar('bodyFaceSecondStart');
-        const thirdStart = thirdState.xyz.toVar('bodyFaceThirdStart');
-        const first = firstStart.toVar('bodyFaceFirst');
-        const second = secondStart.toVar('bodyFaceSecond');
-        const third = thirdStart.toVar('bodyFaceThird');
-
-        const firstMass = select(firstIndex.lessThan(uint(CAPE.columns)), 0, 1);
-        const secondMass = select(secondIndex.lessThan(uint(CAPE.columns)), 0, 1);
-        const thirdMass = select(thirdIndex.lessThan(uint(CAPE.columns)), 0, 1);
-        const triangleMinimum = first.min(second).min(third);
-        const triangleMaximum = first.max(second).max(third);
-
-        Loop(
-          { start: uint(0), end: uint(this.bodyCountUniform), type: 'uint', condition: '<' },
-          ({ i: bodyIndex }) => {
-            const bodyBase = bodyIndex.mul(uint(BODY_BUFFER_STRIDE));
-            const startRadius = this.bodyBuffer.element(bodyBase);
-            const axisDepth = this.bodyBuffer.element(bodyBase.add(1));
-            const faceInfo = this.bodyBuffer.element(bodyBase.add(4));
-            const segments = uint(faceInfo.x);
-            const lateralRadius = faceInfo.y;
-            const depthRadius = faceInfo.z;
-            const boundsRadius = lateralRadius.max(depthRadius);
-            const bodyEnd = startRadius.xyz.add(axisDepth.xyz);
-            const bodyMinimum = startRadius.xyz.min(bodyEnd).sub(boundsRadius);
-            const bodyMaximum = startRadius.xyz.max(bodyEnd).add(boundsRadius);
-            const overlapsBody = bodyMaximum.x.greaterThanEqual(triangleMinimum.x)
-              .and(bodyMinimum.x.lessThanEqual(triangleMaximum.x))
-              .and(bodyMaximum.y.greaterThanEqual(triangleMinimum.y))
-              .and(bodyMinimum.y.lessThanEqual(triangleMaximum.y))
-              .and(bodyMaximum.z.greaterThanEqual(triangleMinimum.z))
-              .and(bodyMinimum.z.lessThanEqual(triangleMaximum.z));
-            If(overlapsBody, () => {
-              Loop(
-                { start: uint(0), end: segments.add(1), type: 'uint', condition: '<' },
-                ({ i: sampleIndex }) => {
-                  const progress = select(
-                    segments.greaterThan(uint(0)),
-                    float(sampleIndex).div(float(segments)),
-                    0,
-                  );
-                  const center = startRadius.xyz.add(axisDepth.xyz.mul(progress));
-                  const overlapsBounds = center.x.add(boundsRadius)
-                    .greaterThanEqual(triangleMinimum.x)
-                    .and(center.x.sub(boundsRadius).lessThanEqual(triangleMaximum.x))
-                    .and(center.y.add(boundsRadius).greaterThanEqual(triangleMinimum.y))
-                    .and(center.y.sub(boundsRadius).lessThanEqual(triangleMaximum.y))
-                    .and(center.z.add(boundsRadius).greaterThanEqual(triangleMinimum.z))
-                    .and(center.z.sub(boundsRadius).lessThanEqual(triangleMaximum.z));
-                  If(overlapsBounds, () => {
-                    const ab = second.sub(first).toVar('coloredBodyFaceAB');
-                    const ac = third.sub(first).toVar('coloredBodyFaceAC');
-                    const ap = center.sub(first).toVar('coloredBodyFaceAP');
-                    const d1 = ab.dot(ap).toVar('coloredBodyFaceD1');
-                    const d2 = ac.dot(ap).toVar('coloredBodyFaceD2');
-                    const bp = center.sub(second).toVar('coloredBodyFaceBP');
-                    const d3 = ab.dot(bp).toVar('coloredBodyFaceD3');
-                    const d4 = ac.dot(bp).toVar('coloredBodyFaceD4');
-                    const cp = center.sub(third).toVar('coloredBodyFaceCP');
-                    const d5 = ab.dot(cp).toVar('coloredBodyFaceD5');
-                    const d6 = ac.dot(cp).toVar('coloredBodyFaceD6');
-                    const vc = d1.mul(d4).sub(d3.mul(d2)).toVar('coloredBodyFaceVC');
-                    const vb = d5.mul(d2).sub(d1.mul(d6)).toVar('coloredBodyFaceVB');
-                    const va = d3.mul(d6).sub(d5.mul(d4)).toVar('coloredBodyFaceVA');
-                    const closest = first.toVar('coloredBodyFaceClosest');
-                    const barycentric = vec3(1, 0, 0).toVar('coloredBodyFaceBarycentric');
-                    If(d1.lessThanEqual(0).and(d2.lessThanEqual(0)), () => {
-                      closest.assign(first);
-                      barycentric.assign(vec3(1, 0, 0));
-                    }).ElseIf(d3.greaterThanEqual(0).and(d4.lessThanEqual(d3)), () => {
-                      closest.assign(second);
-                      barycentric.assign(vec3(0, 1, 0));
-                    }).ElseIf(
-                      vc.lessThanEqual(0).and(d1.greaterThanEqual(0)).and(d3.lessThanEqual(0)),
-                      () => {
-                        const edge = d1.div(d1.sub(d3).max(0.000_001));
-                        closest.assign(first.add(ab.mul(edge)));
-                        barycentric.assign(vec3(float(1).sub(edge), edge, 0));
-                      },
-                    ).ElseIf(d6.greaterThanEqual(0).and(d5.lessThanEqual(d6)), () => {
-                      closest.assign(third);
-                      barycentric.assign(vec3(0, 0, 1));
-                    }).ElseIf(
-                      vb.lessThanEqual(0).and(d2.greaterThanEqual(0)).and(d6.lessThanEqual(0)),
-                      () => {
-                        const edge = d2.div(d2.sub(d6).max(0.000_001));
-                        closest.assign(first.add(ac.mul(edge)));
-                        barycentric.assign(vec3(float(1).sub(edge), 0, edge));
-                      },
-                    ).ElseIf(
-                      va.lessThanEqual(0)
-                        .and(d4.sub(d3).greaterThanEqual(0))
-                        .and(d5.sub(d6).greaterThanEqual(0)),
-                      () => {
-                        const firstEdge = d4.sub(d3);
-                        const secondEdge = d5.sub(d6);
-                        const edge = firstEdge.div(firstEdge.add(secondEdge).max(0.000_001));
-                        closest.assign(second.add(third.sub(second).mul(edge)));
-                        barycentric.assign(vec3(0, float(1).sub(edge), edge));
-                      },
-                    ).Else(() => {
-                      const reciprocal = va.add(vb).add(vc).max(0.000_001).reciprocal();
-                      const secondWeight = vb.mul(reciprocal);
-                      const thirdWeight = vc.mul(reciprocal);
-                      barycentric.assign(vec3(
-                        float(1).sub(secondWeight).sub(thirdWeight),
-                        secondWeight,
-                        thirdWeight,
-                      ));
-                      closest.assign(first.add(ab.mul(secondWeight)).add(ac.mul(thirdWeight)));
-                    });
-
-                    const delta = closest.sub(center).toVar('coloredBodyFaceDelta');
-                    const depth = delta.dot(this.backUniform).toVar('coloredBodyFaceDepth');
-                    const lateralSquared = delta.dot(delta)
-                      .sub(depth.mul(depth))
-                      .max(0)
-                      .toVar('coloredBodyFaceLateralSquared');
-                    If(lateralSquared.lessThan(lateralRadius.mul(lateralRadius)), () => {
-                      const surfaceDepth = depthRadius.mul(
-                        float(1).sub(
-                          lateralSquared.div(lateralRadius.mul(lateralRadius)),
-                        ).max(0).sqrt(),
-                      );
-                      const penetration = surfaceDepth.sub(depth).max(0);
-                      const denominator = firstMass.mul(barycentric.x.mul(barycentric.x))
-                        .add(secondMass.mul(barycentric.y.mul(barycentric.y)))
-                        .add(thirdMass.mul(barycentric.z.mul(barycentric.z)));
-                      If(
-                        penetration.greaterThan(0)
-                          .and(denominator.greaterThan(0.000_001)),
-                        () => {
-                          const lambda = penetration.div(denominator);
-                          first.addAssign(this.backUniform.mul(
-                            firstMass.mul(barycentric.x).mul(lambda),
-                          ));
-                          second.addAssign(this.backUniform.mul(
-                            secondMass.mul(barycentric.y).mul(lambda),
-                          ));
-                          third.addAssign(this.backUniform.mul(
-                            thirdMass.mul(barycentric.z).mul(lambda),
-                          ));
-                        },
-                      );
-                    });
-                  });
-                },
-              );
-            });
-          },
-        );
-
-        const storeCorrection = (
-          particleIndex: THREE.Node<'uint'>,
-          state: THREE.Node<'vec4'>,
-          start: THREE.Node<'vec3'>,
-          corrected: THREE.Node<'vec3'>,
-        ): void => {
-          const faceCorrection = corrected.sub(start).toVar('boundedBodyFaceCorrection');
-          const faceCorrectionLength = faceCorrection.length();
-          If(faceCorrectionLength.greaterThan(MAXIMUM_BODY_CONTACT_CORRECTION_PER_PASS), () => {
-            faceCorrection.mulAssign(
-              float(MAXIMUM_BODY_CONTACT_CORRECTION_PER_PASS)
-                .div(faceCorrectionLength.max(0.000_001)),
-            );
-          });
-          If(faceCorrection.length().greaterThan(BODY_CONTACT_RECONCILIATION_START), () => {
-            atomicOr(this.materialContactFlagBuffer.element(uint(0)), uint(1));
-          });
-          const boundedCorrected = start.add(faceCorrection);
-          // Match WebGL's correction accounting: triangle-face projection is
-          // already velocity-neutral below, but it is not sustained point
-          // penetration and must not feed the final inelastic point-contact
-          // reconciliation. Counting it here damps lateral travelling waves
-          // a second time whenever the cape slides over the shoulders.
-          buffer.element(particleIndex).assign(vec4(
-            boundedCorrected,
-            state.w,
-          ));
-
-          const previousState = this.previousBuffer.element(particleIndex);
-          const correctedPrevious = previousState.xyz
-            .add(faceCorrection)
-            .toVar('correctedPreviousBodyFace');
-          const inwardMotion = boundedCorrected.sub(correctedPrevious)
-            .dot(this.backUniform)
-            .min(0);
-          correctedPrevious.addAssign(this.backUniform.mul(inwardMotion));
-          this.previousBuffer.element(particleIndex).assign(vec4(
-            correctedPrevious,
-            previousState.w,
-          ));
-        };
-        storeCorrection(firstIndex, firstState, firstStart, first);
-        storeCorrection(secondIndex, secondState, secondStart, second);
-        storeCorrection(thirdIndex, thirdState, thirdStart, third);
-      });
-      return float(0);
-    }, 'float').setLayout({
-      name: `capeBodyFaceColorPass${passName}`,
-      type: 'float',
-      inputs: [{ name: 'color', type: 'uint' }],
-    });
-  }
-
   private createInitialState(): Float32Array {
     const state = new Float32Array(PARTICLE_COUNT * 4);
     for (let row = 0; row < CAPE.rows; row += 1) {
@@ -3124,15 +2850,6 @@ export class GpuCapeSimulation {
       const lateralRadius = collider.radius + getClothBodyClearance(collider);
       const depthRadius = getClothBodyDepthRadius(collider);
       const verticalRadius = Math.max(lateralRadius, depthRadius);
-      const axisLength = axis.length();
-      const sampleSpacing = collider.faceSampleSpacing
-        ?? Math.max(0.04, lateralRadius * 0.82);
-      const faceSegments = axisLength < 0.000_001
-        ? 0
-        : Math.max(1, Math.ceil(axisLength / sampleSpacing));
-      const faceStepLength = faceSegments > 0 ? axisLength / faceSegments : 0;
-      const faceLateralRadius = Math.hypot(lateralRadius, faceStepLength * 0.5);
-      const faceDepthRadius = depthRadius * faceLateralRadius / lateralRadius;
       const offset = index * BODY_BUFFER_STRIDE * 4;
       bodyData[offset] = collider.start.x;
       bodyData[offset + 1] = collider.start.y;
@@ -3153,9 +2870,6 @@ export class GpuCapeSimulation {
         bodyData[offset + 12] = -1_000_000;
         bodyData[offset + 13] = 1_000_000;
       }
-      bodyData[offset + 16] = faceSegments;
-      bodyData[offset + 17] = faceLateralRadius;
-      bodyData[offset + 18] = faceDepthRadius;
     });
     this.bodyCountUniform.value = colliders.length;
     this.backUniform.value.copy(back);
