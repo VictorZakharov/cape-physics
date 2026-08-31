@@ -1,10 +1,16 @@
 import { invariant } from '../utils/assert';
+import type { RendererStartupDiagnostics } from '../core/RendererStartupRecovery';
+import { rendererPreferenceUrl } from '../core/RendererPreference';
 
 export class LoadingScreen {
   private readonly root: HTMLElement;
   private readonly bar: HTMLElement;
   private readonly status: HTMLElement;
   private readonly progress: HTMLElement;
+  private readonly errorPanel: HTMLElement;
+  private readonly errorDetail: HTMLElement;
+  private readonly retryButton: HTMLButtonElement;
+  private readonly copyButton: HTMLButtonElement;
   private estimateFrame: number | null = null;
 
   public constructor() {
@@ -12,6 +18,10 @@ export class LoadingScreen {
     this.bar = invariant(document.querySelector<HTMLElement>('[data-loading-bar]'), 'Loading bar is missing.');
     this.status = invariant(document.querySelector<HTMLElement>('[data-loading-status]'), 'Loading status is missing.');
     this.progress = invariant(document.querySelector<HTMLElement>('[data-loading-progress]'), 'Loading progress is missing.');
+    this.errorPanel = invariant(document.querySelector<HTMLElement>('[data-loading-error]'), 'Loading error panel is missing.');
+    this.errorDetail = invariant(document.querySelector<HTMLElement>('[data-loading-error-detail]'), 'Loading error detail is missing.');
+    this.retryButton = invariant(document.querySelector<HTMLButtonElement>('[data-loading-retry-webgl]'), 'WebGL retry button is missing.');
+    this.copyButton = invariant(document.querySelector<HTMLButtonElement>('[data-loading-copy-diagnostics]'), 'Diagnostics copy button is missing.');
   }
 
   public async update(progress: number, message: string): Promise<void> {
@@ -70,10 +80,46 @@ export class LoadingScreen {
     document.body.classList.add('is-ready');
   }
 
-  public fail(): void {
+  public fail(
+    error?: unknown,
+    diagnostics?: RendererStartupDiagnostics,
+  ): void {
     this.cancelEstimate();
     this.root.classList.add('has-error');
-    this.status.textContent = 'Graphics initialization failed — see console for details';
+    const latest = diagnostics?.failures.at(-1);
+    const message = error instanceof Error
+      ? error.message
+      : typeof error === 'string'
+        ? error
+        : latest?.message ?? 'Unknown graphics initialization error';
+    this.status.textContent = 'Graphics initialization failed';
+    this.progress.textContent = 'FAILED';
+    this.errorDetail.textContent = latest
+      ? `${latest.renderer.toUpperCase()} failed at ${latest.stage}: ${latest.message}`
+      : message;
+    this.errorPanel.hidden = false;
+    this.retryButton.onclick = () => {
+      window.location.replace(rendererPreferenceUrl(window.location.href, 'webgl'));
+    };
+    this.copyButton.onclick = () => {
+      const report = JSON.stringify({
+        capturedAt: new Date().toISOString(),
+        error: message,
+        diagnostics: diagnostics ?? null,
+        platform: navigator.platform || 'Unknown platform',
+        userAgent: navigator.userAgent || 'Unavailable',
+        page: window.location.href,
+      }, null, 2);
+      if (!navigator.clipboard) {
+        this.copyButton.textContent = 'COPY UNAVAILABLE — USE CONSOLE';
+        return;
+      }
+      void navigator.clipboard.writeText(report).then(() => {
+        this.copyButton.textContent = 'DIAGNOSTICS COPIED';
+      }).catch(() => {
+        this.copyButton.textContent = 'COPY FAILED — USE CONSOLE';
+      });
+    };
   }
 
   private cancelEstimate(): void {

@@ -12,6 +12,11 @@ import { PerformanceMonitor } from './core/PerformanceMonitor';
 import type { PerformanceReportDetails } from './core/PerformanceReport';
 import { RenderPipeline } from './core/RenderPipeline';
 import {
+  browserRendererStartupRecovery,
+  type RendererRecoveryDecision,
+  type RendererStartupRecovery,
+} from './core/RendererStartupRecovery';
+import {
   browserSupportsWebGPU,
   rendererDefaultUrl,
   rendererPreferenceUrl,
@@ -186,6 +191,7 @@ export class CapeDemo {
   private readonly initialProjectionAspect = this.camera.aspect;
   private readonly loading = new LoadingScreen();
   private readonly pipeline: RenderPipeline;
+  private readonly startupRecovery: RendererStartupRecovery;
   private readonly rendererPreference: RendererPreference;
   private readonly rendererSwitch: RendererSwitch;
   private readonly customizationPanel: CustomizationPanel;
@@ -220,7 +226,6 @@ export class CapeDemo {
   private harnessAccumulator = 0;
   private ready = false;
   private webGpuRecoveryStarted = false;
-  private webGpuStartupTimer: number | null = null;
   private stopDeviceLossWatch: (() => void) | null = null;
   private gpuValidationScopeStarted = false;
   private gpuValidationError: string | null = null;
@@ -239,6 +244,11 @@ export class CapeDemo {
     this.rendererPreference = resolveRendererPreference({
       search: window.location.search,
     });
+    this.startupRecovery = browserRendererStartupRecovery();
+    this.startupRecovery.begin(
+      this.rendererPreference,
+      this.urlParameters.has('renderer'),
+    );
     const defaultUrl = rendererDefaultUrl(window.location.href);
     if (defaultUrl !== window.location.href) {
       window.history.replaceState(window.history.state, '', defaultUrl);
@@ -263,11 +273,23 @@ export class CapeDemo {
   }
 
   public async start(): Promise<void> {
-    if (this.rendererPreference === 'webgpu' && !this.harnessMode) {
-      this.webGpuStartupTimer = window.setTimeout(() => {
-        this.recoverWithWebGL('WebGPU startup stalled; restarting with WebGL');
-      }, 20_000);
+    try {
+      await this.initializeSelectedRenderer();
+      this.startupRecovery.complete(this.pipeline.getActualBackend());
+    } catch (error) {
+      const decision = this.startupRecovery.fail(error);
+      if (decision.action === 'reload-webgl') {
+        this.beginWebGlReload(
+          'WebGPU startup failed; restarting once with WebGL',
+          decision,
+        );
+        return;
+      }
+      throw error;
     }
+  }
+
+  private async initializeSelectedRenderer(): Promise<void> {
     if (this.rendererPreference === 'webgpu') {
       await this.loading.beginLongStage(
         0.03,
@@ -278,27 +300,38 @@ export class CapeDemo {
     } else {
       await this.loading.update(0.03, 'Selecting the graphics backend');
     }
-    try {
-      await this.pipeline.init();
-    } catch (error) {
-      if (this.rendererPreference !== 'webgpu') throw error;
-      this.recoverWithWebGL('WebGPU unavailable; restarting with WebGL');
-      return;
-    }
+    await this.pipeline.init({
+      onStage: (stage) => this.startupRecovery.stage(stage),
+      onWebGpuFallback: (error, stage) => {
+        console.warn(`WebGPU failed during ${stage}; recovering with WebGL.`, error);
+        this.startupRecovery.fallbackToWebGl(error, stage);
+      },
+    });
     if (this.pipeline.getActualBackend() === 'webgpu') {
       this.stopDeviceLossWatch = this.pipeline.onDeviceLost((info) => {
         const detail = info.message || info.reason || 'unknown device error';
         console.warn(`WebGPU device lost: ${detail}`);
-        this.recoverWithWebGL('WebGPU stopped responding; restarting with WebGL');
+        this.recoverWithWebGL(
+          'WebGPU stopped responding; restarting once with WebGL',
+          new Error(detail),
+          'webgpu-device-lost',
+        );
       });
-    } else {
-      this.clearWebGpuStartupTimer();
+    } else if (this.rendererPreference === 'webgpu') {
+      const failure = this.startupRecovery.getDiagnostics().failures.at(-1);
+      await this.loading.update(
+        0.08,
+        failure
+          ? `WebGPU failed at ${failure.stage}; continuing with WebGL`
+          : 'WebGPU unavailable; continuing with WebGL',
+      );
     }
     this.rendererSwitch.setActive(
       this.pipeline.getActualBackend(),
       this.rendererPreference,
     );
     await this.loading.beginLongStage(0.08, 0.27, 'Shaping ancient stone', 1_600);
+    this.startupRecovery.stage('build-scene');
     const rockTextures = createRockTextures(512);
     configureTextureFiltering(
       rockTextures,
@@ -345,6 +378,7 @@ export class CapeDemo {
     this.scene.add(this.character.root);
     const gpuRenderer = this.pipeline.getWebGpuRenderer();
     if (gpuRenderer) {
+      this.startupRecovery.stage('initialize-webgpu-cloth');
       await this.loading.update(0.59, 'Loading the WebGPU cloth solver');
       const { GpuCapeSimulation } = await import('./physics/GpuCapeSimulation');
       await this.loading.update(0.62, 'Allocating WebGPU cloth buffers');
@@ -419,8 +453,10 @@ export class CapeDemo {
         : 'Compiling cloth, water, and post-processing shaders',
       usesNodeRenderer ? 22_000 : 4_000,
     );
+    this.startupRecovery.stage('compile-render-pipelines');
     await this.pipeline.compile(this.scene, this.camera);
     await this.loading.update(0.96, 'Submitting the first rendered frame');
+    this.startupRecovery.stage('submit-first-frame');
     this.pipeline.renderManual(0);
     await this.loading.update(0.98, 'Validating torchlight and reflections');
     this.pipeline.renderManual(0);
@@ -432,7 +468,6 @@ export class CapeDemo {
     this.installHarness();
     await this.loading.reveal();
     this.ready = true;
-    this.clearWebGpuStartupTimer();
     if (window.__CAPE_DEMO__) window.__CAPE_DEMO__.ready = true;
     if (this.harnessMode) {
       this.updateScene(0);
@@ -608,23 +643,40 @@ export class CapeDemo {
     document.querySelector<HTMLElement>('[data-onboarding]')?.classList.add('is-dismissed');
   };
 
-  private clearWebGpuStartupTimer(): void {
-    if (this.webGpuStartupTimer === null) return;
-    window.clearTimeout(this.webGpuStartupTimer);
-    this.webGpuStartupTimer = null;
+  private recoverWithWebGL(message: string, error: unknown, stage: string): void {
+    if (this.webGpuRecoveryStarted) return;
+    const decision = this.startupRecovery.failActiveRenderer('webgpu', stage, error);
+    this.beginWebGlReload(message, decision);
   }
 
-  private recoverWithWebGL(message: string): void {
+  private beginWebGlReload(
+    message: string,
+    decision: RendererRecoveryDecision,
+  ): void {
     if (this.webGpuRecoveryStarted) return;
     this.webGpuRecoveryStarted = true;
     this.ready = false;
     if (window.__CAPE_DEMO__) window.__CAPE_DEMO__.ready = false;
-    this.clearWebGpuStartupTimer();
     this.stopDeviceLossWatch?.();
     this.stopDeviceLossWatch = null;
     document.body.classList.remove('is-ready');
-    void this.loading.update(0.04, message);
-    window.location.replace(rendererPreferenceUrl(window.location.href, 'webgl'));
+    try {
+      this.pipeline.dispose();
+    } catch (disposeError) {
+      console.warn('Unable to fully dispose the failed renderer before recovery.', disposeError);
+    }
+    if (decision.action === 'show-error') {
+      this.loading.fail(
+        new Error(message),
+        this.startupRecovery.getDiagnostics(),
+      );
+      return;
+    }
+    void this.loading.update(0.04, message).then(() => {
+      window.setTimeout(() => {
+        window.location.replace(rendererPreferenceUrl(window.location.href, 'webgl'));
+      }, decision.delayMilliseconds);
+    });
   }
 
   private applyQuality(state: QualityState): void {
@@ -1494,6 +1546,7 @@ export class CapeDemo {
       : null;
 
     return {
+      rendererStartup: this.startupRecovery.getDiagnostics(),
       renderer: {
         backend: backend.backend,
         vendor: backend.vendor,
@@ -1556,10 +1609,8 @@ export class CapeDemo {
   }
 
   private readonly dispose = (): void => {
-    this.clearWebGpuStartupTimer();
     this.stopDeviceLossWatch?.();
     this.stopDeviceLossWatch = null;
-    void this.pipeline.renderer.setAnimationLoop(null);
     this.rendererSwitch.dispose();
     this.customizationPanel.dispose();
     this.mobileControls?.dispose();

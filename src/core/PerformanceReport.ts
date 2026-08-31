@@ -5,8 +5,10 @@ import type {
 import type { CapePerformanceDiagnostics } from '../physics/CapePerformanceProfiler';
 import { CAPE, PHYSICS_STEP } from '../config';
 import type { RendererPreference } from './RendererPreference';
+import type { RendererStartupDiagnostics } from './RendererStartupRecovery';
 
 export interface PerformanceReportDetails {
+  readonly rendererStartup?: RendererStartupDiagnostics;
   readonly renderer: {
     readonly backend: string;
     readonly vendor: string;
@@ -71,6 +73,7 @@ function metric(value: number, digits = 2): string {
 export function formatPerformanceReport(input: PerformanceReportInput): string {
   const {
     performance,
+    rendererStartup,
     renderer,
     canvas,
     quality,
@@ -102,6 +105,12 @@ export function formatPerformanceReport(input: PerformanceReportInput): string {
         ] : []),
       ]
     : [];
+  const latestRendererFailure = rendererStartup?.failures.at(-1);
+  const rendererRecoveryLines = latestRendererFailure
+    ? [
+      `Renderer recovery: ${latestRendererFailure.renderer.toUpperCase()} failed at ${latestRendererFailure.stage} | ${latestRendererFailure.name}: ${latestRendererFailure.message} | ${latestRendererFailure.recoveredWith ? `recovered with ${latestRendererFailure.recoveredWith.toUpperCase()}` : 'not recovered'}`,
+    ]
+    : [];
 
   return [
     'Cape Physics performance report',
@@ -112,6 +121,7 @@ export function formatPerformanceReport(input: PerformanceReportInput): string {
     `Long frames: ${performance.longFrameCount} at or above 50 ms`,
     `Renderer: ${renderer.backend} | ${renderer.vendor} | ${renderer.device}`,
     `Renderer selection: requested ${renderer.preference.toUpperCase()} | active ${renderer.actual.toUpperCase()} | ${renderer.fallback ? 'fallback active' : 'no fallback'}`,
+    ...rendererRecoveryLines,
     `Canvas: ${canvas.drawingBufferWidth}x${canvas.drawingBufferHeight} drawing buffer / ${canvas.cssWidth}x${canvas.cssHeight} CSS px`,
     `Quality: ${quality.label} | ${metric(quality.scale, 3)} resolution scale | ${quality.targetResizes} render-target resizes`,
     `Main thread: ${metric(workload.averageMainThreadMilliseconds)} ms average | p95 ${metric(workload.p95MainThreadMilliseconds)} ms | physics ${metric(workload.averagePhysicsMilliseconds)} ms | scene ${metric(workload.averageSceneMilliseconds)} ms | render submission ${metric(workload.averageRenderMilliseconds)} ms | ${metric(workload.averagePhysicsSteps)} physics steps/callback average, ${workload.maximumPhysicsSteps} maximum`,
