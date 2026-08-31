@@ -113,6 +113,7 @@ export class CapeContactSolver {
   private readonly sweepStart = new THREE.Vector3();
   private readonly hitPoint = new THREE.Vector3();
   private readonly contactNormal = new THREE.Vector3();
+  private readonly bodySideOrigin = new THREE.Vector3();
   private readonly remainingMotion = new THREE.Vector3();
   private readonly boundsMinimum = new THREE.Vector3();
   private readonly boundsMaximum = new THREE.Vector3();
@@ -127,6 +128,7 @@ export class CapeContactSolver {
   private readonly caveFaceCollision: ClothCaveCollision;
   private readonly rockQuery = new RockColliderQuery();
   private readonly rockCorrectionUsed: Float32Array;
+  private readonly bodyCorrectionUsed: Float32Array;
   private readonly rockSweepResolved: Uint8Array;
   private readonly caveFloor: Float64Array;
   private readonly caveCeilingHeight: Float64Array;
@@ -141,6 +143,7 @@ export class CapeContactSolver {
     inverseMass: Float32Array,
   ) {
     this.rockCorrectionUsed = new Float32Array(inverseMass.length);
+    this.bodyCorrectionUsed = new Float32Array(inverseMass.length);
     this.rockSweepResolved = new Uint8Array(inverseMass.length);
     this.caveFloor = new Float64Array(inverseMass.length);
     this.caveCeilingHeight = new Float64Array(inverseMass.length);
@@ -190,6 +193,9 @@ export class CapeContactSolver {
     this.bodySolvePass = 0;
     this.caveSolvePass = 0;
     this.prepareBodyColliders(bodyColliders, back);
+    this.bodySideOrigin.copy(anchorCenter);
+    this.bodyCorrectionUsed.fill(0);
+    this.bodyFaceCollision.beginStep();
     this.rockCorrectionUsed.fill(0);
     this.rockSweepResolved.fill(0);
     this.faceCollision.beginStep();
@@ -209,16 +215,24 @@ export class CapeContactSolver {
       const previous = this.previous[index];
       if (!position || !previous) continue;
       for (const collider of this.preparedBodyColliders) {
-        const penetration = this.getCapsulePenetration(position, collider, back);
+        const topologySide = index % CAPE.columns / (CAPE.columns - 1) - 0.5;
+        const penetration = this.getCapsulePenetration(
+          position,
+          collider,
+          back,
+          previous,
+          topologySide,
+        );
         if (penetration <= 0) continue;
-        position.addScaledVector(back, penetration);
-        previous.addScaledVector(back, penetration);
-        this.removeInwardMotion(position, previous, back);
+        position.addScaledVector(this.contactNormal, penetration);
+        previous.addScaledVector(this.contactNormal, penetration);
+        this.removeInwardMotion(position, previous, this.contactNormal);
+        this.bodyCorrectionUsed[index] = (this.bodyCorrectionUsed[index] ?? 0) + penetration;
       }
     }
     this.bodySolvePass += 1;
     if (this.bodySolvePass > CAPE.solverIterations - BODY_FACE_SOLVER_PASSES) {
-      this.bodyFaceCollision.solve(colliders, back);
+      this.bodyFaceCollision.solve(colliders, back, this.bodySideOrigin);
     }
   }
 
@@ -479,10 +493,27 @@ export class CapeContactSolver {
     return { lastStep: this.worldContactsLastStep, total: this.worldContactEvents };
   }
 
+  public getBodyCorrectionUsed(index: number): number {
+    return (this.bodyCorrectionUsed[index] ?? 0)
+      + this.bodyFaceCollision.getCorrectionUsed(index);
+  }
+
+  public getParticleRockCorrectionDiagnostics(index: number) {
+    return {
+      pointCorrection: this.rockCorrectionUsed[index] ?? 0,
+      faceCorrection: this.rockFaceCollision.getCorrectionUsed(index),
+      swept: this.rockSweepResolved[index] === 1,
+      bodyPointCorrection: this.bodyCorrectionUsed[index] ?? 0,
+      bodyFaceCorrection: this.bodyFaceCollision.getCorrectionUsed(index),
+    };
+  }
+
   private getCapsulePenetration(
     position: THREE.Vector3,
     prepared: PreparedBodyCollider,
     back: THREE.Vector3,
+    preferredPosition: THREE.Vector3 = position,
+    preferredTopologySide = 0,
   ): number {
     if (position.y < prepared.minimumY || position.y > prepared.maximumY) return 0;
     const fromStartX = position.x - prepared.startX;
@@ -521,7 +552,54 @@ export class CapeContactSolver {
       / (prepared.lateralRadius * prepared.lateralRadius);
     const surfaceDepth = prepared.depthRadius
       * Math.sqrt(1 - normalizedLateralSquared);
-    return Math.max(0, surfaceDepth - depth);
+    const backCorrection = Math.max(0, surfaceDepth - depth);
+    this.contactNormal.copy(back);
+    if (backCorrection <= 0 || depth >= 0) return backCorrection;
+
+    // A front-side particle should slide around the capsule instead of being
+    // teleported through the full body depth to the cape side. Keep normal
+    // one-sided response once it is behind the collider.
+    if (depth <= -prepared.depthRadius) return 0;
+    const depthRatio = THREE.MathUtils.clamp(depth / prepared.depthRadius, -1, 0);
+    const lateralBoundary = prepared.lateralRadius
+      * Math.sqrt(Math.max(0, 1 - depthRatio * depthRatio));
+    const rightX = back.z;
+    const rightZ = -back.x;
+    const spatialSide = (preferredPosition.x - this.bodySideOrigin.x) * rightX
+      + (preferredPosition.z - this.bodySideOrigin.z) * rightZ;
+    const preferredSide = Math.abs(preferredTopologySide) > 0.000_001
+      ? preferredTopologySide
+      : spatialSide;
+    if (Math.abs(preferredSide) > 0.000_001) {
+      const sideSign = Math.sign(preferredSide);
+      this.contactNormal.set(rightX * sideSign, 0, rightZ * sideSign);
+    } else {
+      const preferredDeltaX = preferredPosition.x - closestX;
+      const preferredDeltaY = preferredPosition.y - closestY;
+      const preferredDeltaZ = preferredPosition.z - closestZ;
+      const preferredDepth = preferredDeltaX * back.x
+        + preferredDeltaY * back.y
+        + preferredDeltaZ * back.z;
+      this.contactNormal.set(
+        preferredDeltaX - back.x * preferredDepth,
+        preferredDeltaY - back.y * preferredDepth,
+        preferredDeltaZ - back.z * preferredDepth,
+      );
+      this.contactNormal.y = 0;
+      if (this.contactNormal.lengthSq() > 0.000_001) this.contactNormal.normalize();
+      else if (lateralSquared > 0.000_001) {
+        this.contactNormal.set(
+          deltaX - back.x * depth,
+          deltaY - back.y * depth,
+          deltaZ - back.z * depth,
+        ).normalize();
+      } else this.contactNormal.set(rightX, 0, rightZ).normalize();
+    }
+    const lateralProjection = deltaX * this.contactNormal.x
+      + deltaY * this.contactNormal.y
+      + deltaZ * this.contactNormal.z;
+    const lateralCorrection = lateralBoundary - lateralProjection;
+    return lateralCorrection > 0 ? lateralCorrection : backCorrection;
   }
 
   private prepareBodyColliders(

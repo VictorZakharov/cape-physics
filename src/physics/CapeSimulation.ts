@@ -1,7 +1,18 @@
 import * as THREE from 'three';
 import { CAMERA_NEAR_OPACITY, CAPE, PLAYER } from '../config';
 import { createCapeFabricTextures } from '../graphics/proceduralTextures';
+import {
+  CRIMSON_CAPE_PALETTE,
+  type CapeFabricPalette,
+} from './CapeAppearance';
 import type { CapeAnchors } from '../player/Character';
+import {
+  CAPE_DRAG_PER_SECOND,
+  CAPE_FLUTTER_ACCELERATION,
+  MAXIMUM_CAPE_PARTICLE_SPEED,
+} from './CapeAerodynamics';
+import { CAPE_DISTANCE_CONSTRAINTS } from './CapeConstraintTopology';
+import { reconcileCapeProjectionPreviousY } from './CapeProjectionVelocity';
 import { caveGroundHeightAt } from '../world/caveProfile';
 import {
   CapeContactSolver,
@@ -14,7 +25,14 @@ import {
   CapePerformanceProfiler,
   type CapePerformanceDiagnostics,
 } from './CapePerformanceProfiler';
-import { getCapeRestBackOffset, getCapeRestWidth } from './CapeRestShape';
+import {
+  CAPE_ROW_CURL_RELAXATION,
+  CAPE_ROW_SPAN_RELAXATION,
+  getCapeRestBackOffset,
+  getCapeRestWidth,
+  MAXIMUM_CAPE_ROW_CURL_RATIO,
+  MINIMUM_CAPE_ROW_SPAN_RATIO,
+} from './CapeRestShape';
 import {
   normalizeCapePhysicsSettings,
   type CapePhysicsSettings,
@@ -31,15 +49,19 @@ interface DistanceConstraint {
   readonly structural: boolean;
 }
 
-const ACTIVE_DRAG_PER_SECOND = 2.05;
-const IDLE_DRAG_PER_SECOND = 2.8;
+const MAXIMUM_PLANAR_CAPE_PARTICLE_SPEED = 9.6;
 const SLEEP_AFTER_SETTLED_SECONDS = 0.55;
 const SETTLED_MOTION_THRESHOLD = 0.0025;
 const MINIMUM_SETTLED_LOWER_CAPE_DROP = 0.48;
-const MAXIMUM_SETTLED_LATERAL_OFFSET = 0.18;
+const MAXIMUM_SETTLED_HORIZONTAL_OFFSET = 0.18;
 const IDLE_DRAPE_RECOVERY_PER_STEP = 0.016;
 const IDLE_DRAPE_RECOVERY_TARGET = 0.12;
+const IDLE_DRAPE_RECOVERY_HEM_DROP = 1.2;
+const IDLE_DRAPE_RECOVERY_DELAY_SECONDS = 0.12;
+const IDLE_DRAPE_RECOVERY_RAMP_SECONDS = 0.35;
 const MAXIMUM_SLEEP_BODY_PENETRATION = 0.001;
+const BODY_CONTACT_RECONCILIATION_START = 0.000_5;
+const BODY_CONTACT_RECONCILIATION_FULL = 0.025;
 const WAKE_SPEED = 0.08;
 
 export class CapeSimulation {
@@ -47,6 +69,7 @@ export class CapeSimulation {
   private readonly positions: THREE.Vector3[] = [];
   private readonly previous: THREE.Vector3[] = [];
   private readonly inverseMass: Float32Array;
+  private readonly predictedVerticalDisplacement: Float32Array;
   private readonly constraints: DistanceConstraint[] = [];
   private readonly positionAttribute: THREE.BufferAttribute;
   private readonly selfCollision: ClothSelfCollision;
@@ -56,6 +79,7 @@ export class CapeSimulation {
   private readonly velocity = new THREE.Vector3();
   private readonly airflow = new THREE.Vector3();
   private readonly normal = new THREE.Vector3();
+  private readonly flutterDirection = new THREE.Vector3();
   private readonly tangentAcross = new THREE.Vector3();
   private readonly tangentDown = new THREE.Vector3();
   private readonly correction = new THREE.Vector3();
@@ -65,21 +89,36 @@ export class CapeSimulation {
   private readonly rightAxis = new THREE.Vector3();
   private readonly rowCenter = new THREE.Vector3();
   private readonly drapeDelta = new THREE.Vector3();
+  private readonly horizontalOffset = new THREE.Vector3();
+  private readonly centerlineStart = new THREE.Vector3();
+  private readonly centerlineEnd = new THREE.Vector3();
+  private readonly centerlinePoint = new THREE.Vector3();
+  private readonly rowChordPoint = new THREE.Vector3();
+  private readonly rowCurl = new THREE.Vector3();
   private readonly stepStart: THREE.Vector3[] = [];
   private opacity = 1;
   private settledSeconds = 0;
+  private idleDrapeRecoverySeconds = 0;
   private sleeping = false;
   private maximumParticleMotion = 0;
   private maximumParticleVerticalMotion = 0;
+  private maximumParticleMotionIndex = -1;
+  private maximumParticleMotionX = 0;
+  private maximumParticleMotionY = 0;
+  private maximumParticleMotionZ = 0;
+  private maximumParticleVerticalMotionIndex = -1;
+  private maximumParticleVerticalDelta = 0;
   private settings: CapePhysicsSettings;
 
   public constructor(
     initialAnchors: CapeAnchors,
     settings: Partial<CapePhysicsSettings> = {},
+    appearance: CapeFabricPalette = CRIMSON_CAPE_PALETTE,
   ) {
     this.settings = normalizeCapePhysicsSettings(settings);
     const particleCount = CAPE.columns * CAPE.rows;
     this.inverseMass = new Float32Array(particleCount);
+    this.predictedVerticalDisplacement = new Float32Array(particleCount);
     this.selfCollision = new ClothSelfCollision(particleCount, CAPE.columns);
     this.foldGuard = new ClothFoldGuard(CAPE.columns, CAPE.rows);
     this.contactSolver = new CapeContactSolver(this.positions, this.previous, this.inverseMass);
@@ -89,7 +128,7 @@ export class CapeSimulation {
     const geometry = this.createGeometry();
     this.positionAttribute = geometry.getAttribute('position') as THREE.BufferAttribute;
 
-    const textures = createCapeFabricTextures();
+    const textures = createCapeFabricTextures(256, appearance);
     textures.color.repeat.set(1, 1);
     textures.normal.repeat.set(1, 1);
     textures.roughness.repeat.set(1, 1);
@@ -101,14 +140,14 @@ export class CapeSimulation {
       roughness: 0.78,
       metalness: 0.01,
       sheen: 0.92,
-      sheenColor: new THREE.Color(0x6f0713),
+      sheenColor: new THREE.Color(appearance.sheenColor),
       sheenRoughness: 0.72,
       clearcoat: 0.04,
       side: THREE.DoubleSide,
       transparent: false,
       depthWrite: true,
     });
-    material.name = 'Woven crimson cape';
+    material.name = appearance.materialName;
     this.mesh = new THREE.Mesh(geometry, material);
     this.mesh.name = 'PBD cape';
     this.mesh.castShadow = true;
@@ -134,7 +173,10 @@ export class CapeSimulation {
     const planarSpeed = Math.hypot(characterVelocity.x, characterVelocity.z);
     if (characterSpeed > WAKE_SPEED) {
       this.settledSeconds = 0;
+      this.idleDrapeRecoverySeconds = 0;
       this.sleeping = false;
+    } else {
+      this.idleDrapeRecoverySeconds += deltaTime;
     }
     this.pinAnchors(anchors);
     this.contactSolver.beginStep(
@@ -175,26 +217,48 @@ export class CapeSimulation {
         const previous = this.previous[index];
         if (!position || !previous) continue;
 
-        const drag = THREE.MathUtils.lerp(
-          IDLE_DRAG_PER_SECOND,
-          ACTIVE_DRAG_PER_SECOND,
-          movementBlend,
-        ) * this.settings.damping;
+        const drag = CAPE_DRAG_PER_SECOND * this.settings.damping;
         this.velocity.copy(position).sub(previous).multiplyScalar(Math.exp(-drag * deltaTime));
+        const particlePlanarSpeed = Math.hypot(this.velocity.x, this.velocity.z);
+        const maximumPlanarDisplacement = MAXIMUM_PLANAR_CAPE_PARTICLE_SPEED * deltaTime;
+        if (particlePlanarSpeed > maximumPlanarDisplacement) {
+          const planarScale = maximumPlanarDisplacement / particlePlanarSpeed;
+          this.velocity.x *= planarScale;
+          this.velocity.z *= planarScale;
+        }
+        this.velocity.y = THREE.MathUtils.clamp(
+          this.velocity.y,
+          -MAXIMUM_CAPE_PARTICLE_SPEED * deltaTime,
+          MAXIMUM_CAPE_PARTICLE_SPEED * deltaTime,
+        );
         previous.copy(position);
         this.estimateNormal(column, row);
         const pressure = this.airflow.dot(this.normal);
         const turbulence = Math.sin(time * 4.3 + row * 0.83 + column * 1.71) * 0.42;
+        const across = column / (CAPE.columns - 1) - 0.5;
+        const flutterEnvelope = Math.sin(Math.PI * row / (CAPE.rows - 1)) ** 2;
+        const flutterProfile = 0.3 + across * 0.4;
+        const fabricFlutter = Math.sin(time * 3.4 + row * 0.28)
+          * flutterProfile
+          * flutterEnvelope;
         position.add(this.velocity);
         position.y -= 9.81 * this.settings.weight * deltaSquared;
         position.addScaledVector(
           this.normal,
           pressure * Math.abs(pressure) * 0.026 * deltaSquared,
         );
+        // Synthetic flutter only breaks perfect grid symmetry; it must not
+        // become an artificial lift force when contact turns the cape flat.
+        this.flutterDirection.copy(this.normal).setY(0);
+        position.addScaledVector(
+          this.flutterDirection,
+          fabricFlutter * movementBlend * CAPE_FLUTTER_ACCELERATION * deltaSquared,
+        );
         position.addScaledVector(
           this.airflow,
           (0.048 + turbulence * 0.011) * deltaSquared,
         );
+        this.predictedVerticalDisplacement[index] = position.y - previous.y;
       }
     }
     if (profileActive) {
@@ -217,6 +281,8 @@ export class CapeSimulation {
         profilePhaseStart = profileNow;
       }
       this.foldGuard.solve(this.positions, this.previous, this.inverseMass);
+      this.solveRowSpanGuard(anchors);
+      this.solveRowCurlGuard(anchors);
       if (profileActive) {
         const profileNow = performance.now();
         this.profiler.record('foldGuard', profileNow - profilePhaseStart);
@@ -224,10 +290,15 @@ export class CapeSimulation {
       }
       if (
         iteration === 0
-        && characterSpeed <= WAKE_SPEED
-        && this.getMaximumLowerCapeLateralOffset(anchors) > IDLE_DRAPE_RECOVERY_TARGET
+        && this.idleDrapeRecoverySeconds > IDLE_DRAPE_RECOVERY_DELAY_SECONDS
+        && this.getHemDrop() < IDLE_DRAPE_RECOVERY_HEM_DROP
+        && this.getMaximumLowerCapeHorizontalOffset() > IDLE_DRAPE_RECOVERY_TARGET
       ) {
-        this.solveIdleDrapeRecovery(anchors);
+        this.solveIdleDrapeRecovery(THREE.MathUtils.smoothstep(
+          this.idleDrapeRecoverySeconds,
+          IDLE_DRAPE_RECOVERY_DELAY_SECONDS,
+          IDLE_DRAPE_RECOVERY_DELAY_SECONDS + IDLE_DRAPE_RECOVERY_RAMP_SECONDS,
+        ));
       }
       this.contactSolver.solveBody(bodyColliders, anchors.back);
       if (profileActive) {
@@ -265,8 +336,14 @@ export class CapeSimulation {
         }
         // Final world/body reconciliation can push a triangle interior back
         // through the curved cave side while all of its vertices stay valid.
-        // Make the cave face constraint authoritative for the rendered state.
+        // Recheck the cave face, then alternate the compatible moving-body and
+        // fixed-world constraints to convergence. Always end on the fixed
+        // world so the rendered cloth cannot remain inside a floor formation.
         this.contactSolver.solveCave();
+        for (let pass = 0; pass < 4; pass += 1) {
+          this.contactSolver.solveBody(bodyColliders, anchors.back);
+          if (this.contactSolver.solvePostCaveWorldContacts() === 0) break;
+        }
       }
       if (profileActive) {
         const profileNow = performance.now();
@@ -281,13 +358,20 @@ export class CapeSimulation {
       }
     }
 
+    this.reconcileBodyContactVelocity();
+    // Fixed-world and material body contacts are authoritative. Their
+    // projection may need upward velocity to clear a rock, floor, or boot.
+    this.reconcileProjectionVerticalVelocity(
+      this.contactSolver.getDiagnostics().lastStep > 0
+        || this.hasMaterialBodyContactCorrection(),
+    );
     this.measureStepMotion();
-    const laterallySettled = this.getMaximumLowerCapeLateralOffset(anchors)
-      < MAXIMUM_SETTLED_LATERAL_OFFSET;
+    const horizontallySettled = this.getMaximumLowerCapeHorizontalOffset()
+      < MAXIMUM_SETTLED_HORIZONTAL_OFFSET;
     const settledShape = characterSpeed <= WAKE_SPEED
       && this.getHemDrop() > 0.72
       && this.getMinimumLowerCapeDrop() > MINIMUM_SETTLED_LOWER_CAPE_DROP
-      && laterallySettled;
+      && horizontallySettled;
     const fullyDraped = settledShape
       && this.contactSolver.getMaximumBodyPenetration(bodyColliders, anchors.back)
         < MAXIMUM_SLEEP_BODY_PENETRATION;
@@ -355,6 +439,25 @@ export class CapeSimulation {
     });
   }
 
+  /** Harness-only state injection shared with the WebGPU implementation. */
+  public overwriteStateForHarness(
+    positionData: Float32Array,
+    previousData: Float32Array = positionData,
+  ): void {
+    this.overwriteStateFromGpu(positionData, previousData);
+    this.positions.forEach((position, index) => this.stepStart[index]?.copy(position));
+    this.settledSeconds = 0;
+    this.idleDrapeRecoverySeconds = 0;
+    this.sleeping = false;
+    this.maximumParticleMotion = 0;
+    this.maximumParticleVerticalMotion = 0;
+  }
+
+  /** Keeps GPU readback diagnostics relative to the current moving neckline. */
+  public synchronizeAnchorDiagnostics(anchors: CapeAnchors): void {
+    this.anchorCenter.copy(anchors.left).add(anchors.right).multiplyScalar(0.5);
+  }
+
   public reset(anchors: CapeAnchors): void {
     this.positions.length = 0;
     this.previous.length = 0;
@@ -366,6 +469,7 @@ export class CapeSimulation {
       else this.stepStart.push(position.clone());
     });
     this.settledSeconds = 0;
+    this.idleDrapeRecoverySeconds = 0;
     this.sleeping = false;
     this.maximumParticleMotion = 0;
     this.maximumParticleVerticalMotion = 0;
@@ -380,6 +484,7 @@ export class CapeSimulation {
       || next.width !== this.settings.width;
     this.settings = next;
     this.settledSeconds = 0;
+    this.idleDrapeRecoverySeconds = 0;
     this.sleeping = false;
     if (!dimensionsChanged) return;
 
@@ -397,6 +502,18 @@ export class CapeSimulation {
     const nextOpacity = THREE.MathUtils.clamp(opacity, CAMERA_NEAR_OPACITY, 1);
     if (Math.abs(nextOpacity - this.opacity) < 0.002) return;
     this.opacity = nextOpacity;
+  }
+
+  public dispose(): void {
+    this.mesh.geometry.dispose();
+    this.disposeMaterial();
+  }
+
+  public disposeMaterial(): void {
+    this.mesh.material.map?.dispose();
+    this.mesh.material.normalMap?.dispose();
+    this.mesh.material.roughnessMap?.dispose();
+    this.mesh.material.dispose();
   }
 
   public getParticlePosition(column: number, row: number): THREE.Vector3 {
@@ -487,6 +604,104 @@ export class CapeSimulation {
     return maximum;
   }
 
+  public getMaximumLowerCapeHorizontalOffset(): number {
+    const firstLowerRow = Math.floor(CAPE.rows * 0.58);
+    let maximum = 0;
+    for (let row = firstLowerRow; row < CAPE.rows; row += 1) {
+      this.getRowCenter(row, this.rowCenter);
+      this.horizontalOffset.copy(this.rowCenter).sub(this.anchorCenter).setY(0);
+      maximum = Math.max(maximum, this.horizontalOffset.length());
+    }
+    return maximum;
+  }
+
+  /**
+   * Detects a cape that has rolled its rows into a tube while retaining valid
+   * edge lengths. A healthy lower cape keeps most of each row aligned with the
+   * character's shoulder axis even while it trails, folds, or contacts rocks.
+   */
+  public getAverageLowerCapeSpanRatio(anchors: CapeAnchors): number {
+    this.rightAxis.copy(anchors.right).sub(anchors.left).normalize();
+    const anchorWidth = anchors.right.distanceTo(anchors.left);
+    const firstLowerRow = Math.floor(CAPE.rows * 0.58);
+    let ratioTotal = 0;
+    let rowCount = 0;
+    for (let row = firstLowerRow; row < CAPE.rows; row += 1) {
+      const left = this.positions[this.index(0, row)];
+      const right = this.positions[this.index(CAPE.columns - 1, row)];
+      if (!left || !right) continue;
+      const down = row / (CAPE.rows - 1);
+      const restWidth = getCapeRestWidth(anchorWidth, down, this.settings.width);
+      const lateralSpan = Math.abs(
+        this.drapeDelta.copy(right).sub(left).dot(this.rightAxis),
+      );
+      ratioTotal += lateralSpan / Math.max(0.000_001, restWidth);
+      rowCount += 1;
+    }
+    return rowCount > 0 ? ratioTotal / rowCount : 0;
+  }
+
+  /**
+   * Measures changing cross-cape orientation down the cloth. A rigid planar
+   * sheet has almost no range, while a naturally waving cape twists successive
+   * rows forward and backward around its centerline.
+   */
+  public getCapeRowTwistRange(anchors: CapeAnchors): number {
+    const anchorWidth = anchors.right.distanceTo(anchors.left);
+    let minimum = Number.POSITIVE_INFINITY;
+    let maximum = Number.NEGATIVE_INFINITY;
+    for (let row = 1; row < CAPE.rows; row += 1) {
+      const left = this.positions[this.index(0, row)];
+      const right = this.positions[this.index(CAPE.columns - 1, row)];
+      if (!left || !right) continue;
+      const down = row / (CAPE.rows - 1);
+      const restWidth = getCapeRestWidth(anchorWidth, down, this.settings.width);
+      const twist = this.drapeDelta.copy(right).sub(left).dot(anchors.back)
+        / Math.max(0.000_001, restWidth);
+      minimum = Math.min(minimum, twist);
+      maximum = Math.max(maximum, twist);
+    }
+    return Number.isFinite(minimum) && Number.isFinite(maximum) ? maximum - minimum : 0;
+  }
+
+  /** Maximum row-center departure from the straight neckline-to-hem chord. */
+  public getCapeCenterlineDeviation(): number {
+    this.getRowCenter(0, this.centerlineStart);
+    this.getRowCenter(CAPE.rows - 1, this.centerlineEnd);
+    let maximum = 0;
+    for (let row = 1; row < CAPE.rows - 1; row += 1) {
+      const down = row / (CAPE.rows - 1);
+      this.getRowCenter(row, this.rowCenter);
+      this.centerlinePoint.lerpVectors(this.centerlineStart, this.centerlineEnd, down);
+      maximum = Math.max(maximum, this.rowCenter.distanceTo(this.centerlinePoint));
+    }
+    return maximum;
+  }
+
+  /** Largest interior departure from a lower row's outer-edge chord. */
+  public getMaximumLowerCapeRowCurlRatio(anchors: CapeAnchors): number {
+    const anchorWidth = anchors.right.distanceTo(anchors.left);
+    const firstLowerRow = Math.floor(CAPE.rows * 0.58);
+    let maximum = 0;
+    for (let row = firstLowerRow; row < CAPE.rows; row += 1) {
+      const left = this.positions[this.index(0, row)];
+      const right = this.positions[this.index(CAPE.columns - 1, row)];
+      if (!left || !right) continue;
+      const down = row / (CAPE.rows - 1);
+      const restWidth = getCapeRestWidth(anchorWidth, down, this.settings.width);
+      for (let column = 1; column < CAPE.columns - 1; column += 1) {
+        const position = this.positions[this.index(column, row)];
+        if (!position) continue;
+        this.rowChordPoint.lerpVectors(left, right, column / (CAPE.columns - 1));
+        maximum = Math.max(
+          maximum,
+          position.distanceTo(this.rowChordPoint) / Math.max(0.000_001, restWidth),
+        );
+      }
+    }
+    return maximum;
+  }
+
   public getHemBackOffset(anchors: CapeAnchors): number {
     this.getRowCenter(CAPE.rows - 1, this.rowCenter);
     return this.drapeDelta.copy(this.rowCenter).sub(this.anchorCenter).dot(anchors.back);
@@ -512,6 +727,22 @@ export class CapeSimulation {
 
   public getMaximumParticleVerticalMotion(): number {
     return this.maximumParticleVerticalMotion;
+  }
+
+  public getMaximumParticleMotionDiagnostics() {
+    return {
+      particleIndex: this.maximumParticleMotionIndex,
+      displacement: [
+        this.maximumParticleMotionX,
+        this.maximumParticleMotionY,
+        this.maximumParticleMotionZ,
+      ] as const,
+      verticalParticleIndex: this.maximumParticleVerticalMotionIndex,
+      verticalDelta: this.maximumParticleVerticalDelta,
+      rockContact: this.contactSolver.getParticleRockCorrectionDiagnostics(
+        this.maximumParticleMotionIndex,
+      ),
+    };
   }
 
   public isSleeping(): boolean {
@@ -559,19 +790,15 @@ export class CapeSimulation {
   }
 
   private createConstraints(): void {
-    for (let row = 0; row < CAPE.rows; row += 1) {
-      for (let column = 0; column < CAPE.columns; column += 1) {
-        if (column + 1 < CAPE.columns) this.addConstraint(column, row, column + 1, row, 0.93, true);
-        if (row + 1 < CAPE.rows) this.addConstraint(column, row, column, row + 1, 0.96, true);
-        if (column + 1 < CAPE.columns && row + 1 < CAPE.rows) {
-          this.addConstraint(column, row, column + 1, row + 1, 0.8, false);
-          this.addConstraint(column + 1, row, column, row + 1, 0.8, false);
-        }
-        if (column + 2 < CAPE.columns) this.addConstraint(column, row, column + 2, row, 0.58, false);
-        if (row + 2 < CAPE.rows) this.addConstraint(column, row, column, row + 2, 0.82, false);
-        if (column + 3 < CAPE.columns) this.addConstraint(column, row, column + 3, row, 0.16, false);
-        if (row + 3 < CAPE.rows) this.addConstraint(column, row, column, row + 3, 0.38, false);
-      }
+    for (const definition of CAPE_DISTANCE_CONSTRAINTS) {
+      this.addConstraint(
+        definition.firstColumn,
+        definition.firstRow,
+        definition.secondColumn,
+        definition.secondRow,
+        definition.stiffness,
+        definition.structural,
+      );
     }
   }
 
@@ -645,6 +872,58 @@ export class CapeSimulation {
     target.addScaledVector(anchors.back, neckline * CAPE.attachment.necklineDepth);
   }
 
+  /**
+   * Body projection is positional and intentionally resolves penetration in
+   * full. Repeated constraint/contact passes can nevertheless encode that
+   * projection as Verlet velocity. Treat sustained body contact as inelastic
+   * so a boot can push cloth aside without catapulting it on the next step.
+   */
+  private reconcileBodyContactVelocity(): void {
+    for (let index = CAPE.columns; index < this.positions.length; index += 1) {
+      const correction = this.contactSolver.getBodyCorrectionUsed(index);
+      if (correction <= BODY_CONTACT_RECONCILIATION_START) continue;
+      const position = this.positions[index];
+      const previous = this.previous[index];
+      if (!position || !previous) continue;
+      const strength = THREE.MathUtils.smoothstep(
+        correction,
+        BODY_CONTACT_RECONCILIATION_START,
+        BODY_CONTACT_RECONCILIATION_FULL,
+      );
+      previous.lerp(position, strength);
+    }
+  }
+
+  /**
+   * Projection may repair a stretched link upward even though physical
+   * prediction was still descending. Do not encode that positional repair as
+   * an upward Verlet velocity for the next step. Upward physical prediction,
+   * planar response, and the corrected position itself remain unchanged.
+   */
+  private reconcileProjectionVerticalVelocity(hasMaterialContact: boolean): void {
+    for (let index = CAPE.columns; index < this.positions.length; index += 1) {
+      const position = this.positions[index];
+      const previous = this.previous[index];
+      if (!position || !previous) continue;
+      previous.y = reconcileCapeProjectionPreviousY({
+        predictedVerticalDisplacement: this.predictedVerticalDisplacement[index] ?? 0,
+        projectedPositionY: position.y,
+        previousPositionY: previous.y,
+        hasMaterialContact,
+      });
+    }
+  }
+
+  private hasMaterialBodyContactCorrection(): boolean {
+    for (let index = CAPE.columns; index < this.positions.length; index += 1) {
+      if (
+        this.contactSolver.getBodyCorrectionUsed(index)
+          > BODY_CONTACT_RECONCILIATION_START
+      ) return true;
+    }
+    return false;
+  }
+
   private dampResidualMotion(strength: number): void {
     for (let index = CAPE.columns; index < this.positions.length; index += 1) {
       const position = this.positions[index];
@@ -653,22 +932,77 @@ export class CapeSimulation {
     }
   }
 
-  private solveIdleDrapeRecovery(anchors: CapeAnchors): void {
-    this.rightAxis.copy(anchors.right).sub(anchors.left).normalize();
+  private solveIdleDrapeRecovery(strength: number): void {
     for (let row = 1; row < CAPE.rows; row += 1) {
       this.getRowCenter(row, this.rowCenter);
-      const lateralOffset = this.drapeDelta
+      this.horizontalOffset
         .copy(this.rowCenter)
         .sub(this.anchorCenter)
-        .dot(this.rightAxis);
+        .setY(0);
+      if (this.horizontalOffset.lengthSq() < 0.000_001) continue;
       const down = row / (CAPE.rows - 1);
-      const correction = -lateralOffset
-        * IDLE_DRAPE_RECOVERY_PER_STEP
-        * THREE.MathUtils.smoothstep(down, 0.05, 1);
+      this.correction.copy(this.horizontalOffset).multiplyScalar(
+        -IDLE_DRAPE_RECOVERY_PER_STEP
+        * strength
+        * THREE.MathUtils.smoothstep(down, 0.05, 1),
+      );
       for (let column = 0; column < CAPE.columns; column += 1) {
         const index = this.index(column, row);
-        this.positions[index]?.addScaledVector(this.rightAxis, correction);
-        this.previous[index]?.addScaledVector(this.rightAxis, correction);
+        this.positions[index]?.add(this.correction);
+        this.previous[index]?.add(this.correction);
+      }
+    }
+  }
+
+  private solveRowSpanGuard(anchors: CapeAnchors): void {
+    this.rightAxis.copy(anchors.right).sub(anchors.left).normalize();
+    const anchorWidth = anchors.right.distanceTo(anchors.left);
+    for (let row = 1; row < CAPE.rows; row += 1) {
+      const leftIndex = this.index(0, row);
+      const rightIndex = this.index(CAPE.columns - 1, row);
+      const left = this.positions[leftIndex];
+      const right = this.positions[rightIndex];
+      const leftPrevious = this.previous[leftIndex];
+      const rightPrevious = this.previous[rightIndex];
+      if (!left || !right || !leftPrevious || !rightPrevious) continue;
+      const down = row / (CAPE.rows - 1);
+      const minimumSpan = getCapeRestWidth(anchorWidth, down, this.settings.width)
+        * MINIMUM_CAPE_ROW_SPAN_RATIO;
+      const lateralSpan = this.delta.copy(right).sub(left).dot(this.rightAxis);
+      const deficit = minimumSpan - lateralSpan;
+      if (deficit <= 0) continue;
+      this.correction.copy(this.rightAxis)
+        .multiplyScalar(deficit * CAPE_ROW_SPAN_RELAXATION * 0.5);
+      left.sub(this.correction);
+      right.add(this.correction);
+      leftPrevious.sub(this.correction);
+      rightPrevious.add(this.correction);
+    }
+  }
+
+  private solveRowCurlGuard(anchors: CapeAnchors): void {
+    const anchorWidth = anchors.right.distanceTo(anchors.left);
+    for (let row = 1; row < CAPE.rows; row += 1) {
+      const left = this.positions[this.index(0, row)];
+      const right = this.positions[this.index(CAPE.columns - 1, row)];
+      if (!left || !right) continue;
+      const down = row / (CAPE.rows - 1);
+      const maximumCurl = getCapeRestWidth(anchorWidth, down, this.settings.width)
+        * MAXIMUM_CAPE_ROW_CURL_RATIO;
+      for (let column = 1; column < CAPE.columns - 1; column += 1) {
+        const index = this.index(column, row);
+        const position = this.positions[index];
+        const previous = this.previous[index];
+        if (!position || !previous) continue;
+        this.rowChordPoint.lerpVectors(left, right, column / (CAPE.columns - 1));
+        this.rowCurl.copy(position).sub(this.rowChordPoint);
+        const curl = this.rowCurl.length();
+        if (curl <= maximumCurl || curl < 0.000_001) continue;
+        this.rowCurl.multiplyScalar(
+          ((curl - maximumCurl) / curl) * CAPE_ROW_CURL_RELAXATION,
+        );
+        position.sub(this.rowCurl);
+        previous.sub(this.rowCurl);
       }
     }
   }
@@ -693,12 +1027,28 @@ export class CapeSimulation {
   private measureStepMotion(): void {
     let maximum = 0;
     let maximumVertical = 0;
+    this.maximumParticleMotionIndex = -1;
+    this.maximumParticleVerticalMotionIndex = -1;
     for (let index = CAPE.columns; index < this.positions.length; index += 1) {
       const position = this.positions[index];
       const start = this.stepStart[index];
       if (!position || !start) continue;
-      maximum = Math.max(maximum, position.distanceTo(start));
-      maximumVertical = Math.max(maximumVertical, Math.abs(position.y - start.y));
+      const deltaX = position.x - start.x;
+      const deltaY = position.y - start.y;
+      const deltaZ = position.z - start.z;
+      const motion = Math.hypot(deltaX, deltaY, deltaZ);
+      if (motion > maximum) {
+        maximum = motion;
+        this.maximumParticleMotionIndex = index;
+        this.maximumParticleMotionX = deltaX;
+        this.maximumParticleMotionY = deltaY;
+        this.maximumParticleMotionZ = deltaZ;
+      }
+      if (Math.abs(deltaY) > maximumVertical) {
+        maximumVertical = Math.abs(deltaY);
+        this.maximumParticleVerticalMotionIndex = index;
+        this.maximumParticleVerticalDelta = deltaY;
+      }
     }
     this.maximumParticleMotion = maximum;
     this.maximumParticleVerticalMotion = maximumVertical;

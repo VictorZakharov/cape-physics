@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { CAMERA_NEAR_OPACITY, PHYSICS_STEP, PLAYER } from './config';
+import { CAMERA_NEAR_OPACITY, CAPE, PHYSICS_STEP, PLAYER } from './config';
 import { ThirdPersonCamera } from './camera/ThirdPersonCamera';
 import {
   calculateViewportAspect,
@@ -18,16 +18,26 @@ import {
   resolveRendererPreference,
   type RendererPreference,
 } from './core/RendererPreference';
-import { CHARACTER_RENDER_LAYER } from './core/renderLayers';
+import { CHARACTER_RENDER_LAYER, WORLD_RENDER_LAYER } from './core/renderLayers';
 import { configureTextureFiltering, createRockTextures } from './graphics/proceduralTextures';
 import { InputController } from './input/InputController';
 import { MobileControls } from './input/MobileControls';
 import { CinematicLighting } from './lighting/CinematicLighting';
 import type { WebGpuCinematicLighting } from './lighting/WebGpuCinematicLighting';
 import { CapeSimulation } from './physics/CapeSimulation';
+import {
+  BOT_CYAN_CAPE_PALETTE,
+  CRIMSON_CAPE_PALETTE,
+  type CapeFabricPalette,
+} from './physics/CapeAppearance';
+import {
+  DEFAULT_CAPE_PHYSICS_SETTINGS,
+  type CapePhysicsSettings,
+} from './physics/CapeSettings';
 import type { GpuCapeSimulation } from './physics/GpuCapeSimulation';
 import type { WorldCollider } from './physics/colliders';
-import { Character } from './player/Character';
+import { BotMovementInput, normalizeBotCount } from './player/BotMovementInput';
+import { Character, type CapeAnchors } from './player/Character';
 import { CharacterController } from './player/CharacterController';
 import { runDepthOcclusionProbe } from './testing/DepthOcclusionProbe';
 import { runShadowLayerProbe } from './testing/ShadowLayerProbe';
@@ -57,6 +67,98 @@ function averageOrNull(values: readonly number[]): number | null {
 
 function percentileOrNull(values: readonly number[], ratio: number): number | null {
   return values.length > 0 ? percentile(values, ratio) : null;
+}
+
+interface ScenePhaseTotals {
+  camera: number;
+  cameraFade: number;
+  water: number;
+  torches: number;
+  veins: number;
+  atmosphere: number;
+  lighting: number;
+}
+
+type CapeInstance = CapeSimulation | GpuCapeSimulation;
+
+type CapeFactory = (
+  anchors: CapeAnchors,
+  settings: Partial<CapePhysicsSettings>,
+  appearance: CapeFabricPalette,
+) => CapeInstance;
+
+interface PerformanceBot {
+  readonly character: Character;
+  readonly cape: CapeInstance | null;
+  readonly input: BotMovementInput;
+  readonly controller: CharacterController;
+}
+
+type CapeTrajectoryScenario =
+  | 'raised-drop'
+  | 'falling-forward-start'
+  | 'forward-start'
+  | 'forward-stop'
+  | 'reverse'
+  | 'back-and-forth'
+  | 'lightweight-stop';
+
+interface CapeTrajectorySample {
+  readonly frame: number;
+  readonly time: number;
+  readonly playerPosition: readonly number[];
+  readonly playerYaw: number;
+  readonly playerSpeed: number;
+  /** Particle triples in neckline-local right/up/back coordinates. */
+  readonly particles: readonly number[];
+  readonly hemDrop: number;
+  readonly hemBackOffset: number;
+  readonly maximumParticleMotion: number;
+  readonly particleMotion: ReturnType<CapeSimulation['getMaximumParticleMotionDiagnostics']>;
+  readonly maximumLowerParticleHeight: number;
+  readonly maximumLowerHorizontalOffset: number;
+  readonly centerlineDeviation: number;
+  readonly rowTwistRange: number;
+  readonly maximumNecklineAttachmentError: number;
+  readonly maximumBodyPenetration: number;
+  readonly bodyPenetrationByKind: ReturnType<CapeSimulation['getBodyPenetrationDiagnostics']>;
+  readonly bodyPenetrationByCollider: Readonly<Record<string, number>>;
+  readonly maximumStructuralError: number;
+  readonly minimumSelfSeparation: number;
+  readonly maximumUpwardFold: number;
+  readonly lowerCapeSpanRatio: number;
+  readonly lowerCapeRowCurlRatio: number;
+}
+
+interface CapeTrajectoryReport {
+  readonly scenario: CapeTrajectoryScenario;
+  readonly renderer: 'webgpu' | 'webgl';
+  readonly physicsStep: number;
+  readonly samples: readonly CapeTrajectorySample[];
+}
+
+interface PackedCapeBatchSample {
+  readonly frame: number;
+  readonly capes: Awaited<ReturnType<GpuCapeSimulation['readBatchStateForHarness']>>;
+}
+
+interface PackedCapeBatchReport {
+  readonly renderer: 'webgpu';
+  readonly physicsStep: number;
+  readonly botCount: number;
+  readonly samples: readonly PackedCapeBatchSample[];
+}
+
+function createScenePhaseTotals(): ScenePhaseTotals {
+  return {
+    camera: 0,
+    cameraFade: 0,
+    water: 0,
+    torches: 0,
+    veins: 0,
+    atmosphere: 0,
+    lighting: 0,
+  };
 }
 
 export class CapeDemo {
@@ -91,7 +193,9 @@ export class CapeDemo {
   private character!: Character;
   private characterController!: CharacterController;
   private thirdPersonCamera!: ThirdPersonCamera;
-  private cape!: CapeSimulation | GpuCapeSimulation;
+  private cape!: CapeInstance;
+  private capeFactory!: CapeFactory;
+  private readonly performanceBots: PerformanceBot[] = [];
   private cave!: CaveWorld;
   private water!: WaterSystem | WebGpuWaterSystem;
   private torches!: TorchSystem | WebGpuTorchSystem;
@@ -106,6 +210,9 @@ export class CapeDemo {
   private webGpuRecoveryStarted = false;
   private webGpuStartupTimer: number | null = null;
   private stopDeviceLossWatch: (() => void) | null = null;
+  private gpuValidationScopeStarted = false;
+  private gpuValidationError: string | null = null;
+  private gpuValidationPending: Promise<void> | null = null;
   private customizationSettings: CustomizationSettings;
   private readonly stabilizationVelocity = new THREE.Vector3();
   private readonly savedLightIntensities = new Map<THREE.Light, number>();
@@ -149,7 +256,16 @@ export class CapeDemo {
         this.recoverWithWebGL('WebGPU startup stalled; restarting with WebGL');
       }, 20_000);
     }
-    await this.loading.update(0.03, 'Selecting the graphics backend');
+    if (this.rendererPreference === 'webgpu') {
+      await this.loading.beginLongStage(
+        0.03,
+        0.075,
+        'Requesting the WebGPU adapter and device',
+        4_000,
+      );
+    } else {
+      await this.loading.update(0.03, 'Selecting the graphics backend');
+    }
     try {
       await this.pipeline.init();
     } catch (error) {
@@ -170,7 +286,7 @@ export class CapeDemo {
       this.pipeline.getActualBackend(),
       this.rendererPreference,
     );
-    await this.loading.update(0.08, 'Shaping ancient stone');
+    await this.loading.beginLongStage(0.08, 0.27, 'Shaping ancient stone', 1_600);
     const rockTextures = createRockTextures(512);
     configureTextureFiltering(
       rockTextures,
@@ -179,7 +295,7 @@ export class CapeDemo {
     this.cave = new CaveWorld(rockTextures);
     this.scene.add(this.cave.group);
 
-    await this.loading.update(0.3, 'Awakening mineral light');
+    await this.loading.beginLongStage(0.3, 0.52, 'Awakening mineral light', 2_000);
     this.veins = new MineralVeins();
     const usesNodeRenderer = this.pipeline.usesNodeRenderer();
     if (usesNodeRenderer) {
@@ -217,46 +333,54 @@ export class CapeDemo {
     this.scene.add(this.character.root);
     const gpuRenderer = this.pipeline.getWebGpuRenderer();
     if (gpuRenderer) {
+      await this.loading.update(0.59, 'Loading the WebGPU cloth solver');
       const { GpuCapeSimulation } = await import('./physics/GpuCapeSimulation');
-      this.cape = new GpuCapeSimulation(
-        gpuRenderer,
-        this.character.getCapeAnchors(),
-        this.customizationSettings,
+      await this.loading.update(0.62, 'Allocating WebGPU cloth buffers');
+      await this.loading.beginLongStage(
+        0.64,
+        0.72,
+        'Linking WebGPU cloth compute passes',
+        2_500,
+      );
+      this.capeFactory = (anchors, settings, appearance) => (
+        new GpuCapeSimulation(gpuRenderer, anchors, settings, appearance)
       );
     } else {
-      this.cape = new CapeSimulation(
-        this.character.getCapeAnchors(),
-        this.customizationSettings,
+      await this.loading.update(0.64, 'Weaving the cloth simulation');
+      this.capeFactory = (anchors, settings, appearance) => (
+        new CapeSimulation(anchors, settings, appearance)
       );
     }
-    this.scene.add(this.cape.mesh);
-    this.character.root.traverse((object) => {
-      object.layers.set(CHARACTER_RENDER_LAYER);
-      if (object instanceof THREE.Mesh && object.castShadow) {
-        enableCameraIndependentShadowCaster(
-          object,
-          usesNodeRenderer ? 'webgpu' : 'webgl',
-        );
-      }
-    });
-    this.cape.mesh.layers.set(CHARACTER_RENDER_LAYER);
-    enableCameraIndependentShadowCaster(
-      this.cape.mesh,
-      usesNodeRenderer ? 'webgpu' : 'webgl',
+    this.cape = this.capeFactory(
+      this.character.getCapeAnchors(),
+      this.customizationSettings,
+      CRIMSON_CAPE_PALETTE,
     );
+    this.scene.add(this.cape.mesh);
+    await this.loading.update(0.73, 'Rigging movement and camera');
+    this.configureCharacterRenderObjects(this.character, this.cape);
+    if (!(this.cape instanceof CapeSimulation)) {
+      this.scene.add(this.cape.botMesh);
+      // Only the player belongs to the near-camera fade composite. Packed bot
+      // capes stay opaque and cast shadows as ordinary world-layer geometry.
+      this.cape.botMesh.layers.set(WORLD_RENDER_LAYER);
+    }
 
     this.input = new InputController(this.canvas, this.dismissOnboarding);
     this.mobileControls = new MobileControls(this.canvas, this.input);
     this.characterController = new CharacterController(this.character, this.input, this.worldCollision);
-    this.thirdPersonCamera = new ThirdPersonCamera(this.camera, this.input, this.cave.cameraColliders);
+    this.thirdPersonCamera = new ThirdPersonCamera(this.camera, this.input);
     this.thirdPersonCamera.snapTo(this.character.root.position);
+    await this.loading.update(0.78, 'Placing traveller lights');
     if (usesNodeRenderer) {
       const { WebGpuCinematicLighting } = await import('./lighting/WebGpuCinematicLighting');
+      await this.loading.update(0.8, 'Creating WebGPU light pipelines');
       const nodeRenderer = invariant(
         this.pipeline.getNodeRenderer(),
         'WebGPU node renderer is missing.',
       );
       this.lighting = new WebGpuCinematicLighting(this.scene, nodeRenderer);
+      await this.loading.update(0.82, 'Binding WebGPU shadows and reflections');
     } else {
       const webGlRenderer = invariant(
         this.pipeline.getWebGlRenderer(),
@@ -269,14 +393,24 @@ export class CapeDemo {
     this.lighting.update(this.character.root.position, 0);
     this.torches.update(0, this.character.root.position);
     this.veins.update(0, this.character.root.position);
+    await this.loading.update(0.84, 'Settling the first cloth frame');
     this.stabilizeCape();
     this.cape.syncGeometry();
     this.applySceneCustomization(this.customizationSettings);
+    this.reconcilePerformanceBots(this.customizationSettings.bots);
 
-    await this.loading.update(0.76, 'Compiling cloth and water shaders');
+    await this.loading.beginLongStage(
+      0.88,
+      0.95,
+      usesNodeRenderer
+        ? 'Compiling WebGPU cloth, water, and post-processing shaders'
+        : 'Compiling cloth, water, and post-processing shaders',
+      usesNodeRenderer ? 22_000 : 4_000,
+    );
     await this.pipeline.compile(this.scene, this.camera);
+    await this.loading.update(0.96, 'Submitting the first rendered frame');
     this.pipeline.renderManual(0);
-    await this.loading.update(0.94, 'Warming the torchlight');
+    await this.loading.update(0.98, 'Validating torchlight and reflections');
     this.pipeline.renderManual(0);
 
     window.addEventListener('resize', this.handleResize);
@@ -300,7 +434,7 @@ export class CapeDemo {
     this.performance.recordFrame(timestamp);
     const physicsStart = performance.now();
     const timing = this.clock.advance(timestamp, this.simulateStep);
-    if (timing.physicsSteps > 0) this.cape.syncGeometry();
+    if (timing.physicsSteps > 0) this.syncCapeGeometries();
     const sceneStart = performance.now();
     this.updateScene(timing.delta);
     this.quality.observe(this.fixedTime, this.performance.getSnapshot());
@@ -322,16 +456,92 @@ export class CapeDemo {
     if (landingImpact > 0) {
       this.water.addLandingRipple(this.character.root.position, this.fixedTime, landingImpact);
     }
-    const anchors = this.character.getCapeAnchors();
-    this.cape.step(
-      step,
-      anchors,
-      this.character.getCapeColliders(),
-      this.worldColliders,
-      this.character.velocity,
-      this.fixedTime,
-    );
+    for (const bot of this.performanceBots) {
+      bot.input.update(this.fixedTime);
+      bot.controller.update(step, 0);
+    }
+
+    if (this.cape instanceof CapeSimulation) {
+      this.cape.step(
+        step,
+        this.character.getCapeAnchors(),
+        this.character.getCapeColliders(),
+        this.worldColliders,
+        this.character.velocity,
+        this.fixedTime,
+      );
+      for (const bot of this.performanceBots) {
+        if (!bot.cape || !(bot.cape instanceof CapeSimulation)) {
+          throw new Error('Mixed CPU and GPU cape simulations are unsupported.');
+        }
+        bot.cape.step(
+          step,
+          bot.character.getCapeAnchors(),
+          bot.character.getCapeColliders(),
+          this.worldColliders,
+          bot.character.velocity,
+          this.fixedTime,
+        );
+      }
+      return;
+    }
+
+    this.submitGpuCapeBatch(step, [
+      {
+        anchors: this.character.getCapeAnchors(),
+        bodyColliders: this.character.getCapeColliders(),
+        characterVelocity: this.character.velocity,
+      },
+      ...this.performanceBots.map((bot) => ({
+        anchors: bot.character.getCapeAnchors(),
+        bodyColliders: bot.character.getCapeColliders(),
+        characterVelocity: bot.character.velocity,
+      })),
+    ], this.worldColliders, this.fixedTime);
   };
+
+  private submitGpuCapeBatch(
+    step: number,
+    inputs: Parameters<GpuCapeSimulation['prepareBatchStep']>[1],
+    worldColliders: readonly WorldCollider[],
+    time: number,
+  ): void {
+    if (this.cape instanceof CapeSimulation) {
+      throw new Error('GPU cape submission requires the WebGPU solver.');
+    }
+    const computeNodes = this.cape.prepareBatchStep(step, inputs, worldColliders, time);
+    const renderer = invariant(
+      this.pipeline.getWebGpuRenderer(),
+      'WebGPU renderer is missing for the GPU cape batch.',
+    );
+    if (!this.harnessMode || this.gpuValidationScopeStarted) {
+      renderer.compute(computeNodes);
+      return;
+    }
+
+    const device = (renderer.backend as { readonly device?: GPUDevice }).device;
+    if (!device) {
+      renderer.compute(computeNodes);
+      return;
+    }
+    this.gpuValidationScopeStarted = true;
+    device.pushErrorScope('validation');
+    renderer.compute(computeNodes);
+    this.gpuValidationPending = device.popErrorScope()
+      .then((error) => {
+        this.gpuValidationError = error?.message ?? null;
+      })
+      .catch((error: unknown) => {
+        this.gpuValidationError = error instanceof Error ? error.message : String(error);
+      });
+  }
+
+  private async assertGpuComputeValid(): Promise<void> {
+    await this.gpuValidationPending;
+    if (this.gpuValidationError) {
+      throw new Error(`WebGPU cape compute validation failed: ${this.gpuValidationError}`);
+    }
+  }
 
   private updateScene(delta: number): void {
     const playerPosition = this.character.root.position;
@@ -401,7 +611,11 @@ export class CapeDemo {
     this.customizationSettings = settings;
     if (!this.cape || !this.character) return;
     this.cape.updateSettings(settings, this.character.getCapeAnchors());
-    if (settleDimensions) this.stabilizeCape();
+    this.reconcilePerformanceBots(settings.bots);
+    for (const bot of this.performanceBots) {
+      bot.cape?.updateSettings(settings, bot.character.getCapeAnchors());
+    }
+    if (settleDimensions) this.stabilizeAllCapes();
     this.applySceneCustomization(settings);
     if (this.ready) this.pipeline.renderManual(0);
   };
@@ -414,11 +628,27 @@ export class CapeDemo {
   }
 
   private stabilizeCape(): void {
-    const anchors = this.character.getCapeAnchors();
-    const bodyColliders = this.character.getCapeColliders();
+    this.stabilizeCapeInstance(this.character, this.cape);
+  }
+
+  private stabilizeAllCapes(): void {
+    if (!(this.cape instanceof CapeSimulation)) {
+      this.syncCapeGeometries();
+      return;
+    }
+    this.stabilizeCape();
+    this.performanceBots.forEach((bot) => {
+      if (bot.cape) this.stabilizeCapeInstance(bot.character, bot.cape);
+    });
+    this.syncCapeGeometries();
+  }
+
+  private stabilizeCapeInstance(character: Character, cape: CapeInstance): void {
+    const anchors = character.getCapeAnchors();
+    const bodyColliders = character.getCapeColliders();
     this.stabilizationVelocity.set(0, 0, 0);
     for (let step = 0; step < 12; step += 1) {
-      this.cape.step(
+      cape.step(
         PHYSICS_STEP,
         anchors,
         bodyColliders,
@@ -427,6 +657,90 @@ export class CapeDemo {
         this.fixedTime + step * PHYSICS_STEP,
       );
     }
+  }
+
+  private reconcilePerformanceBots(requestedCount: number): void {
+    const targetCount = normalizeBotCount(requestedCount);
+    while (this.performanceBots.length < targetCount) {
+      this.performanceBots.push(this.createPerformanceBot(this.performanceBots.length));
+    }
+    while (this.performanceBots.length > targetCount) {
+      const bot = this.performanceBots.pop();
+      if (bot) this.disposePerformanceBot(bot);
+    }
+  }
+
+  private createPerformanceBot(index: number): PerformanceBot {
+    const character = new Character(BOT_CYAN_CAPE_PALETTE);
+    const row = Math.floor(index / 2);
+    const side = index % 2 === 0 ? -1 : 1;
+    const z = this.character.root.position.z + (row - 2) * 1.55;
+    const x = caveCenterX(z) + side * 0.82;
+    character.root.position.set(
+      x,
+      this.worldCollision.getPlayerRootHeight(x, z),
+      z,
+    );
+    character.root.rotation.y = index * 0.73;
+    character.root.updateMatrixWorld(true);
+
+    const cape = this.cape instanceof CapeSimulation
+      ? this.capeFactory(
+        character.getCapeAnchors(),
+        this.customizationSettings,
+        BOT_CYAN_CAPE_PALETTE,
+      )
+      : null;
+    const input = new BotMovementInput(index);
+    input.update(this.fixedTime);
+    const bot: PerformanceBot = {
+      character,
+      cape,
+      input,
+      controller: new CharacterController(character, input, this.worldCollision),
+    };
+    this.scene.add(character.root);
+    if (cape) this.scene.add(cape.mesh);
+    this.configureCharacterRenderObjects(character, cape, false);
+    // A GPU cape starts from the authored drape already. Running twelve
+    // immediate steps here synchronously compiled every new compute graph on
+    // the range-input event and caused multi-second UI freezes.
+    if (cape instanceof CapeSimulation) this.stabilizeCapeInstance(character, cape);
+    cape?.syncGeometry();
+    return bot;
+  }
+
+  private configureCharacterRenderObjects(
+    character: Character,
+    cape: CapeInstance | null,
+    fadeWithCamera = true,
+  ): void {
+    const backend = this.pipeline.usesNodeRenderer() ? 'webgpu' : 'webgl';
+    const renderLayer = fadeWithCamera ? CHARACTER_RENDER_LAYER : WORLD_RENDER_LAYER;
+    character.root.traverse((object) => {
+      object.layers.set(renderLayer);
+      if (fadeWithCamera && object instanceof THREE.Mesh && object.castShadow) {
+        enableCameraIndependentShadowCaster(object, backend);
+      }
+    });
+    if (cape) {
+      cape.mesh.layers.set(renderLayer);
+      if (fadeWithCamera) enableCameraIndependentShadowCaster(cape.mesh, backend);
+    }
+  }
+
+  private syncCapeGeometries(): void {
+    this.cape.syncGeometry();
+    this.performanceBots.forEach((bot) => bot.cape?.syncGeometry());
+  }
+
+  private disposePerformanceBot(bot: PerformanceBot): void {
+    this.scene.remove(bot.character.root);
+    if (bot.cape) {
+      this.scene.remove(bot.cape.mesh);
+      bot.cape.dispose();
+    }
+    bot.character.dispose();
   }
 
   private setLightsEnabled(enabled: boolean): void {
@@ -513,9 +827,22 @@ export class CapeDemo {
         this.input.queueVirtualJump();
       },
       advance: ({ duration, frameStep = 1 / 60 }) => this.advanceHarness(duration, frameStep),
-      profile: ({ duration, frameStep = 1 / 60, synchronizationInterval = 1 }) => (
-        this.profileHarness(duration, frameStep, synchronizationInterval)
+      traceCapeScenario: (options) => this.traceCapeScenario(options),
+      tracePackedCapeBatch: (options) => this.tracePackedCapeBatch(options),
+      profile: ({
+        duration,
+        frameStep = 1 / 60,
+        synchronizationInterval = 1,
+        includeDiagnostics = true,
+      }) => (
+        this.profileHarness(duration, frameStep, synchronizationInterval, includeDiagnostics)
       ),
+      profileGpuKernels: ({ samples = 4 } = {}) => {
+        if (!(this.cape instanceof CapeSimulation)) {
+          return this.cape.profileKernelBreakdown(samples);
+        }
+        throw new Error('Per-kernel GPU profiling requires the WebGPU cape solver.');
+      },
       runDepthOcclusionProbe: () => runDepthOcclusionProbe(
         this.scene,
         this.camera,
@@ -542,10 +869,236 @@ export class CapeDemo {
     return this.getDiagnosticsAfterReadback();
   }
 
+  private resetHarnessPlayer(): void {
+    this.input.clearVirtualMovement();
+    this.input.setVirtualRunning(false);
+    this.character.root.position.set(-2.38, 0, -15);
+    this.worldCollision.resolvePlayer(this.character.root.position);
+    this.character.root.rotation.y = 0;
+    this.characterController.reset();
+    this.character.root.updateMatrixWorld(true);
+    this.cape.reset(this.character.getCapeAnchors());
+    this.harnessAccumulator = 0;
+  }
+
+  private async raiseCapeForHarness(): Promise<void> {
+    await this.cape.refreshDiagnostics();
+    const anchors = this.character.getCapeAnchors();
+    const center = anchors.left.clone().add(anchors.right).multiplyScalar(0.5);
+    const state = new Float32Array(CAPE.columns * CAPE.rows * 4);
+    for (let row = 0; row < CAPE.rows; row += 1) {
+      for (let column = 0; column < CAPE.columns; column += 1) {
+        const index = row * CAPE.columns + column;
+        const position = this.cape.getParticlePosition(column, row);
+        const offset = position.clone().sub(center);
+        if (row > 0) position.y = center.y + Math.abs(offset.y);
+        state[index * 4] = position.x;
+        state[index * 4 + 1] = position.y;
+        state[index * 4 + 2] = position.z;
+      }
+    }
+    this.cape.overwriteStateForHarness(state, state);
+    this.cape.syncGeometry();
+  }
+
+  private captureCapeTrajectorySample(frame: number): CapeTrajectorySample {
+    const anchors = this.character.getCapeAnchors();
+    const center = anchors.left.clone().add(anchors.right).multiplyScalar(0.5);
+    const right = anchors.right.clone().sub(anchors.left).normalize();
+    const particles: number[] = [];
+    let maximumLowerParticleHeight = Number.NEGATIVE_INFINITY;
+    const firstLowerRow = Math.floor(CAPE.rows * 0.58);
+    for (let row = 0; row < CAPE.rows; row += 1) {
+      for (let column = 0; column < CAPE.columns; column += 1) {
+        const offset = this.cape.getParticlePosition(column, row).clone().sub(center);
+        const localRight = offset.dot(right);
+        const localBack = offset.dot(anchors.back);
+        particles.push(localRight, offset.y, localBack);
+        if (row >= firstLowerRow) {
+          maximumLowerParticleHeight = Math.max(maximumLowerParticleHeight, offset.y);
+        }
+      }
+    }
+    const bodyColliders = this.character.getCapeColliders();
+    const bodyPenetrationByKind = this.cape.getBodyPenetrationDiagnostics(
+      bodyColliders,
+      anchors.back,
+    );
+    const bodyPenetrationByCollider = Object.fromEntries(
+      bodyColliders.map((collider) => [
+        collider.name,
+        this.cape.getMaximumBodyPenetration([collider], anchors.back),
+      ]),
+    );
+    const maximumNecklineAttachmentError = Math.max(
+      this.cape.getParticlePosition(0, 0).distanceTo(anchors.left),
+      this.cape.getParticlePosition(CAPE.columns - 1, 0).distanceTo(anchors.right),
+    );
+    return {
+      frame,
+      time: this.fixedTime,
+      playerPosition: this.character.root.position.toArray(),
+      playerYaw: this.character.root.rotation.y,
+      playerSpeed: Math.hypot(this.character.velocity.x, this.character.velocity.z),
+      particles,
+      hemDrop: this.cape.getHemDrop(),
+      hemBackOffset: this.cape.getHemBackOffset(anchors),
+      maximumParticleMotion: this.cape.getMaximumParticleMotion(),
+      particleMotion: this.cape.getMaximumParticleMotionDiagnostics(),
+      maximumLowerParticleHeight,
+      maximumLowerHorizontalOffset: this.cape.getMaximumLowerCapeHorizontalOffset(),
+      centerlineDeviation: this.cape.getCapeCenterlineDeviation(),
+      rowTwistRange: this.cape.getCapeRowTwistRange(anchors),
+      maximumNecklineAttachmentError,
+      maximumBodyPenetration: bodyPenetrationByKind.maximum,
+      bodyPenetrationByKind,
+      bodyPenetrationByCollider,
+      maximumStructuralError: this.cape.getMaximumStructuralError(),
+      minimumSelfSeparation: this.cape.getMinimumSelfSeparation(),
+      maximumUpwardFold: this.cape.getMaximumUpwardFold(),
+      lowerCapeSpanRatio: this.cape.getAverageLowerCapeSpanRatio(anchors),
+      lowerCapeRowCurlRatio: this.cape.getMaximumLowerCapeRowCurlRatio(anchors),
+    };
+  }
+
+  private async traceCapeScenario({
+    scenario,
+    frames = 120,
+    sampleEvery = 1,
+  }: {
+    scenario: CapeTrajectoryScenario;
+    frames?: number;
+    sampleEvery?: number;
+  }): Promise<CapeTrajectoryReport> {
+    const frameCount = THREE.MathUtils.clamp(Math.round(frames), 1, 360);
+    const sampleInterval = THREE.MathUtils.clamp(Math.round(sampleEvery), 1, 12);
+    this.resetHarnessPlayer();
+    this.fixedTime = 0;
+    const anchors = this.character.getCapeAnchors();
+    this.cape.updateSettings({
+      ...DEFAULT_CAPE_PHYSICS_SETTINGS,
+      weight: scenario === 'lightweight-stop'
+        ? 0.5
+        : DEFAULT_CAPE_PHYSICS_SETTINGS.weight,
+    }, anchors);
+    this.cape.reset(anchors);
+    if (scenario === 'raised-drop' || scenario === 'falling-forward-start') {
+      await this.raiseCapeForHarness();
+    }
+
+    const samples: CapeTrajectorySample[] = [];
+    for (let frame = 0; frame <= frameCount; frame += 1) {
+      if (scenario !== 'raised-drop') {
+        if (scenario === 'forward-start' || scenario === 'falling-forward-start') {
+          this.input.setVirtualMovement(0, frame >= 30 ? 1 : 0);
+        } else if (scenario === 'forward-stop' || scenario === 'lightweight-stop') {
+          this.input.setVirtualMovement(0, frame >= 30 && frame < 90 ? 1 : 0);
+        } else if (scenario === 'reverse') {
+          this.input.setVirtualMovement(0, frame < 30 ? 0 : frame < 90 ? 1 : -1);
+        } else if (scenario === 'back-and-forth') {
+          const moving = frame >= 30 && frame < 210;
+          const direction = Math.floor((frame - 30) / 30) % 2 === 0 ? 1 : -1;
+          this.input.setVirtualMovement(0, moving ? direction : 0);
+        }
+      }
+      if (frame % sampleInterval === 0) {
+        await this.assertGpuComputeValid();
+        await this.cape.refreshDiagnostics();
+        samples.push(this.captureCapeTrajectorySample(frame));
+      }
+      if (frame === frameCount) break;
+      this.fixedTime += PHYSICS_STEP;
+      this.characterController.update(PHYSICS_STEP, this.thirdPersonCamera.yaw);
+      this.characterController.consumeLandingImpact();
+      this.character.root.updateMatrixWorld(true);
+      if (this.cape instanceof CapeSimulation) {
+        this.cape.step(
+          PHYSICS_STEP,
+          this.character.getCapeAnchors(),
+          this.character.getCapeColliders(),
+          [],
+          this.character.velocity,
+          this.fixedTime,
+        );
+      } else {
+        this.submitGpuCapeBatch(PHYSICS_STEP, [{
+          anchors: this.character.getCapeAnchors(),
+          bodyColliders: this.character.getCapeColliders(),
+          characterVelocity: this.character.velocity,
+        }], [], this.fixedTime);
+      }
+      this.cape.syncGeometry();
+      this.pipeline.renderManual(PHYSICS_STEP);
+    }
+    this.input.clearVirtualMovement();
+    return {
+      scenario,
+      renderer: this.pipeline.getBackendDiagnostics().actual,
+      physicsStep: PHYSICS_STEP,
+      samples,
+    };
+  }
+
+  private async tracePackedCapeBatch({
+    bots = 2,
+    frames = 90,
+    sampleEvery = 6,
+  }: {
+    bots?: number;
+    frames?: number;
+    sampleEvery?: number;
+  } = {}): Promise<PackedCapeBatchReport> {
+    if (this.cape instanceof CapeSimulation) {
+      throw new Error('Packed cape batch tracing requires the WebGPU solver.');
+    }
+    const botCount = THREE.MathUtils.clamp(Math.round(bots), 1, 10);
+    const frameCount = THREE.MathUtils.clamp(Math.round(frames), 2, 360);
+    const sampleInterval = THREE.MathUtils.clamp(Math.round(sampleEvery), 1, 30);
+    const previousBotCount = this.performanceBots.length;
+    this.reconcilePerformanceBots(0);
+    this.resetHarnessPlayer();
+    this.fixedTime = 0;
+    this.cape.updateSettings(DEFAULT_CAPE_PHYSICS_SETTINGS, this.character.getCapeAnchors());
+    this.cape.reset(this.character.getCapeAnchors());
+    this.reconcilePerformanceBots(botCount);
+    const samples: PackedCapeBatchSample[] = [];
+    try {
+      for (let frame = 0; frame < frameCount; frame += 1) {
+        const moving = frame >= 10;
+        const horizontal = moving
+          ? (Math.floor((frame - 10) / 20) % 2 === 0 ? 0.55 : -0.55)
+          : 0;
+        this.input.setVirtualMovement(horizontal, moving ? 1 : 0);
+        // Exercise the production packed submission path: one compute graph,
+        // one workgroup per player/bot cape, and each lane's live anchors.
+        this.simulateStep(PHYSICS_STEP);
+        this.syncCapeGeometries();
+        this.pipeline.renderManual(PHYSICS_STEP);
+        if (frame % sampleInterval === 0 || frame === frameCount - 1) {
+          await this.assertGpuComputeValid();
+          samples.push({
+            frame,
+            capes: await this.cape.readBatchStateForHarness(),
+          });
+        }
+      }
+      return {
+        renderer: 'webgpu',
+        physicsStep: PHYSICS_STEP,
+        botCount,
+        samples,
+      };
+    } finally {
+      this.input.clearVirtualMovement();
+      this.reconcilePerformanceBots(previousBotCount);
+    }
+  }
+
   private async profileHarness(
     duration: number,
     requestedFrameStep: number,
     requestedSynchronizationInterval: number,
+    includeDiagnostics: boolean,
   ) {
     const frameStep = THREE.MathUtils.clamp(requestedFrameStep, 1 / 144, 1 / 30);
     let remaining = THREE.MathUtils.clamp(duration, 0, 12);
@@ -562,6 +1115,7 @@ export class CapeDemo {
     const gpuComputeDurations: number[] = [];
     const gpuTotalDurations: number[] = [];
     const programsBefore = this.pipeline.getProgramCount();
+    const scenePhaseTotals = createScenePhaseTotals();
     const profileStart = performance.now();
     let batchStart = profileStart;
     let batchFrames = 0;
@@ -570,7 +1124,7 @@ export class CapeDemo {
     while (remaining > 0.000_001) {
       const delta = Math.min(frameStep, remaining);
       remaining -= delta;
-      const framePhases = this.advanceHarnessFrame(delta);
+      const framePhases = this.advanceHarnessFrame(delta, scenePhaseTotals);
       physicsDurations.push(framePhases.physicsMilliseconds);
       sceneDurations.push(framePhases.sceneMilliseconds);
       const renderStart = performance.now();
@@ -617,9 +1171,15 @@ export class CapeDemo {
       averageGpuTotalMilliseconds: averageOrNull(gpuTotalDurations),
       p95GpuTotalMilliseconds: percentileOrNull(gpuTotalDurations, 0.95),
       gpuTimestampSamples: gpuTotalDurations.length,
+      scenePhaseMilliseconds: Object.fromEntries(
+        Object.entries(scenePhaseTotals).map(([name, total]) => [
+          name,
+          frames > 0 ? total / frames : 0,
+        ]),
+      ) as unknown as ScenePhaseTotals,
       programsBefore,
       programsAfter: this.pipeline.getProgramCount(),
-      diagnostics: await this.getDiagnosticsAfterReadback(),
+      diagnostics: includeDiagnostics ? await this.getDiagnosticsAfterReadback() : null,
     };
   }
 
@@ -631,6 +1191,20 @@ export class CapeDemo {
   private advanceHarnessFrame(delta: number): {
     readonly physicsMilliseconds: number;
     readonly sceneMilliseconds: number;
+  };
+  private advanceHarnessFrame(
+    delta: number,
+    scenePhaseTotals: ScenePhaseTotals,
+  ): {
+    readonly physicsMilliseconds: number;
+    readonly sceneMilliseconds: number;
+  };
+  private advanceHarnessFrame(
+    delta: number,
+    scenePhaseTotals?: ScenePhaseTotals,
+  ): {
+    readonly physicsMilliseconds: number;
+    readonly sceneMilliseconds: number;
   } {
     const physicsStart = performance.now();
     this.harnessAccumulator += delta;
@@ -640,13 +1214,50 @@ export class CapeDemo {
       this.harnessAccumulator -= PHYSICS_STEP;
       simulated = true;
     }
-    if (simulated) this.cape.syncGeometry();
+    if (simulated) this.syncCapeGeometries();
     const sceneStart = performance.now();
-    this.updateScene(delta);
+    if (scenePhaseTotals) {
+      this.updateSceneProfiled(delta, scenePhaseTotals);
+    } else {
+      this.updateScene(delta);
+    }
     return {
       physicsMilliseconds: sceneStart - physicsStart,
       sceneMilliseconds: performance.now() - sceneStart,
     };
+  }
+
+  private updateSceneProfiled(delta: number, totals: ScenePhaseTotals): void {
+    const playerPosition = this.character.root.position;
+    const planarSpeed = Math.hypot(this.character.velocity.x, this.character.velocity.z);
+    let start = performance.now();
+    this.thirdPersonCamera.update(delta, playerPosition);
+    totals.camera += performance.now() - start;
+    start = performance.now();
+    this.updateCameraFade();
+    totals.cameraFade += performance.now() - start;
+    start = performance.now();
+    this.water.update(
+      delta,
+      this.fixedTime,
+      playerPosition,
+      this.character.root.rotation.y,
+      this.characterController.isGrounded() ? planarSpeed : 0,
+    );
+    totals.water += performance.now() - start;
+    start = performance.now();
+    this.torches.update(this.fixedTime, playerPosition);
+    totals.torches += performance.now() - start;
+    start = performance.now();
+    this.veins.update(this.fixedTime, playerPosition);
+    totals.veins += performance.now() - start;
+    start = performance.now();
+    this.atmosphere.update(this.fixedTime);
+    totals.atmosphere += performance.now() - start;
+    start = performance.now();
+    this.lighting.update(playerPosition, this.fixedTime);
+    if (!this.customizationSettings.lights) this.setLightsEnabled(false);
+    totals.lighting += performance.now() - start;
   }
 
   private getDiagnostics() {
@@ -728,12 +1339,17 @@ export class CapeDemo {
         maximumEnvironmentFacePenetration: this.cape.getMaximumEnvironmentFacePenetration(this.worldColliders),
         maximumParticleMotion: this.cape.getMaximumParticleMotion(),
         maximumParticleVerticalMotion: this.cape.getMaximumParticleVerticalMotion(),
+        particleMotion: this.cape.getMaximumParticleMotionDiagnostics(),
         sleeping: this.cape.isSleeping(),
         minimumSelfSeparation: this.cape.getMinimumSelfSeparation(),
         maximumUpwardFold: this.cape.getMaximumUpwardFold(),
         hemDrop: this.cape.getHemDrop(),
         minimumLowerCapeDrop: this.cape.getMinimumLowerCapeDrop(),
         maximumLowerCapeLateralOffset: this.cape.getMaximumLowerCapeLateralOffset(capeAnchors),
+        averageLowerCapeSpanRatio: this.cape.getAverageLowerCapeSpanRatio(capeAnchors),
+        capeRowTwistRange: this.cape.getCapeRowTwistRange(capeAnchors),
+        capeCenterlineDeviation: this.cape.getCapeCenterlineDeviation(),
+        maximumLowerCapeRowCurlRatio: this.cape.getMaximumLowerCapeRowCurlRatio(capeAnchors),
         hemBackOffset: this.cape.getHemBackOffset(capeAnchors),
         minimumHemGroundClearance: this.cape.getMinimumHemGroundClearance(),
         minimumActiveRockSurfaceDistance: closestRockSurfaceContact?.distance ?? null,
@@ -803,6 +1419,8 @@ export class CapeDemo {
         capeSleeping: this.ready ? this.cape.isSleeping() : false,
         worldColliders: this.worldColliders.length,
         activeRipples: this.ready ? this.water.getDiagnostics().activeRipples : 0,
+        botCount: this.performanceBots.length,
+        simulatedCapes: 1 + this.performanceBots.length,
       },
       page: {
         visibility: document.visibilityState,
@@ -841,6 +1459,12 @@ export class CapeDemo {
     this.customizationPanel.dispose();
     this.mobileControls?.dispose();
     this.input?.dispose();
+    while (this.performanceBots.length > 0) {
+      const bot = this.performanceBots.pop();
+      if (bot) this.disposePerformanceBot(bot);
+    }
+    this.cape?.dispose();
+    this.character?.dispose();
     this.lighting?.dispose();
     this.performance.dispose();
     this.pipeline.dispose();

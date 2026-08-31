@@ -1,6 +1,97 @@
+import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 
 export const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+async function waitForChildExit(child, timeoutMilliseconds) {
+  if (child.exitCode !== null) return true;
+  return await new Promise((resolve) => {
+    const onExit = () => {
+      clearTimeout(timeout);
+      resolve(true);
+    };
+    const timeout = setTimeout(() => {
+      child.off('exit', onExit);
+      resolve(false);
+    }, timeoutMilliseconds);
+    child.once('exit', onExit);
+    if (child.exitCode !== null) {
+      child.off('exit', onExit);
+      clearTimeout(timeout);
+      resolve(true);
+    }
+  });
+}
+
+async function terminateWindowsProcessTree(child) {
+  if (child.exitCode !== null || child.pid === undefined) return;
+  await new Promise((resolve, reject) => {
+    const taskkill = spawn('taskkill.exe', [
+      '/PID',
+      String(child.pid),
+      '/T',
+      '/F',
+    ], {
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stderr = '';
+    taskkill.stderr.on('data', (chunk) => { stderr += chunk; });
+    taskkill.once('error', reject);
+    taskkill.once('exit', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`taskkill exited ${code}: ${stderr.trim()}`));
+    });
+  });
+}
+
+export async function runCleanupSteps(steps) {
+  const errors = [];
+  for (const [label, cleanup] of steps) {
+    try {
+      await cleanup();
+    } catch (error) {
+      errors.push(new Error(`${label}: ${error.message}`, { cause: error }));
+    }
+  }
+  if (errors.length > 0) throw new AggregateError(errors, 'Audit cleanup failed.');
+}
+
+export async function closeBrowserProcess(browser, debuggerConnection) {
+  await runCleanupSteps([
+    ['request browser shutdown', async () => {
+      // Browser.close can let the root process exit before its WebGPU child
+      // processes. Once that PID disappears, taskkill can no longer discover
+      // the descendants and their profile locks survive the harness. Kill the
+      // complete, dedicated harness tree while its root PID is still valid.
+      if (process.platform === 'win32') return;
+      if (!debuggerConnection) return;
+      await Promise.race([
+        debuggerConnection.command('Browser.close').catch(() => undefined),
+        delay(1_500),
+      ]);
+    }],
+    ['close debugger socket', async () => {
+      debuggerConnection?.socket.close();
+    }],
+    ['terminate browser process', async () => {
+      if (process.platform === 'win32') {
+        await terminateWindowsProcessTree(browser);
+        if (!await waitForChildExit(browser, 5_000)) {
+          throw new Error(`Browser process ${browser.pid ?? 'unknown'} did not exit.`);
+        }
+        return;
+      }
+      if (await waitForChildExit(browser, 2_000)) return;
+      if (!browser.kill() && browser.exitCode === null) {
+        throw new Error('Browser process rejected termination.');
+      }
+      if (!await waitForChildExit(browser, 5_000)) {
+        throw new Error(`Browser process ${browser.pid ?? 'unknown'} did not exit.`);
+      }
+    }],
+  ]);
+}
 
 export async function reservePort() {
   const server = createServer();

@@ -5,11 +5,15 @@ import {
   Loop,
   Return,
   attribute,
+  atomicLoad,
+  atomicOr,
+  atomicStore,
   bool,
   cross,
   float,
   instancedArray,
   instanceIndex,
+  localId,
   mix,
   negateOnBackSide,
   select,
@@ -18,9 +22,11 @@ import {
   transformNormalToView,
   uint,
   uniform,
+  uniformArray,
   vec3,
   vec4,
   vertexIndex,
+  workgroupId,
 } from 'three/tsl';
 import { CAPE, CAVE, PLAYER } from '../config';
 import { createCapeFabricTextures } from '../graphics/proceduralTextures';
@@ -30,8 +36,35 @@ import {
   type CapsuleCollider,
   type WorldCollider,
 } from './colliders';
+import {
+  CAPE_DRAG_PER_SECOND,
+  CAPE_FLUTTER_ACCELERATION,
+} from './CapeAerodynamics';
+import { CAPE_DISTANCE_CONSTRAINTS } from './CapeConstraintTopology';
+import {
+  MAXIMUM_VIRTUAL_BODY_CORRECTION_PER_STEP,
+  VIRTUAL_BODY_BARYCENTRIC_WEIGHT,
+} from './GpuVirtualBodyContact';
 import { CapeSimulation } from './CapeSimulation';
-import { getClothBodyClearance, getClothBodyDepthRadius } from './ClothBodyCollision';
+import {
+  BOT_CYAN_CAPE_PALETTE,
+  CRIMSON_CAPE_PALETTE,
+  type CapeFabricPalette,
+} from './CapeAppearance';
+import {
+  CAPE_ROW_CURL_RELAXATION,
+  CAPE_ROW_SPAN_RELAXATION,
+  getCapeRestBackOffset,
+  getCapeRestWidth,
+  MAXIMUM_CAPE_ROW_CURL_RATIO,
+  MINIMUM_CAPE_ROW_SPAN_RATIO,
+} from './CapeRestShape';
+import {
+  getClothBodyClearance,
+  getClothBodyDepthRadius,
+} from './ClothBodyCollision';
+import { FOLD_RELAXATION, MAXIMUM_LOCAL_UPWARD_FOLD } from './ClothFoldGuard';
+import { CLOTH_THICKNESS } from './ClothSelfCollision';
 import {
   CLOTH_ROCK_CLEARANCE,
   CLOTH_WORLD_CLEARANCE,
@@ -57,22 +90,68 @@ interface ConstraintDefinition {
   readonly second: number;
   readonly restLength: number;
   readonly stiffness: number;
-  readonly structural: boolean;
 }
 
-interface ConstraintLink {
-  readonly neighbor: number;
-  readonly restLength: number;
-  readonly stiffness: number;
-  readonly massShare: number;
-  readonly structural: boolean;
+interface KernelTimestampBackend {
+  readonly trackTimestamp?: boolean;
+  getTimestampUID(context: THREE.ComputeNode): string;
+  getTimestamp(uid: string): number;
+}
+
+export interface GpuCapeKernelTiming {
+  readonly index: number;
+  readonly name: string;
+  readonly averageMilliseconds: number;
+  readonly minimumMilliseconds: number;
+  readonly maximumMilliseconds: number;
+  readonly estimatedArithmeticMilliseconds: number;
+}
+
+export interface GpuCapeKernelProfile {
+  readonly samples: number;
+  readonly noOpMilliseconds: number;
+  readonly separatePassTotalMilliseconds: number;
+  readonly estimatedArithmeticTotalMilliseconds: number;
+  readonly kernels: readonly GpuCapeKernelTiming[];
+  readonly projectionComponents: {
+    readonly fullMilliseconds: number;
+    readonly contactsMilliseconds: number;
+    readonly selfCollisionMilliseconds: number;
+    readonly constraintsAndFoldMilliseconds: number;
+  };
+}
+
+export interface GpuCapeStepInput {
+  readonly anchors: CapeAnchors;
+  readonly bodyColliders: readonly CapsuleCollider[];
+  readonly characterVelocity: THREE.Vector3;
+}
+
+export interface GpuCapeBatchHarnessState {
+  readonly capeIndex: number;
+  readonly maximumNecklineAttachmentError: number;
+  /** Particle triples in neckline-local right/up/back coordinates. */
+  readonly particles: readonly number[];
 }
 
 const PARTICLE_COUNT = CAPE.columns * CAPE.rows;
-const ACTIVE_DRAG_PER_SECOND = 2.05;
-const IDLE_DRAG_PER_SECOND = 2.8;
+export const MAXIMUM_GPU_CAPES = 11;
+const PACKED_PARTICLE_COUNT = PARTICLE_COUNT * MAXIMUM_GPU_CAPES;
+
+const GPU_MAXIMUM_PLANAR_PARTICLE_SPEED = 9.6;
+const GPU_MAXIMUM_VERTICAL_PARTICLE_SPEED = 12;
+
+const BODY_CONTACT_RECONCILIATION_START = 0.000_5;
+const BODY_CONTACT_RECONCILIATION_FULL = 0.025;
+// Match the ordered solver's velocity-neutral idle row recovery. It supplies
+// the missing tangential settling component after projection has dissipated a
+// lightweight cape's pendulum motion.
+const IDLE_DRAPE_RECOVERY_PER_STEP = 0.016;
+const IDLE_DRAPE_RECOVERY_TARGET = 0.12;
+const IDLE_DRAPE_RECOVERY_DELAY_SECONDS = 0.12;
+const IDLE_DRAPE_RECOVERY_RAMP_SECONDS = 0.35;
+
 const WAKE_SPEED = 0.08;
-const GPU_SLEEP_AFTER_IDLE_SECONDS = 1.6;
 const MAX_BODY_COLLIDERS = 32;
 const MAX_WORLD_SPHERES = 512;
 const MAX_WORLD_ROCKS = 16;
@@ -80,7 +159,7 @@ const ROCK_FACES_PER_COLLIDER = 60;
 const MAXIMUM_CONTINUOUS_ROCK_SWEEP = 0.08;
 const ROCK_SWEEP_SURFACE_OFFSET = 0.001;
 const ROCK_SWEEP_TANGENTIAL_DAMPING = 0.76;
-const BODY_BUFFER_STRIDE = 5;
+const BODY_BUFFER_STRIDE = 4;
 const ROCK_BUFFER_STRIDE = 4 + ROCK_FACES_PER_COLLIDER * 4;
 const TOPOLOGY_METADATA_STRIDE = 2;
 // A particle cannot travel farther from the neckline than the cape's maximum
@@ -100,50 +179,87 @@ const CAVE_LOWER_RADIAL_START = Math.floor(CAVE.radialSegments / 2);
  * WebGPU cape path. Particle state never leaves storage buffers while the
  * game is running; readback is reserved for explicit harness diagnostics.
  *
- * Constraint projection is position-owned Jacobi: each invocation writes one
- * particle and gathers its immutable neighbor state from the preceding pass.
- * That removes write races without float atomics or hundreds of graph-color
- * dispatches on this small, fixed cape grid.
+ * Distance constraints use WebGL's exact shared row-major Gauss-Seidel stream
+ * so projection order and Verlet velocity agree between backends. Expensive
+ * self, body, cave, and formation collision work remains parallel on the GPU.
+ * Only the pinned neckline follows character translation. Free particles stay
+ * in world-space Verlet motion so the ordered constraints transmit that pull
+ * through the cloth exactly like the CPU/WebGL solver.
  */
 export class GpuCapeSimulation {
   public readonly mesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshPhysicalNodeMaterial>;
+  public readonly botMesh: THREE.InstancedMesh<
+    THREE.BufferGeometry,
+    THREE.MeshPhysicalNodeMaterial
+  >;
   private readonly diagnosticMirror: CapeSimulation;
   private readonly renderer: THREE.WebGPURenderer;
   private readonly positionBuffer;
   private readonly scratchBuffer;
   private readonly previousBuffer;
-  private readonly anchorBuffer;
+  private readonly predictedVerticalBuffer;
+  private readonly materialContactFlagBuffer;
   private readonly topologyBuffer;
+  private readonly constraintBuffer;
+  private readonly constraintCount: number;
   private readonly bodyBuffer;
   private readonly caveShellBuffer;
   private readonly worldSphereBuffer;
   private readonly rockBuffer;
   private readonly deltaTimeUniform = uniform(1 / 120);
   private readonly timeUniform = uniform(0);
-  private readonly movementBlendUniform = uniform(0);
-  private readonly airflowUniform = uniform(new THREE.Vector3());
+  private readonly dragPerSecondUniform = uniform(CAPE_DRAG_PER_SECOND);
   private readonly stiffnessUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.stiffness);
   private readonly dampingUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.damping);
   private readonly weightUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.weight);
-  private readonly bodyCountUniform = uniform(0, 'uint');
-  private readonly backUniform = uniform(new THREE.Vector3(0, 0, 1));
-  private readonly worldSphereCountUniform = uniform(0, 'uint');
-  private readonly rockCountUniform = uniform(0, 'uint');
+  private readonly activeCapeCountUniform = uniform(1, 'uint');
+  private readonly dynamicsValues = Array.from(
+    { length: MAXIMUM_GPU_CAPES },
+    () => new THREE.Vector4(),
+  );
+  private readonly anchorStateValues = Array.from(
+    { length: MAXIMUM_GPU_CAPES },
+    () => new THREE.Vector4(),
+  );
+  private readonly anchorValues = Array.from(
+    { length: CAPE.columns * MAXIMUM_GPU_CAPES },
+    () => new THREE.Vector4(),
+  );
+  private readonly bodyStateValues = Array.from(
+    { length: MAXIMUM_GPU_CAPES },
+    () => new THREE.Vector4(0, 0, 1, 0),
+  );
+  private readonly worldCountValues = Array.from(
+    { length: MAXIMUM_GPU_CAPES },
+    () => new THREE.Vector4(),
+  );
+  private readonly dynamicsUniform = uniformArray(this.dynamicsValues, 'vec4' as const);
+  private readonly anchorStateUniform = uniformArray(this.anchorStateValues, 'vec4' as const);
+  private readonly anchorUniform = uniformArray(this.anchorValues, 'vec4' as const);
+  private readonly bodyStateUniform = uniformArray(this.bodyStateValues, 'vec4' as const);
+  private readonly worldCountUniform = uniformArray(this.worldCountValues, 'vec4' as const);
   private readonly computeSequence: THREE.ComputeNode[] = [];
-  private readonly sleepKernel: THREE.ComputeNode;
+  private readonly profileNoOpKernel: THREE.ComputeNode;
+  private readonly profileProjectionKernels: readonly THREE.ComputeNode[];
   private readonly anchorCenter = new THREE.Vector3();
   private readonly anchorTarget = new THREE.Vector3();
-  private readonly worldCandidateCenter = new THREE.Vector3(
-    Number.POSITIVE_INFINITY,
-    Number.POSITIVE_INFINITY,
-    Number.POSITIVE_INFINITY,
+  private readonly worldCandidateCenters = Array.from(
+    { length: MAXIMUM_GPU_CAPES },
+    () => new THREE.Vector3(
+      Number.POSITIVE_INFINITY,
+      Number.POSITIVE_INFINITY,
+      Number.POSITIVE_INFINITY,
+    ),
   );
-  private worldColliderSource: readonly WorldCollider[] | null = null;
+  private readonly worldColliderSources: (readonly WorldCollider[] | null)[] = Array.from(
+    { length: MAXIMUM_GPU_CAPES },
+    () => null,
+  );
+  private readonly idleDrapeRecoverySeconds = new Float32Array(MAXIMUM_GPU_CAPES);
+  private readonly lastAnchors: CapeAnchors[] = [];
+  private activeCapeCount = 1;
   private worldContactsLastStep = 0;
   private worldContactEvents = 0;
-  private worldContactEventOffset = 0;
-  private settledSeconds = 0;
-  private sleeping = false;
   private submittedSteps = 0;
   private settings: CapePhysicsSettings;
 
@@ -151,21 +267,31 @@ export class GpuCapeSimulation {
     renderer: THREE.WebGPURenderer,
     initialAnchors: CapeAnchors,
     settings: Partial<CapePhysicsSettings> = {},
+    appearance: CapeFabricPalette = CRIMSON_CAPE_PALETTE,
   ) {
     this.renderer = renderer;
     this.settings = normalizeCapePhysicsSettings(settings);
     this.applySettingsUniforms();
-    this.diagnosticMirror = new CapeSimulation(initialAnchors, this.settings);
+    this.diagnosticMirror = new CapeSimulation(initialAnchors, this.settings, appearance);
 
-    const initialState = this.createInitialState();
-    this.positionBuffer = instancedArray(initialState.slice(), 'vec4');
-    this.scratchBuffer = instancedArray(initialState.slice(), 'vec4');
-    this.previousBuffer = instancedArray(initialState.slice(), 'vec4');
-    this.anchorBuffer = instancedArray(CAPE.columns, 'vec4');
-
+    const initialState = this.createInitialState(initialAnchors);
+    const packedInitialState = new Float32Array(PACKED_PARTICLE_COUNT * 4);
+    for (let capeIndex = 0; capeIndex < MAXIMUM_GPU_CAPES; capeIndex += 1) {
+      packedInitialState.set(initialState, capeIndex * PARTICLE_COUNT * 4);
+    }
+    this.positionBuffer = instancedArray(packedInitialState.slice(), 'vec4');
+    this.scratchBuffer = instancedArray(packedInitialState.slice(), 'vec4');
+    this.previousBuffer = instancedArray(packedInitialState.slice(), 'vec4');
+    this.predictedVerticalBuffer = instancedArray(PACKED_PARTICLE_COUNT, 'float');
+    this.materialContactFlagBuffer = instancedArray(MAXIMUM_GPU_CAPES, 'uint').toAtomic();
     const topology = this.createTopology(initialState);
     this.topologyBuffer = instancedArray(topology.packed, 'vec4');
-    this.bodyBuffer = instancedArray(MAX_BODY_COLLIDERS * BODY_BUFFER_STRIDE, 'vec4');
+    this.constraintBuffer = instancedArray(topology.orderedConstraints, 'vec4');
+    this.constraintCount = topology.orderedConstraints.length / 4;
+    this.bodyBuffer = instancedArray(
+      MAXIMUM_GPU_CAPES * MAX_BODY_COLLIDERS * BODY_BUFFER_STRIDE,
+      'vec4',
+    );
     const caveSamples = getCaveShellSampleData();
     const packedCaveSamples = new Float32Array(caveSamples.x.length * 2);
     for (let index = 0; index < caveSamples.x.length; index += 1) {
@@ -173,42 +299,88 @@ export class GpuCapeSimulation {
       packedCaveSamples[index * 2 + 1] = caveSamples.y[index] ?? 0;
     }
     this.caveShellBuffer = instancedArray(packedCaveSamples, 'vec2');
-    this.worldSphereBuffer = instancedArray(MAX_WORLD_SPHERES, 'vec4');
-    this.rockBuffer = instancedArray(MAX_WORLD_ROCKS * ROCK_BUFFER_STRIDE, 'vec4');
-    this.updateAnchorBuffer(initialAnchors);
+    this.worldSphereBuffer = instancedArray(
+      MAXIMUM_GPU_CAPES * MAX_WORLD_SPHERES,
+      'vec4',
+    );
+    this.rockBuffer = instancedArray(
+      MAXIMUM_GPU_CAPES * MAX_WORLD_ROCKS * ROCK_BUFFER_STRIDE,
+      'vec4',
+    );
+    this.updateAnchorValues(0, initialAnchors);
+    this.lastAnchors.push(this.cloneAnchors(initialAnchors));
 
-    this.computeSequence.push(this.createPredictionKernel());
+    this.computeSequence.push(
+      this.createMaterialContactFlagResetKernel(),
+      this.createPredictionKernel(),
+      this.createIdleDrapeRecoveryKernel(),
+    );
+    const constrainPosition = this.createConstraintKernel(
+      this.positionBuffer,
+      'Cape constrain position',
+      true,
+      true,
+    );
+    const constrainScratch = this.createConstraintKernel(
+      this.scratchBuffer,
+      'Cape constrain scratch',
+      true,
+      true,
+    );
     const scratchToPosition = this.createProjectionKernel(
       this.scratchBuffer,
       this.positionBuffer,
       false,
       'Cape project scratch to position',
+      false,
+      true,
     );
     const positionToScratch = this.createProjectionKernel(
       this.positionBuffer,
       this.scratchBuffer,
       false,
       'Cape project position to scratch',
+      false,
+      true,
     );
     const hardScratchToPosition = this.createProjectionKernel(
       this.scratchBuffer,
       this.positionBuffer,
       true,
       'Cape reconcile scratch to position',
+      false,
+      true,
     );
     const hardPositionToScratch = this.createProjectionKernel(
       this.positionBuffer,
       this.scratchBuffer,
       true,
       'Cape reconcile position to scratch',
+      false,
+      true,
     );
-    const positionBodyFaces = this.createFaceSweepKernel(
-      this.createBodyFaceColorFunction(this.positionBuffer, 'Position'),
-      'Cape body faces in position',
+    const finalSelfPositionToScratch = this.createProjectionKernel(
+      this.positionBuffer,
+      this.scratchBuffer,
+      false,
+      'Cape final self separation',
+      true,
+      false,
     );
-    const scratchBodyFaces = this.createFaceSweepKernel(
-      this.createBodyFaceColorFunction(this.scratchBuffer, 'Scratch'),
-      'Cape body faces in scratch',
+    const finalContactScratchToPosition = this.createProjectionKernel(
+      this.scratchBuffer,
+      this.positionBuffer,
+      true,
+      'Cape final contact reconciliation',
+      false,
+      true,
+    );
+    // Animated character contact stays particle-to-capsule inside the
+    // projection kernels. A single final virtual-particle pass covers the
+    // triangle interiors only when all three real vertices are clear.
+    const positionVirtualBodyContacts = this.createFaceSweepKernel(
+      this.createVirtualBodyContactColorFunction(this.positionBuffer, 'Position'),
+      'Cape virtual body contacts',
     );
     const positionRockFaces = this.createFaceSweepKernel(
       this.createRockFaceColorFunction(this.positionBuffer, 'Position', false, true),
@@ -222,48 +394,81 @@ export class GpuCapeSimulation {
       this.createRockFaceColorFunction(this.scratchBuffer, 'Scratch'),
       'Cape rock faces in scratch',
     );
+    const reconcileBodyContactVelocity =
+      this.createBodyContactReconciliationKernel();
+    const reconcileProjectionVerticalVelocity =
+      this.createProjectionVerticalVelocityReconciliationKernel();
 
-    // Keep every dispatch short enough for conservative browser/driver
-    // watchdogs, but batch the complete schedule into one compute pass and
-    // one queue submission. Ping-pong projection also avoids a snapshot
-    // dispatch between Jacobi passes.
+    // One workgroup executes race-free pair colors for the same distance,
+    // self-collision, and fold constraints used by the CPU/WebGL solver. The
+    // following projection pass applies body and environment contacts.
     let currentBufferIsPosition = false;
     for (let iteration = 0; iteration < CAPE.solverIterations; iteration += 1) {
       this.computeSequence.push(
+        currentBufferIsPosition ? constrainPosition : constrainScratch,
         currentBufferIsPosition ? positionToScratch : scratchToPosition,
       );
       currentBufferIsPosition = !currentBufferIsPosition;
-      if (iteration >= CAPE.solverIterations - 6) {
-        this.computeSequence.push(
-          currentBufferIsPosition ? positionBodyFaces : scratchBodyFaces,
-        );
-      }
     }
     for (let reconciliation = 0; reconciliation < 3; reconciliation += 1) {
       this.computeSequence.push(
         currentBufferIsPosition ? hardPositionToScratch : hardScratchToPosition,
       );
       currentBufferIsPosition = !currentBufferIsPosition;
-      if (reconciliation > 0) {
+      if (reconciliation === 0) {
+        this.computeSequence.push(positionSweptRockFaces);
+      } else {
         this.computeSequence.push(
-          currentBufferIsPosition ? positionBodyFaces : scratchBodyFaces,
+          currentBufferIsPosition ? positionRockFaces : scratchRockFaces,
         );
       }
-      this.computeSequence.push(reconciliation === 0
-        ? positionSweptRockFaces
-        : currentBufferIsPosition ? positionRockFaces : scratchRockFaces);
     }
     if (!currentBufferIsPosition) {
       throw new Error('GPU cape projection schedule must finish in the render position buffer.');
     }
-    this.sleepKernel = this.createSleepKernel();
+    // The top-down structural wavefront can keep loading a sustained boulder
+    // contact through the reconciliation passes. Finish with one race-free
+    // face sweep in the authoritative render buffer so no later constraint can
+    // push a cloth triangle back through the rock clearance.
+    this.computeSequence.push(
+      hardPositionToScratch,
+      hardScratchToPosition,
+      positionRockFaces,
+      finalSelfPositionToScratch,
+      finalContactScratchToPosition,
+      positionVirtualBodyContacts,
+      positionRockFaces,
+      reconcileBodyContactVelocity,
+      reconcileProjectionVerticalVelocity,
+    );
+    this.profileNoOpKernel = Fn(() => {})()
+      .compute(PACKED_PARTICLE_COUNT, [PARTICLE_COUNT])
+      .setName('Cape profile no-op');
+    this.profileProjectionKernels = [
+      this.createProjectionFeatureKernel(false, true, 'Cape profile contacts and fold', true),
+      this.createProjectionFeatureKernel(false, false, 'Cape profile fold only', true),
+      this.createProjectionFeatureKernel(false, false, 'Cape profile copy only', false),
+      this.createConstraintKernel(
+        this.scratchBuffer,
+        'Cape profile colored constraints self and fold',
+        true,
+        true,
+      ),
+      this.createConstraintKernel(
+        this.scratchBuffer,
+        'Cape profile colored constraints and fold',
+        false,
+        true,
+      ),
+    ];
 
     const geometry = this.diagnosticMirror.mesh.geometry;
+    this.diagnosticMirror.disposeMaterial();
     geometry.setAttribute(
       'capeNormalNeighbors',
       new THREE.Uint32BufferAttribute(topology.normalNeighbors, 4),
     );
-    const textures = createCapeFabricTextures();
+    const textures = createCapeFabricTextures(256, appearance);
     textures.color.repeat.set(1, 1);
     textures.normal.repeat.set(1, 1);
     textures.roughness.repeat.set(1, 1);
@@ -275,14 +480,14 @@ export class GpuCapeSimulation {
       roughness: 0.78,
       metalness: 0.01,
       sheen: 0.92,
-      sheenColor: new THREE.Color(0x6f0713),
+      sheenColor: new THREE.Color(appearance.sheenColor),
       sheenRoughness: 0.72,
       clearcoat: 0.04,
       side: THREE.DoubleSide,
       transparent: false,
       depthWrite: true,
     });
-    material.name = 'GPU woven crimson cape';
+    material.name = `GPU ${appearance.materialName.toLowerCase()}`;
     material.positionNode = Fn(({ material: materialContext }) => {
       const position = this.positionBuffer.element(vertexIndex).xyz.toVar();
       const neighbors = attribute<'uvec4'>('capeNormalNeighbors', 'uvec4');
@@ -304,6 +509,58 @@ export class GpuCapeSimulation {
     this.mesh.castShadow = true;
     this.mesh.receiveShadow = true;
     this.mesh.frustumCulled = false;
+
+    const botGeometry = geometry.clone();
+    const botTextures = createCapeFabricTextures(256, BOT_CYAN_CAPE_PALETTE);
+    botTextures.color.repeat.set(1, 1);
+    botTextures.normal.repeat.set(1, 1);
+    botTextures.roughness.repeat.set(1, 1);
+    const botMaterial = new THREE.MeshPhysicalNodeMaterial({
+      map: botTextures.color,
+      normalMap: botTextures.normal,
+      normalScale: new THREE.Vector2(0.48, 0.48),
+      roughnessMap: botTextures.roughness,
+      roughness: 0.78,
+      metalness: 0.01,
+      sheen: 0.92,
+      sheenColor: new THREE.Color(BOT_CYAN_CAPE_PALETTE.sheenColor),
+      sheenRoughness: 0.72,
+      clearcoat: 0.04,
+      side: THREE.DoubleSide,
+      transparent: false,
+      depthWrite: true,
+    });
+    botMaterial.name = 'GPU woven cyan bot capes';
+    botMaterial.positionNode = Fn(({ material: materialContext }) => {
+      const capeBase = instanceIndex.add(uint(1)).mul(uint(PARTICLE_COUNT));
+      const packedVertex = capeBase.add(vertexIndex);
+      const position = this.positionBuffer.element(packedVertex).xyz.toVar();
+      const neighbors = attribute<'uvec4'>('capeNormalNeighbors', 'uvec4');
+      const left = this.positionBuffer.element(capeBase.add(neighbors.x)).xyz;
+      const right = this.positionBuffer.element(capeBase.add(neighbors.y)).xyz;
+      const up = this.positionBuffer.element(capeBase.add(neighbors.z)).xyz;
+      const down = this.positionBuffer.element(capeBase.add(neighbors.w)).xyz;
+      const normal = cross(down.sub(up), right.sub(left)).normalize();
+      (materialContext as THREE.MeshPhysicalNodeMaterial).normalNode = negateOnBackSide(
+        transformNormalToView(normal).toVarying(),
+      );
+      return position;
+    })();
+    this.botMesh = new THREE.InstancedMesh(
+      botGeometry,
+      botMaterial,
+      MAXIMUM_GPU_CAPES - 1,
+    );
+    this.botMesh.name = 'WebGPU packed compute bot capes';
+    this.botMesh.count = 0;
+    this.botMesh.castShadow = true;
+    this.botMesh.receiveShadow = true;
+    this.botMesh.frustumCulled = false;
+    const identity = new THREE.Matrix4();
+    for (let index = 0; index < MAXIMUM_GPU_CAPES - 1; index += 1) {
+      this.botMesh.setMatrixAt(index, identity);
+    }
+    this.botMesh.instanceMatrix.needsUpdate = true;
   }
 
   public step(
@@ -314,41 +571,92 @@ export class GpuCapeSimulation {
     characterVelocity: THREE.Vector3,
     time: number,
   ): void {
-    const characterSpeed = characterVelocity.length();
-    if (characterSpeed > WAKE_SPEED) {
-      this.settledSeconds = 0;
-      this.sleeping = false;
-    } else {
-      this.settledSeconds += deltaTime;
+    this.renderer.compute(this.prepareStep(
+      deltaTime,
+      anchors,
+      bodyColliders,
+      worldColliders,
+      characterVelocity,
+      time,
+    ));
+  }
+
+  /** Updates the player lane without opening a compute pass. */
+  public prepareStep(
+    deltaTime: number,
+    anchors: CapeAnchors,
+    bodyColliders: readonly CapsuleCollider[],
+    worldColliders: readonly WorldCollider[],
+    characterVelocity: THREE.Vector3,
+    time: number,
+  ): THREE.ComputeNode[] {
+    return this.prepareBatchStep(deltaTime, [{
+      anchors,
+      bodyColliders,
+      characterVelocity,
+    }], worldColliders, time);
+  }
+
+  /**
+   * Updates every active cape lane while retaining one precompiled compute
+   * graph. One workgroup handles one cape, so bot activation never constructs
+   * shaders or adds dispatches.
+   */
+  public prepareBatchStep(
+    deltaTime: number,
+    inputs: readonly GpuCapeStepInput[],
+    worldColliders: readonly WorldCollider[],
+    time: number,
+  ): THREE.ComputeNode[] {
+    if (inputs.length < 1 || inputs.length > MAXIMUM_GPU_CAPES) {
+      throw new RangeError(`GPU cape batch supports 1-${MAXIMUM_GPU_CAPES} capes.`);
     }
-    if (this.sleeping) return;
-    const planarSpeed = Math.hypot(characterVelocity.x, characterVelocity.z);
-    const movementBlend = THREE.MathUtils.smoothstep(characterSpeed, WAKE_SPEED, 2.4);
-    const runningBlend = THREE.MathUtils.smoothstep(
-      planarSpeed,
-      PLAYER.walkSpeed * 1.02,
-      PLAYER.runSpeed * 0.92,
-    );
-    const locomotionAirflow = THREE.MathUtils.lerp(0.28, 1, runningBlend);
-    const velocityAirflow = THREE.MathUtils.lerp(0.32, 1.28, runningBlend);
-    this.airflowUniform.value.set(
-      Math.sin(time * 0.47) * 0.38 + Math.sin(time * 1.91) * 0.16,
-      0.08 + Math.sin(time * 0.71) * 0.05,
-      0.62 + Math.cos(time * 0.31) * 0.24,
-    ).multiplyScalar(THREE.MathUtils.lerp(0.025, locomotionAirflow, movementBlend))
-      .addScaledVector(characterVelocity, -velocityAirflow);
+    for (let capeIndex = this.activeCapeCount; capeIndex < inputs.length; capeIndex += 1) {
+      this.initializeCapeLane(capeIndex, inputs[capeIndex]!.anchors);
+    }
+    this.activeCapeCount = inputs.length;
+    this.activeCapeCountUniform.value = inputs.length;
+    this.botMesh.count = inputs.length - 1;
     this.deltaTimeUniform.value = deltaTime;
     this.timeUniform.value = time;
-    this.movementBlendUniform.value = movementBlend;
-    this.updateAnchorBuffer(anchors);
-    this.updateBodyBuffers(bodyColliders, anchors.back);
-    this.updateWorldBuffers(worldColliders);
-    this.renderer.compute(this.computeSequence);
-    if (this.settledSeconds >= GPU_SLEEP_AFTER_IDLE_SECONDS) {
-      this.renderer.compute(this.sleepKernel);
-      this.sleeping = true;
-    }
+    this.dragPerSecondUniform.value = CAPE_DRAG_PER_SECOND;
+    inputs.forEach((input, capeIndex) => {
+      const characterSpeed = input.characterVelocity.length();
+      const planarSpeed = Math.hypot(input.characterVelocity.x, input.characterVelocity.z);
+      const movementBlend = THREE.MathUtils.smoothstep(characterSpeed, WAKE_SPEED, 2.4);
+      const runningBlend = THREE.MathUtils.smoothstep(
+        planarSpeed,
+        PLAYER.walkSpeed * 1.02,
+        PLAYER.runSpeed * 0.92,
+      );
+      const locomotionAirflow = THREE.MathUtils.lerp(0.28, 1, runningBlend);
+      const velocityAirflow = THREE.MathUtils.lerp(0.32, 1.28, runningBlend);
+      const dynamics = this.dynamicsValues[capeIndex]!;
+      dynamics.set(
+        Math.sin(time * 0.47) * 0.38 + Math.sin(time * 1.91) * 0.16,
+        0.08 + Math.sin(time * 0.71) * 0.05,
+        0.62 + Math.cos(time * 0.31) * 0.24,
+        movementBlend,
+      );
+      dynamics.multiplyScalar(THREE.MathUtils.lerp(0.025, locomotionAirflow, movementBlend));
+      dynamics.x += input.characterVelocity.x * -velocityAirflow;
+      dynamics.y += input.characterVelocity.y * -velocityAirflow;
+      dynamics.z += input.characterVelocity.z * -velocityAirflow;
+      dynamics.w = movementBlend;
+      if (characterSpeed > WAKE_SPEED) this.idleDrapeRecoverySeconds[capeIndex] = 0;
+      else this.idleDrapeRecoverySeconds[capeIndex]! += deltaTime;
+      this.updateAnchorValues(capeIndex, input.anchors);
+      this.anchorStateValues[capeIndex]!.w = THREE.MathUtils.smoothstep(
+        this.idleDrapeRecoverySeconds[capeIndex]!,
+        IDLE_DRAPE_RECOVERY_DELAY_SECONDS,
+        IDLE_DRAPE_RECOVERY_DELAY_SECONDS + IDLE_DRAPE_RECOVERY_RAMP_SECONDS,
+      );
+      this.updateBodyBuffers(capeIndex, input.bodyColliders, input.anchors.back);
+      this.updateWorldBuffers(capeIndex, worldColliders);
+      this.lastAnchors[capeIndex] = this.cloneAnchors(input.anchors);
+    });
     this.submittedSteps += 1;
+    return this.computeSequence.slice();
   }
 
   /** GPU rendering consumes the position storage buffer directly. */
@@ -356,16 +664,13 @@ export class GpuCapeSimulation {
 
   public reset(anchors: CapeAnchors): void {
     this.diagnosticMirror.reset(anchors);
-    const state = this.createInitialState();
-    this.writeStorage(this.positionBuffer.value, state);
-    this.writeStorage(this.scratchBuffer.value, state);
-    this.writeStorage(this.previousBuffer.value, state);
-    this.updateAnchorBuffer(anchors);
-    this.settledSeconds = 0;
-    this.sleeping = false;
+    this.initializeCapeLane(0, anchors);
+    this.activeCapeCount = 1;
+    this.activeCapeCountUniform.value = 1;
     this.submittedSteps = 0;
+    this.idleDrapeRecoverySeconds.fill(0);
+    this.anchorStateValues.forEach((value) => { value.w = 0; });
     this.worldContactsLastStep = 0;
-    this.worldContactEventOffset = this.worldContactEvents;
   }
 
   public updateSettings(
@@ -378,20 +683,19 @@ export class GpuCapeSimulation {
     this.settings = next;
     this.applySettingsUniforms();
     this.diagnosticMirror.updateSettings(next, anchors);
-    this.settledSeconds = 0;
-    this.sleeping = false;
     if (!dimensionsChanged) return;
 
-    const state = this.createInitialState();
+    const state = this.createInitialState(anchors);
     const topology = this.createTopology(state);
-    this.writeStorage(this.positionBuffer.value, state);
-    this.writeStorage(this.scratchBuffer.value, state);
-    this.writeStorage(this.previousBuffer.value, state);
+    for (let capeIndex = 0; capeIndex < this.activeCapeCount; capeIndex += 1) {
+      this.initializeCapeLane(capeIndex, this.lastAnchors[capeIndex] ?? anchors);
+    }
     this.writeStorage(this.topologyBuffer.value, topology.packed);
-    this.updateAnchorBuffer(anchors);
+    this.writeStorage(this.constraintBuffer.value, topology.orderedConstraints);
     this.submittedSteps = 0;
+    this.idleDrapeRecoverySeconds.fill(0);
+    this.anchorStateValues.forEach((value) => { value.w = 0; });
     this.worldContactsLastStep = 0;
-    this.worldContactEventOffset = this.worldContactEvents;
   }
 
   public getSettings(): CapePhysicsSettings {
@@ -400,6 +704,19 @@ export class GpuCapeSimulation {
 
   public setOpacity(_opacity: number): void {}
 
+  public dispose(): void {
+    this.mesh.geometry.dispose();
+    this.mesh.material.map?.dispose();
+    this.mesh.material.normalMap?.dispose();
+    this.mesh.material.roughnessMap?.dispose();
+    this.mesh.material.dispose();
+    this.botMesh.geometry.dispose();
+    this.botMesh.material.map?.dispose();
+    this.botMesh.material.normalMap?.dispose();
+    this.botMesh.material.roughnessMap?.dispose();
+    this.botMesh.material.dispose();
+  }
+
   public async refreshDiagnostics(): Promise<void> {
     if (this.submittedSteps === 0) return;
     const [positions, previous] = await Promise.all([
@@ -407,17 +724,75 @@ export class GpuCapeSimulation {
       this.renderer.getArrayBufferAsync(this.previousBuffer.value),
     ]);
     const positionData = new Float32Array(positions);
+
     this.diagnosticMirror.overwriteStateFromGpu(positionData, new Float32Array(previous));
-    let gpuContactEvents = 0;
-    for (let index = CAPE.columns; index < PARTICLE_COUNT; index += 1) {
-      gpuContactEvents += Math.round(positionData[index * 4 + 3] ?? 0);
-    }
-    const cumulativeContactEvents = this.worldContactEventOffset + gpuContactEvents;
-    this.worldContactsLastStep = Math.max(
-      0,
-      cumulativeContactEvents - this.worldContactEvents,
+    // The position state lane stores body-contact work during a GPU step; it
+    // is not a world-contact counter. World contact totals remain unavailable
+    // without adding a readback-only storage binding to the hot compute path.
+    this.worldContactsLastStep = 0;
+  }
+
+  /**
+   * Local GPU-harness readback for every active packed lane. Production never
+   * calls this; it exists so batch correctness is verified from GPU state
+   * instead of inferred from source text or screenshots.
+   */
+  public async readBatchStateForHarness(): Promise<readonly GpuCapeBatchHarnessState[]> {
+    const positions = new Float32Array(
+      await this.renderer.getArrayBufferAsync(this.positionBuffer.value),
     );
-    this.worldContactEvents = cumulativeContactEvents;
+    return Array.from({ length: this.activeCapeCount }, (_, capeIndex) => {
+      const anchors = this.lastAnchors[capeIndex];
+      if (!anchors) throw new Error(`Missing anchors for GPU cape lane ${capeIndex}.`);
+      const center = anchors.left.clone().add(anchors.right).multiplyScalar(0.5);
+      const right = anchors.right.clone().sub(anchors.left).normalize();
+      const capeBase = capeIndex * PARTICLE_COUNT;
+      const particles: number[] = [];
+      for (let localIndex = 0; localIndex < PARTICLE_COUNT; localIndex += 1) {
+        const offset = (capeBase + localIndex) * 4;
+        const particle = new THREE.Vector3(
+          positions[offset]!,
+          positions[offset + 1]!,
+          positions[offset + 2]!,
+        ).sub(center);
+        particles.push(particle.dot(right), particle.y, particle.dot(anchors.back));
+      }
+      const leftOffset = capeBase * 4;
+      const rightOffset = (capeBase + CAPE.columns - 1) * 4;
+      const leftError = new THREE.Vector3(
+        positions[leftOffset]!,
+        positions[leftOffset + 1]!,
+        positions[leftOffset + 2]!,
+      ).distanceTo(anchors.left);
+      const rightError = new THREE.Vector3(
+        positions[rightOffset]!,
+        positions[rightOffset + 1]!,
+        positions[rightOffset + 2]!,
+      ).distanceTo(anchors.right);
+      return {
+        capeIndex,
+        maximumNecklineAttachmentError: Math.max(leftError, rightError),
+        particles,
+      };
+    });
+  }
+
+  /** Harness-only state injection; production simulation never performs this upload. */
+  public overwriteStateForHarness(
+    positionData: Float32Array,
+    previousData: Float32Array = positionData,
+  ): void {
+    if (positionData.length < PARTICLE_COUNT * 4 || previousData.length < PARTICLE_COUNT * 4) {
+      throw new RangeError('Harness cape state is smaller than the simulation grid.');
+    }
+    this.writeStorage(this.positionBuffer.value, positionData);
+    this.writeStorage(this.scratchBuffer.value, positionData);
+    this.writeStorage(this.previousBuffer.value, previousData);
+    this.diagnosticMirror.overwriteStateForHarness(positionData, previousData);
+    this.submittedSteps = 0;
+    this.idleDrapeRecoverySeconds[0] = 0;
+    this.anchorStateValues[0]!.w = 0;
+    this.worldContactsLastStep = 0;
   }
 
   public getParticlePosition(column: number, row: number): THREE.Vector3 {
@@ -474,6 +849,26 @@ export class GpuCapeSimulation {
     return this.diagnosticMirror.getMaximumLowerCapeLateralOffset(anchors);
   }
 
+  public getMaximumLowerCapeHorizontalOffset(): number {
+    return this.diagnosticMirror.getMaximumLowerCapeHorizontalOffset();
+  }
+
+  public getAverageLowerCapeSpanRatio(anchors: CapeAnchors): number {
+    return this.diagnosticMirror.getAverageLowerCapeSpanRatio(anchors);
+  }
+
+  public getCapeRowTwistRange(anchors: CapeAnchors): number {
+    return this.diagnosticMirror.getCapeRowTwistRange(anchors);
+  }
+
+  public getCapeCenterlineDeviation(): number {
+    return this.diagnosticMirror.getCapeCenterlineDeviation();
+  }
+
+  public getMaximumLowerCapeRowCurlRatio(anchors: CapeAnchors): number {
+    return this.diagnosticMirror.getMaximumLowerCapeRowCurlRatio(anchors);
+  }
+
   public getHemBackOffset(anchors: CapeAnchors): number {
     return this.diagnosticMirror.getHemBackOffset(anchors);
   }
@@ -490,8 +885,15 @@ export class GpuCapeSimulation {
     return this.diagnosticMirror.getMaximumParticleVerticalMotion();
   }
 
+  public getMaximumParticleMotionDiagnostics() {
+    return this.diagnosticMirror.getMaximumParticleMotionDiagnostics();
+  }
+
   public isSleeping(): boolean {
-    return this.sleeping;
+    // Unlike the CPU path, the GPU cannot inspect a settled-shape reduction
+    // without a readback fence. Keep solving rather than freezing an invalid
+    // airborne pose after an arbitrary no-input timeout.
+    return false;
   }
 
   public getWorldContactDiagnostics() {
@@ -510,112 +912,710 @@ export class GpuCapeSimulation {
     };
   }
 
+  /**
+   * Profiling-only path: isolates every production dispatch in its own timed
+   * compute pass. The matching no-op pass estimates fixed pass/dispatch cost.
+   */
+  public async profileKernelBreakdown(requestedSamples = 4): Promise<GpuCapeKernelProfile> {
+    const backend = this.renderer.backend as unknown as KernelTimestampBackend;
+    if (backend.trackTimestamp !== true) {
+      throw new Error('GPU kernel profiling requires timestamp queries.');
+    }
+    const samples = THREE.MathUtils.clamp(Math.round(requestedSamples), 1, 16);
+    await this.renderer.resolveTimestampsAsync(THREE.TimestampQuery.COMPUTE);
+    const kernelDurations = this.computeSequence.map(() => [] as number[]);
+    const noOpDurations: number[] = [];
+    const pending: { readonly index: number; readonly uid: string }[] = [];
+    const pendingNoOps: string[] = [];
+    const projectionDurations = this.profileProjectionKernels.map(() => [] as number[]);
+    const pendingProjections: { readonly index: number; readonly uid: string }[] = [];
+
+    for (let sample = 0; sample < samples; sample += 1) {
+      for (let index = 0; index < this.computeSequence.length; index += 1) {
+        const kernel = this.computeSequence[index]!;
+        this.renderer.compute(kernel);
+        pending.push({ index, uid: backend.getTimestampUID(kernel) });
+      }
+      this.renderer.compute(this.profileNoOpKernel);
+      pendingNoOps.push(backend.getTimestampUID(this.profileNoOpKernel));
+      for (let index = 0; index < this.profileProjectionKernels.length; index += 1) {
+        const kernel = this.profileProjectionKernels[index]!;
+        this.renderer.compute(kernel);
+        pendingProjections.push({ index, uid: backend.getTimestampUID(kernel) });
+      }
+    }
+    await this.renderer.resolveTimestampsAsync(THREE.TimestampQuery.COMPUTE);
+
+    for (const measurement of pending) {
+      kernelDurations[measurement.index]!.push(backend.getTimestamp(measurement.uid));
+    }
+    for (const uid of pendingNoOps) noOpDurations.push(backend.getTimestamp(uid));
+    for (const measurement of pendingProjections) {
+      projectionDurations[measurement.index]!.push(backend.getTimestamp(measurement.uid));
+    }
+
+    const average = (values: readonly number[]): number => (
+      values.reduce((sum, value) => sum + value, 0) / Math.max(1, values.length)
+    );
+    const noOpMilliseconds = average(noOpDurations);
+    const contactProjectionMilliseconds = average(projectionDurations[0]!);
+    const foldProjectionMilliseconds = average(projectionDurations[1]!);
+    const copyMilliseconds = average(projectionDurations[2]!);
+    const fullConstraintMilliseconds = average(projectionDurations[3]!);
+    const noSelfConstraintMilliseconds = average(projectionDurations[4]!);
+    const kernels = this.computeSequence.map((kernel, index): GpuCapeKernelTiming => {
+      const durations = kernelDurations[index]!;
+      const averageMilliseconds = average(durations);
+      return {
+        index,
+        name: kernel.name || `Kernel ${index}`,
+        averageMilliseconds,
+        minimumMilliseconds: Math.min(...durations),
+        maximumMilliseconds: Math.max(...durations),
+        estimatedArithmeticMilliseconds: Math.max(0, averageMilliseconds - noOpMilliseconds),
+      };
+    });
+    return {
+      samples,
+      noOpMilliseconds,
+      separatePassTotalMilliseconds: kernels.reduce(
+        (sum, kernel) => sum + kernel.averageMilliseconds,
+        0,
+      ),
+      estimatedArithmeticTotalMilliseconds: kernels.reduce(
+        (sum, kernel) => sum + kernel.estimatedArithmeticMilliseconds,
+        0,
+      ),
+      kernels,
+      projectionComponents: {
+        fullMilliseconds: contactProjectionMilliseconds + fullConstraintMilliseconds,
+        contactsMilliseconds: Math.max(
+          0,
+          contactProjectionMilliseconds - foldProjectionMilliseconds,
+        ),
+        selfCollisionMilliseconds: Math.max(
+          0,
+          fullConstraintMilliseconds - noSelfConstraintMilliseconds,
+        ),
+        constraintsAndFoldMilliseconds:
+          Math.max(0, foldProjectionMilliseconds - copyMilliseconds)
+          + Math.max(0, noSelfConstraintMilliseconds - noOpMilliseconds),
+      },
+    };
+  }
+
   public getClosestActiveRockSurfaceContact(worldColliders?: readonly WorldCollider[]) {
     return this.diagnosticMirror.getClosestActiveRockSurfaceContact(
-      worldColliders ?? this.worldColliderSource ?? [],
+      worldColliders ?? this.worldColliderSources[0] ?? [],
     );
+  }
+
+  private createIdleDrapeRecoveryKernel(): THREE.ComputeNode {
+    return Fn(() => {
+      const capeIndex = instanceIndex.div(uint(CAPE.rows));
+      const row = instanceIndex.mod(uint(CAPE.rows));
+      const capeBase = capeIndex.mul(uint(PARTICLE_COUNT));
+      const anchorState = this.anchorStateUniform.element(capeIndex);
+      If(
+        capeIndex.lessThan(this.activeCapeCountUniform)
+          .and(anchorState.w.greaterThan(0))
+          .and(row.greaterThan(uint(0)))
+          .and(row.lessThan(uint(CAPE.rows))),
+        () => {
+          const rowCenter = vec3(0).toVar('idleDrapeRowCenter');
+          for (let column = 0; column < CAPE.columns; column += 1) {
+            rowCenter.addAssign(this.scratchBuffer.element(
+              capeBase.add(row.mul(uint(CAPE.columns))).add(uint(column)),
+            ).xyz);
+          }
+          rowCenter.divAssign(CAPE.columns);
+          const horizontalOffset = rowCenter
+            .sub(anchorState.xyz)
+            .mul(vec3(1, 0, 1))
+            .toVar('idleDrapeHorizontalOffset');
+          If(
+            rowCenter.y.lessThan(anchorState.y)
+              .and(horizontalOffset.length().greaterThan(IDLE_DRAPE_RECOVERY_TARGET)),
+            () => {
+              const down = float(row).div(CAPE.rows - 1);
+              const correction = horizontalOffset.mul(
+                float(-IDLE_DRAPE_RECOVERY_PER_STEP)
+                  .mul(anchorState.w)
+                  .mul(smoothstep(0.05, 1, down)),
+              );
+              for (let column = 0; column < CAPE.columns; column += 1) {
+                const particleIndex = capeBase
+                  .add(row.mul(uint(CAPE.columns)))
+                  .add(uint(column));
+                const predicted = this.scratchBuffer.element(particleIndex);
+                this.scratchBuffer.element(particleIndex).assign(vec4(
+                  predicted.xyz.add(correction),
+                  predicted.w,
+                ));
+                const previous = this.previousBuffer.element(particleIndex);
+                this.previousBuffer.element(particleIndex).assign(vec4(
+                  previous.xyz.add(correction),
+                  previous.w,
+                ));
+              }
+            },
+          );
+        },
+      );
+    })().compute(
+      CAPE.rows * MAXIMUM_GPU_CAPES,
+      [CAPE.rows],
+    ).setName('Cape idle drape recovery');
   }
 
   private createPredictionKernel(): THREE.ComputeNode {
     return Fn(() => {
       const index = instanceIndex;
+      const capeIndex = index.div(uint(PARTICLE_COUNT));
+      const localIndex = index.mod(uint(PARTICLE_COUNT));
+      If(capeIndex.greaterThanEqual(this.activeCapeCountUniform), () => Return());
+      const capeBase = capeIndex.mul(uint(PARTICLE_COUNT));
+      const dynamics = this.dynamicsUniform.element(capeIndex);
       const current = this.positionBuffer.element(index);
       const previous = this.previousBuffer.element(index);
       const target = this.scratchBuffer.element(index);
-      If(index.lessThan(uint(CAPE.columns)), () => {
-        const anchor = this.anchorBuffer.element(index);
+      If(localIndex.lessThan(uint(CAPE.columns)), () => {
+        const anchor = this.anchorUniform.element(
+          capeIndex.mul(uint(CAPE.columns)).add(localIndex),
+        );
         target.assign(anchor);
         previous.assign(anchor);
+        this.predictedVerticalBuffer.element(index).assign(float(0));
         Return();
       });
 
+      // Match WebGL's world-space Verlet predictor. Only the pinned row above
+      // receives the new anchors; translating every free particle here would
+      // bypass the cloth constraints and preserve a rigid sheet while walking.
       const currentPosition = current.xyz.toVar('currentPosition');
-      const velocity = currentPosition.sub(previous.xyz).toVar('velocity');
-      const drag = mix(
-        float(IDLE_DRAG_PER_SECOND),
-        float(ACTIVE_DRAG_PER_SECOND),
-        this.movementBlendUniform,
-      ).mul(this.dampingUniform);
+      const previousPosition = previous.xyz;
+      const velocity = currentPosition.sub(previousPosition).toVar('velocity');
+      const drag = this.dragPerSecondUniform.mul(this.dampingUniform);
       velocity.mulAssign(drag.mul(this.deltaTimeUniform).negate().exp());
-      previous.assign(vec4(current.xyz, 0));
+      const maximumPlanarDisplacement = this.deltaTimeUniform
+        .mul(GPU_MAXIMUM_PLANAR_PARTICLE_SPEED);
+      const planarVelocityLength = velocity.x.mul(velocity.x)
+        .add(velocity.z.mul(velocity.z))
+        .sqrt()
+        .toVar('planarVelocityLength');
+      If(planarVelocityLength.greaterThan(maximumPlanarDisplacement), () => {
+        const planarScale = maximumPlanarDisplacement.div(planarVelocityLength);
+        velocity.x.mulAssign(planarScale);
+        velocity.z.mulAssign(planarScale);
+      });
+      const maximumVerticalDisplacement = this.deltaTimeUniform
+        .mul(GPU_MAXIMUM_VERTICAL_PARTICLE_SPEED);
+      velocity.y.assign(velocity.y.clamp(
+        maximumVerticalDisplacement.negate(),
+        maximumVerticalDisplacement,
+      ));
+      previous.assign(vec4(currentPosition, 0));
 
       const topologyMetadata = this.topologyBuffer.element(
-        index.mul(uint(TOPOLOGY_METADATA_STRIDE)),
+        localIndex.mul(uint(TOPOLOGY_METADATA_STRIDE)),
       );
       const topologyNeighbors = this.topologyBuffer.element(
-        index.mul(uint(TOPOLOGY_METADATA_STRIDE)).add(1),
+        localIndex.mul(uint(TOPOLOGY_METADATA_STRIDE)).add(1),
       );
-      const left = this.positionBuffer.element(uint(topologyMetadata.z)).xyz;
-      const right = this.positionBuffer.element(uint(topologyMetadata.w)).xyz;
-      const up = this.positionBuffer.element(uint(topologyNeighbors.x)).xyz;
-      const down = this.positionBuffer.element(uint(topologyNeighbors.y)).xyz;
+      const left = this.positionBuffer.element(capeBase.add(uint(topologyMetadata.z))).xyz;
+      const right = this.positionBuffer.element(capeBase.add(uint(topologyMetadata.w))).xyz;
+      const up = this.positionBuffer.element(capeBase.add(uint(topologyNeighbors.x))).xyz;
+      const down = this.positionBuffer.element(capeBase.add(uint(topologyNeighbors.y))).xyz;
       const normal = cross(down.sub(up), right.sub(left)).normalize().toVar('normal');
-      const pressure = this.airflowUniform.dot(normal).toVar('pressure');
-      const row = index.div(uint(CAPE.columns));
-      const column = index.mod(uint(CAPE.columns));
+      const pressure = dynamics.xyz.dot(normal).toVar('pressure');
+      const row = localIndex.div(uint(CAPE.columns));
+      const column = localIndex.mod(uint(CAPE.columns));
       const turbulence = this.timeUniform.mul(4.3)
         .add(float(row).mul(0.83))
         .add(float(column).mul(1.71))
         .sin()
         .mul(0.42);
+      const across = float(column).div(CAPE.columns - 1).sub(0.5);
+      const flutterEnvelope = float(row)
+        .div(CAPE.rows - 1)
+        .mul(Math.PI)
+        .sin()
+        .pow(2);
+      const flutterProfile = float(0.3).add(across.mul(0.4));
+      const flutterDirection = vec3(normal.x, 0, normal.z);
+      const fabricFlutter = this.timeUniform.mul(3.4)
+        .add(float(row).mul(0.28))
+        .sin()
+        .mul(flutterProfile)
+        .mul(flutterEnvelope);
       const deltaSquared = this.deltaTimeUniform.mul(this.deltaTimeUniform);
       const predicted = currentPosition.add(velocity).toVar('predicted');
-      predicted.y.subAssign(deltaSquared.mul(9.81).mul(this.weightUniform));
+      predicted.y.subAssign(
+        deltaSquared.mul(9.81).mul(this.weightUniform),
+      );
       predicted.addAssign(normal.mul(
         pressure.mul(pressure.abs()).mul(0.026).mul(deltaSquared),
       ));
+      // Match WebGL's symmetry breaker without letting a horizontal cape's
+      // vertical normal turn deterministic flutter into sustained lift.
+      predicted.addAssign(flutterDirection.mul(
+        fabricFlutter
+          .mul(dynamics.w)
+          .mul(CAPE_FLUTTER_ACCELERATION)
+          .mul(deltaSquared),
+      ));
       predicted.addAssign(
-        this.airflowUniform
+        dynamics.xyz
           .mul(float(0.048).add(turbulence.mul(0.011)))
           .mul(deltaSquared),
       );
-      // Keep a monotonic event count in the otherwise-unused state lane so
-      // contacts that begin and end between explicit diagnostic readbacks are
-      // still observable without a new storage binding or a GPU fence.
-      target.assign(vec4(predicted, current.w));
-    })().compute(PARTICLE_COUNT).setName('Cape predict');
+      this.predictedVerticalBuffer.element(index).assign(
+        predicted.y.sub(currentPosition.y),
+      );
+      // The state lane accumulates body-contact work for final reconciliation.
+      target.assign(vec4(predicted, 0));
+    })().compute(PACKED_PARTICLE_COUNT).setName('Cape predict');
   }
 
+  private createConstraintKernel(
+    buffer: typeof this.positionBuffer,
+    name: string,
+    includeSelfCollision = true,
+    includeFoldGuard = true,
+  ): THREE.ComputeNode {
+    return Fn(() => {
+      // Use workgroup-uniform built-ins around barriers. Deriving the cape
+      // lane from global_invocation_id is mathematically uniform here, but the
+      // WGSL validator cannot prove that division is workgroup-uniform.
+      const capeIndex = workgroupId.x;
+      const constraintIndex = localId.x;
+      const capeBase = capeIndex.mul(uint(PARTICLE_COUNT));
+      If(capeIndex.greaterThanEqual(this.activeCapeCountUniform), () => Return());
+      // This small fixed grid spends the overwhelming majority of its GPU
+      // time in collision work, not 1,626 distance links. One invocation can
+      // therefore reproduce WebGL's exact row-major Gauss-Seidel stream while
+      // the expensive self/body/world phases below remain parallel.
+      If(constraintIndex.equal(uint(0)), () => {
+        Loop(
+          {
+            start: uint(0),
+            end: uint(this.constraintCount),
+            type: 'uint',
+            condition: '<',
+          },
+          ({ i }) => {
+            const definition = this.constraintBuffer.element(i);
+            const firstIndex = uint(definition.x);
+            const secondIndex = uint(definition.y);
+            const firstGlobalIndex = capeBase.add(firstIndex);
+            const secondGlobalIndex = capeBase.add(secondIndex);
+            const firstState = buffer.element(firstGlobalIndex);
+            const secondState = buffer.element(secondGlobalIndex);
+            const first = firstState.xyz.toVar('orderedConstraintFirst');
+            const second = secondState.xyz.toVar('orderedConstraintSecond');
+            const delta = second.sub(first).toVar('orderedConstraintDelta');
+            const length = delta.length().toVar('orderedConstraintLength');
+            const firstWeight = select(firstIndex.lessThan(uint(CAPE.columns)), 0, 1);
+            const secondWeight = select(secondIndex.lessThan(uint(CAPE.columns)), 0, 1);
+            const totalWeight = firstWeight.add(secondWeight);
+            If(length.greaterThan(0.000_001).and(totalWeight.greaterThan(0)), () => {
+              const stiffness = definition.w.mul(this.stiffnessUniform).min(0.999);
+              const correction = delta.mul(
+                length.sub(definition.z).div(length).mul(stiffness),
+              ).toVar('orderedConstraintCorrection');
+              const firstCorrection = correction.mul(firstWeight.div(totalWeight));
+              const secondCorrection = correction.mul(secondWeight.div(totalWeight));
+              first.addAssign(firstCorrection);
+              second.subAssign(secondCorrection);
+              buffer.element(firstGlobalIndex).assign(vec4(first, firstState.w));
+              buffer.element(secondGlobalIndex).assign(vec4(second, secondState.w));
+            });
+          },
+        );
+      });
+      storageBarrier();
+
+      if (includeSelfCollision) {
+        const rotatingParticleCount = uint(PARTICLE_COUNT - 1);
+        Loop(
+          {
+            start: uint(0),
+            end: rotatingParticleCount,
+            type: 'uint',
+            condition: '<',
+          },
+          ({ i: round }) => {
+            If(constraintIndex.lessThan(uint(PARTICLE_COUNT / 2)), () => {
+              const pairFirst = select(
+                constraintIndex.equal(uint(0)),
+                uint(PARTICLE_COUNT - 1),
+                round.add(constraintIndex).mod(rotatingParticleCount),
+              );
+              const pairSecond = select(
+                constraintIndex.equal(uint(0)),
+                round,
+                round.add(rotatingParticleCount).sub(constraintIndex)
+                  .mod(rotatingParticleCount),
+              );
+              const firstIndex = select(
+                pairFirst.greaterThan(pairSecond),
+                pairFirst,
+                pairSecond,
+              ).toVar('selfFirstIndex');
+              const secondIndex = select(
+                pairFirst.greaterThan(pairSecond),
+                pairSecond,
+                pairFirst,
+              ).toVar('selfSecondIndex');
+              const firstRow = firstIndex.div(uint(CAPE.columns));
+              const secondRow = secondIndex.div(uint(CAPE.columns));
+              const firstColumn = firstIndex.mod(uint(CAPE.columns));
+              const secondColumn = secondIndex.mod(uint(CAPE.columns));
+              const rowDifference = firstRow.sub(secondRow);
+              const columnDifference = select(
+                firstColumn.greaterThan(secondColumn),
+                firstColumn.sub(secondColumn),
+                secondColumn.sub(firstColumn),
+              );
+              const topologicalNeighbor = rowDifference.lessThanEqual(uint(2))
+                .and(columnDifference.lessThanEqual(2));
+              If(topologicalNeighbor.not(), () => {
+                const firstGlobalIndex = capeBase.add(firstIndex);
+                const secondGlobalIndex = capeBase.add(secondIndex);
+                const firstState = buffer.element(firstGlobalIndex);
+                const secondState = buffer.element(secondGlobalIndex);
+                const first = firstState.xyz.toVar('selfFirst');
+                const second = secondState.xyz.toVar('selfSecond');
+                const separation = first.sub(second).toVar('selfSeparation');
+                const distanceSquared = separation.dot(separation).toVar('selfDistanceSquared');
+                If(distanceSquared.lessThan(CLOTH_THICKNESS ** 2), () => {
+                  const distance = distanceSquared.sqrt().toVar('selfDistance');
+                  const normal = vec3(1, 0, 0).toVar('selfNormal');
+                  If(distance.greaterThan(0.000_001), () => {
+                    normal.assign(separation.div(distance));
+                  }).Else(() => {
+                    const phase = float(firstIndex)
+                      .mul(0.754_877_666)
+                      .add(float(secondIndex).mul(0.569_840_291));
+                    normal.assign(vec3(
+                      phase.sin(),
+                      phase.mul(1.37).cos(),
+                      phase.mul(0.73).add(1.1).sin(),
+                    ).normalize());
+                  });
+                  const firstWeight = select(firstIndex.lessThan(uint(CAPE.columns)), 0, 1);
+                  const secondWeight = select(secondIndex.lessThan(uint(CAPE.columns)), 0, 1);
+                  const totalWeight = firstWeight.add(secondWeight);
+                  If(totalWeight.greaterThan(0), () => {
+                    const correction = normal
+                      .mul(float(CLOTH_THICKNESS).sub(distance).div(totalWeight));
+                    const firstCorrection = correction.mul(firstWeight);
+                    const secondCorrection = correction.mul(secondWeight);
+                    first.addAssign(firstCorrection);
+                    second.subAssign(secondCorrection);
+                    buffer.element(firstGlobalIndex).assign(vec4(first, firstState.w));
+                    buffer.element(secondGlobalIndex).assign(vec4(second, secondState.w));
+                    const firstPreviousState = this.previousBuffer.element(firstGlobalIndex);
+                    const secondPreviousState = this.previousBuffer.element(secondGlobalIndex);
+                      this.previousBuffer.element(firstGlobalIndex).assign(vec4(
+                      firstPreviousState.xyz.add(firstCorrection),
+                      firstPreviousState.w,
+                    ));
+                      this.previousBuffer.element(secondGlobalIndex).assign(vec4(
+                      secondPreviousState.xyz.sub(secondCorrection),
+                      secondPreviousState.w,
+                    ));
+                  });
+                });
+              });
+            });
+            storageBarrier();
+          },
+        );
+      }
+
+      if (includeFoldGuard) {
+      for (let foldColor = 0; foldColor < 2; foldColor += 1) {
+        const foldRowCount = Math.ceil((CAPE.rows - 1 - foldColor) / 2);
+        If(constraintIndex.lessThan(uint(foldRowCount * CAPE.columns)), () => {
+          const pairRow = constraintIndex.div(uint(CAPE.columns));
+          const column = constraintIndex.mod(uint(CAPE.columns));
+          const upperRow = pairRow.mul(uint(2)).add(uint(foldColor));
+          const upperIndex = upperRow.mul(uint(CAPE.columns)).add(column);
+          const lowerIndex = upperIndex.add(uint(CAPE.columns));
+          const upperGlobalIndex = capeBase.add(upperIndex);
+          const lowerGlobalIndex = capeBase.add(lowerIndex);
+          const upperState = buffer.element(upperGlobalIndex);
+          const lowerState = buffer.element(lowerGlobalIndex);
+          const upper = upperState.xyz.toVar();
+          const lower = lowerState.xyz.toVar();
+          const excess = lower.y.sub(upper.y).sub(MAXIMUM_LOCAL_UPWARD_FOLD);
+          If(excess.greaterThan(0), () => {
+            const upperWeight = select(upperIndex.lessThan(uint(CAPE.columns)), 0, 1);
+            const lowerWeight = float(1);
+            const totalWeight = upperWeight.add(lowerWeight);
+            const correction = excess.mul(FOLD_RELAXATION);
+            const upperCorrection = correction.mul(upperWeight.div(totalWeight));
+            const lowerCorrection = correction.mul(lowerWeight.div(totalWeight));
+            upper.y.addAssign(upperCorrection);
+            lower.y.subAssign(lowerCorrection);
+            buffer.element(upperGlobalIndex).assign(vec4(upper, upperState.w));
+            buffer.element(lowerGlobalIndex).assign(vec4(lower, lowerState.w));
+            const upperPreviousState = this.previousBuffer.element(upperGlobalIndex);
+            const lowerPreviousState = this.previousBuffer.element(lowerGlobalIndex);
+              this.previousBuffer.element(upperGlobalIndex).assign(vec4(
+              upperPreviousState.xyz.add(vec3(0, upperCorrection, 0)),
+              upperPreviousState.w,
+            ));
+              this.previousBuffer.element(lowerGlobalIndex).assign(vec4(
+              lowerPreviousState.xyz.sub(vec3(0, lowerCorrection, 0)),
+              lowerPreviousState.w,
+            ));
+          });
+        });
+        storageBarrier();
+      }
+      }
+
+      If(constraintIndex.lessThan(uint(CAPE.rows - 1)), () => {
+        const row = constraintIndex.add(1);
+        const leftIndex = row.mul(uint(CAPE.columns));
+        const rightIndex = leftIndex.add(uint(CAPE.columns - 1));
+        const leftGlobalIndex = capeBase.add(leftIndex);
+        const rightGlobalIndex = capeBase.add(rightIndex);
+        const leftState = buffer.element(leftGlobalIndex);
+        const rightState = buffer.element(rightGlobalIndex);
+        const left = leftState.xyz.toVar('spanLeft');
+        const right = rightState.xyz.toVar('spanRight');
+        const anchorBase = capeIndex.mul(uint(CAPE.columns));
+        const shoulderAxis = this.anchorUniform.element(
+          anchorBase.add(uint(CAPE.columns - 1)),
+        ).xyz
+          .sub(this.anchorUniform.element(anchorBase).xyz)
+          .normalize();
+        const restSpan = this.topologyBuffer.element(
+          leftIndex.mul(uint(TOPOLOGY_METADATA_STRIDE)),
+        ).x;
+        const lateralSpan = right.sub(left).dot(shoulderAxis);
+        const deficit = restSpan.mul(MINIMUM_CAPE_ROW_SPAN_RATIO)
+          .sub(lateralSpan)
+          .max(0);
+        const correction = shoulderAxis.mul(
+          deficit.mul(CAPE_ROW_SPAN_RELAXATION * 0.5),
+        );
+        left.subAssign(correction);
+        right.addAssign(correction);
+        buffer.element(leftGlobalIndex).assign(vec4(left, leftState.w));
+        buffer.element(rightGlobalIndex).assign(vec4(right, rightState.w));
+        const leftPreviousState = this.previousBuffer.element(leftGlobalIndex);
+        const rightPreviousState = this.previousBuffer.element(rightGlobalIndex);
+        this.previousBuffer.element(leftGlobalIndex).assign(vec4(
+          leftPreviousState.xyz.sub(correction),
+          leftPreviousState.w,
+        ));
+        this.previousBuffer.element(rightGlobalIndex).assign(vec4(
+          rightPreviousState.xyz.add(correction),
+          rightPreviousState.w,
+        ));
+
+        // Endpoint span alone still allows all interior particles to curl into
+        // a U-shaped tube. Constrain only excessive departure from the current
+        // row chord; the chord itself remains free to trail and twist.
+        for (let column = 1; column < CAPE.columns - 1; column += 1) {
+          const particleIndex = leftIndex.add(uint(column));
+          const particleGlobalIndex = capeBase.add(particleIndex);
+          const particleState = buffer.element(particleGlobalIndex);
+          const position = particleState.xyz.toVar('rowCurl' + column);
+          const chordPoint = left.add(
+            right.sub(left).mul(column / (CAPE.columns - 1)),
+          );
+          const curlDelta = position.sub(chordPoint).toVar('rowCurlDelta' + column);
+          const curlLength = curlDelta.length().toVar('rowCurlLength' + column);
+          const maximumCurl = restSpan.mul(MAXIMUM_CAPE_ROW_CURL_RATIO);
+          If(curlLength.greaterThan(maximumCurl).and(curlLength.greaterThan(0.000_001)), () => {
+            const curlCorrection = curlDelta.mul(
+              curlLength.sub(maximumCurl)
+                .div(curlLength)
+                .mul(CAPE_ROW_CURL_RELAXATION),
+            );
+            position.subAssign(curlCorrection);
+            buffer.element(particleGlobalIndex).assign(vec4(position, particleState.w));
+            const previousState = this.previousBuffer.element(particleGlobalIndex);
+              this.previousBuffer.element(particleGlobalIndex).assign(vec4(
+              previousState.xyz.sub(curlCorrection),
+              previousState.w,
+            ));
+          });
+        }
+      });
+      storageBarrier();
+    })().compute(PACKED_PARTICLE_COUNT, [PARTICLE_COUNT]).setName(name);
+  }
+
+  private createMaterialContactFlagResetKernel(): THREE.ComputeNode {
+    return Fn(() => {
+      const capeIndex = instanceIndex;
+      If(capeIndex.lessThan(this.activeCapeCountUniform), () => {
+        atomicStore(this.materialContactFlagBuffer.element(capeIndex), uint(0));
+      });
+    })().compute(MAXIMUM_GPU_CAPES).setName('Cape reset material contact flag');
+  }
+
+  private createBodyContactReconciliationKernel(): THREE.ComputeNode {
+    return Fn(() => {
+      const index = instanceIndex;
+      const capeIndex = index.div(uint(PARTICLE_COUNT));
+      const localIndex = index.mod(uint(PARTICLE_COUNT));
+      If(capeIndex.greaterThanEqual(this.activeCapeCountUniform), () => Return());
+      If(localIndex.greaterThanEqual(uint(CAPE.columns)), () => {
+        const position = this.positionBuffer.element(index);
+        const correction = position.w;
+        If(correction.greaterThan(BODY_CONTACT_RECONCILIATION_START), () => {
+          const previous = this.previousBuffer.element(index);
+          const strength = smoothstep(
+            BODY_CONTACT_RECONCILIATION_START,
+            BODY_CONTACT_RECONCILIATION_FULL,
+            correction,
+          );
+          this.previousBuffer.element(index).assign(vec4(
+            mix(previous.xyz, position.xyz, strength),
+            previous.w,
+          ));
+        });
+        this.positionBuffer.element(index).assign(vec4(position.xyz, 0));
+      });
+    })().compute(PACKED_PARTICLE_COUNT).setName('Cape reconcile body contact velocity');
+  }
+
+  /**
+   * Match CapeSimulation.reconcileProjectionVerticalVelocity. If physical
+   * prediction was falling, a later positional length repair must not become
+   * upward Verlet velocity. Material contact disables the phase for the whole
+   * step because world/body projection may legitimately need upward motion.
+   */
+  private createProjectionVerticalVelocityReconciliationKernel(): THREE.ComputeNode {
+    return Fn(() => {
+      const index = instanceIndex;
+      const capeIndex = index.div(uint(PARTICLE_COUNT));
+      const localIndex = index.mod(uint(PARTICLE_COUNT));
+      If(capeIndex.greaterThanEqual(this.activeCapeCountUniform), () => Return());
+      const hasMaterialContact = atomicLoad(
+        this.materialContactFlagBuffer.element(capeIndex),
+      ).greaterThan(uint(0));
+      If(
+        localIndex.greaterThanEqual(uint(CAPE.columns))
+          .and(hasMaterialContact.not())
+          .and(this.predictedVerticalBuffer.element(index).lessThan(0)),
+        () => {
+          const position = this.positionBuffer.element(index);
+          const previous = this.previousBuffer.element(index);
+          If(position.y.greaterThan(previous.y), () => {
+            this.previousBuffer.element(index).assign(vec4(
+              previous.x,
+              position.y,
+              previous.z,
+              previous.w,
+            ));
+          });
+        },
+      );
+    })().compute(PACKED_PARTICLE_COUNT).setName('Cape reconcile projection vertical velocity');
+  }
   private createProjectionKernel(
     source: typeof this.positionBuffer,
     target: typeof this.positionBuffer,
     hardRockRecovery: boolean,
     name: string,
+    includeSelfCollision = true,
+    includeContacts = true,
   ): THREE.ComputeNode {
-    const project = this.createProjectionFunction(source, target, name.replaceAll(' ', ''));
+    // Fold, row-span, and row-curl guards belong to the authored solver
+    // iteration in createConstraintKernel. Contact/copy dispatches must not
+    // solve them again: the duplicate cadence suppressed travelling waves.
+    const project = this.createProjectionFunction(
+      source,
+      target,
+      name.replaceAll(' ', ''),
+      includeSelfCollision,
+      includeContacts,
+      false,
+    );
     return Fn(() => {
-      const passResult = float(0).toVar('projectionPassResult');
-      passResult.assign(project(instanceIndex, bool(hardRockRecovery)));
-    })().compute(PARTICLE_COUNT).setName(name);
+      const capeIndex = instanceIndex.div(uint(PARTICLE_COUNT));
+      If(capeIndex.lessThan(this.activeCapeCountUniform), () => {
+        const passResult = float(0).toVar('projectionPassResult');
+        passResult.assign(project(instanceIndex, bool(hardRockRecovery)));
+      });
+    })().compute(PACKED_PARTICLE_COUNT).setName(name);
+  }
+
+  private createProjectionFeatureKernel(
+    includeSelfCollision: boolean,
+    includeContacts: boolean,
+    name: string,
+    includeFoldGuard = true,
+  ): THREE.ComputeNode {
+    const project = this.createProjectionFunction(
+      this.positionBuffer,
+      this.scratchBuffer,
+      name.replaceAll(' ', ''),
+      includeSelfCollision,
+      includeContacts,
+      includeFoldGuard,
+    );
+    return Fn(() => {
+      const capeIndex = instanceIndex.div(uint(PARTICLE_COUNT));
+      If(capeIndex.lessThan(this.activeCapeCountUniform), () => {
+        const passResult = float(0).toVar('profileProjectionPassResult');
+        passResult.assign(project(instanceIndex, bool(false)));
+      });
+    })().compute(PACKED_PARTICLE_COUNT).setName(name);
   }
 
   private createFaceSweepKernel(
-    colorPass: ReturnType<GpuCapeSimulation['createBodyFaceColorFunction']>,
+    colorPass: ReturnType<GpuCapeSimulation['createRockFaceColorFunction']>,
     name: string,
   ): THREE.ComputeNode {
     return Fn(() => {
-      const passResult = float(0).toVar('faceSweepResult');
-      for (let color = 0; color < 8; color += 1) {
-        passResult.assign(colorPass(uint(color)));
-        storageBarrier();
-      }
-    })().compute(PARTICLE_COUNT, [PARTICLE_COUNT]).setName(name);
+      const capeIndex = workgroupId.x;
+      const triangleSlot = localId.x;
+      If(capeIndex.lessThan(this.activeCapeCountUniform), () => {
+        const passResult = float(0).toVar('faceSweepResult');
+        for (let color = 0; color < 8; color += 1) {
+          // Built-in invocation IDs are scoped to the compute entry point.
+          // Pass the slot explicitly so TSL does not emit an unresolved
+          // `localId` reference inside the generated helper function.
+          passResult.assign(colorPass(uint(color), triangleSlot, capeIndex));
+          storageBarrier();
+        }
+      });
+    })().compute(PACKED_PARTICLE_COUNT, [PARTICLE_COUNT]).setName(name);
   }
 
   private createProjectionFunction(
     source: typeof this.positionBuffer,
     target: typeof this.positionBuffer,
     passName: string,
+    includeSelfCollision = true,
+    includeContacts = true,
+    includeFoldGuard = true,
   ) {
     return Fn<
       readonly [THREE.Node<'uint'>, THREE.Node<'bool'>],
       THREE.Node<'float'>
     >(([index, hardRockRecovery]) => {
-      If(index.lessThan(uint(CAPE.columns)), () => {
+      const capeIndex = index.div(uint(PARTICLE_COUNT));
+      const localIndex = index.mod(uint(PARTICLE_COUNT));
+      const capeBase = capeIndex.mul(uint(PARTICLE_COUNT));
+      const anchorState = this.anchorStateUniform.element(capeIndex);
+      const bodyState = this.bodyStateUniform.element(capeIndex);
+      const worldCounts = this.worldCountUniform.element(capeIndex);
+      const back = bodyState.xyz;
+      If(localIndex.lessThan(uint(CAPE.columns)), () => {
         target.element(index).assign(source.element(index));
       }).Else(() => {
       const position = source.element(index).xyz.toVar('position');
-      const worldContactEvents = source.element(index).w.toVar('worldContactEvents');
+      const bodyCorrectionUsed = source.element(index).w.toVar('bodyCorrectionUsed');
       const previousState = this.previousBuffer.element(index);
       const previousPosition = previousState.xyz.toVar('previousPosition');
       const rockSweepResolved = previousState.w.greaterThanEqual(0.5)
@@ -625,52 +1625,37 @@ export class GpuCapeSimulation {
         previousState.w.sub(1),
         previousState.w,
       ).toVar('rockCorrectionUsed');
-      const correction = vec3(0).toVar('constraintCorrection');
-      const correctionWeight = float(0).toVar('constraintWeight');
-      const topologyMetadata = this.topologyBuffer.element(
-        index.mul(uint(TOPOLOGY_METADATA_STRIDE)),
-      );
-      Loop({ start: uint(0), end: uint(topologyMetadata.y), type: 'uint', condition: '<' }, ({ i }) => {
-        const link = this.topologyBuffer.element(uint(topologyMetadata.x).add(i));
-        const neighborPosition = source.element(uint(link.x)).xyz;
-        const delta = neighborPosition.sub(position).toVar('constraintDelta');
-        const length = delta.length().max(0.000_001).toVar('constraintLength');
-        const baseWeight = link.z.abs().mul(link.w);
-        correction.addAssign(
-          delta
-            .mul(length.sub(link.y).div(length))
-            .mul(baseWeight)
-            .mul(this.stiffnessUniform),
-        );
-        correctionWeight.addAssign(baseWeight);
-      });
-      position.addAssign(
-        correction.div(correctionWeight.max(1)),
-      );
+      const particleRow = localIndex.div(uint(CAPE.columns));
+      const particleColumn = localIndex.mod(uint(CAPE.columns));
 
+      if (includeFoldGuard) {
       const topologyNeighbors = this.topologyBuffer.element(
-        index.mul(uint(TOPOLOGY_METADATA_STRIDE)).add(1),
+        localIndex.mul(uint(TOPOLOGY_METADATA_STRIDE)).add(1),
       );
-      const upper = source.element(uint(topologyNeighbors.x)).xyz;
-      const lower = source.element(uint(topologyNeighbors.y)).xyz;
+      const upper = source.element(capeBase.add(uint(topologyNeighbors.x))).xyz;
+      const lower = source.element(capeBase.add(uint(topologyNeighbors.y))).xyz;
       const foldStart = position.toVar('foldStart');
-      If(index.greaterThanEqual(uint(CAPE.columns)), () => {
-        const upwardExcess = position.y.sub(upper.y).sub(0.022).max(0);
-        position.y.subAssign(upwardExcess.mul(0.34));
+      If(localIndex.greaterThanEqual(uint(CAPE.columns)), () => {
+        const upwardExcess = position.y.sub(upper.y)
+          .sub(MAXIMUM_LOCAL_UPWARD_FOLD)
+          .max(0);
+        position.y.subAssign(upwardExcess.mul(FOLD_RELAXATION * 0.5));
       });
-      If(index.lessThan(uint(PARTICLE_COUNT - CAPE.columns)), () => {
-        const lowerExcess = lower.y.sub(position.y).sub(0.022).max(0);
-        position.y.addAssign(lowerExcess.mul(0.34));
+      If(localIndex.lessThan(uint(PARTICLE_COUNT - CAPE.columns)), () => {
+        const lowerExcess = lower.y.sub(position.y)
+          .sub(MAXIMUM_LOCAL_UPWARD_FOLD)
+          .max(0);
+        position.y.addAssign(lowerExcess.mul(FOLD_RELAXATION * 0.5));
       });
       previousPosition.addAssign(position.sub(foldStart));
+      }
 
+      if (includeSelfCollision) {
       const selfStart = position.toVar('selfStart');
       const selfCorrection = vec3(0).toVar('selfCorrection');
       const selfContacts = float(0).toVar('selfContacts');
-      const particleRow = index.div(uint(CAPE.columns));
-      const particleColumn = index.mod(uint(CAPE.columns));
       Loop({ start: uint(0), end: uint(PARTICLE_COUNT), type: 'uint', condition: '<' }, ({ i }) => {
-        If(i.notEqual(index), () => {
+        If(i.notEqual(localIndex), () => {
           const otherRow = i.div(uint(CAPE.columns));
           const otherColumn = i.mod(uint(CAPE.columns));
           const rowDifference = select(
@@ -684,17 +1669,20 @@ export class GpuCapeSimulation {
             otherColumn.sub(particleColumn),
           );
           const topologicalNeighbor = rowDifference.lessThanEqual(uint(2))
-            .and(columnDifference.lessThanEqual(uint(2)));
+            .and(columnDifference.lessThanEqual(2));
           If(topologicalNeighbor.not(), () => {
-            const separation = position.sub(source.element(i).xyz).toVar('selfSeparation');
+            const separation = position.sub(source.element(capeBase.add(i)).xyz)
+              .toVar('selfSeparation');
             const distanceSquared = separation.dot(separation).toVar('selfDistanceSquared');
-            If(distanceSquared.lessThan(0.058 ** 2), () => {
+            If(distanceSquared.lessThan(CLOTH_THICKNESS ** 2), () => {
               const distance = distanceSquared.sqrt().toVar('selfDistance');
               const normal = vec3(1, 0, 0).toVar('selfNormal');
               If(distance.greaterThan(0.000_001), () => {
                 normal.assign(separation.div(distance));
               }).Else(() => {
-                const phase = float(index).mul(0.754_877_666).add(float(i).mul(0.569_840_291));
+                const phase = float(localIndex)
+                  .mul(0.754_877_666)
+                  .add(float(i).mul(0.569_840_291));
                 normal.assign(vec3(
                   phase.sin(),
                   phase.mul(1.37).cos(),
@@ -703,7 +1691,7 @@ export class GpuCapeSimulation {
               });
               const massShare = select(i.lessThan(uint(CAPE.columns)), 1, 0.5);
               selfCorrection.addAssign(
-                normal.mul(float(0.058).sub(distance)).mul(massShare),
+                normal.mul(float(CLOTH_THICKNESS).sub(distance)).mul(massShare),
               );
               selfContacts.addAssign(1);
             });
@@ -712,12 +1700,26 @@ export class GpuCapeSimulation {
       });
       position.addAssign(selfCorrection.div(selfContacts.max(1)));
       previousPosition.addAssign(position.sub(selfStart));
+      }
 
-      const contactStart = position.toVar('contactStart');
+      if (includeContacts) {
+      const bodyCorrectionThisPass = float(0).toVar('bodyCorrectionThisPass');
+      const topologySide = float(particleColumn)
+        .div(CAPE.columns - 1)
+        .sub(0.5)
+        .toVar('bodyTopologySide');
+      const bodyRight = vec3(
+        back.z,
+        0,
+        back.x.negate(),
+      ).normalize().toVar('bodyRight');
+
       Loop(
-        { start: uint(0), end: uint(this.bodyCountUniform), type: 'uint', condition: '<' },
+        { start: uint(0), end: uint(bodyState.w), type: 'uint', condition: '<' },
         ({ i }) => {
-          const bodyBase = i.mul(uint(BODY_BUFFER_STRIDE));
+          const bodyBase = capeIndex
+            .mul(uint(MAX_BODY_COLLIDERS * BODY_BUFFER_STRIDE))
+            .add(i.mul(uint(BODY_BUFFER_STRIDE)));
           const startRadius = this.bodyBuffer.element(bodyBase);
           const axisDepth = this.bodyBuffer.element(bodyBase.add(1));
           const lateralAxis = this.bodyBuffer.element(bodyBase.add(2));
@@ -727,9 +1729,9 @@ export class GpuCapeSimulation {
               .and(position.y.lessThanEqual(verticalBounds.y)),
             () => {
               const fromStart = position.sub(startRadius.xyz).toVar('bodyFromStart');
-              const particleDepth = fromStart.dot(this.backUniform).toVar('bodyParticleDepth');
+              const particleDepth = fromStart.dot(back).toVar('bodyParticleDepth');
               const particleLateral = fromStart
-                .sub(this.backUniform.mul(particleDepth))
+                .sub(back.mul(particleDepth))
                 .toVar('bodyParticleLateral');
               const progress = select(
                 lateralAxis.w.greaterThan(0.000_001),
@@ -738,7 +1740,7 @@ export class GpuCapeSimulation {
               );
               const closest = startRadius.xyz.add(axisDepth.xyz.mul(progress));
               const bodyDelta = position.sub(closest).toVar('bodyDelta');
-              const depth = bodyDelta.dot(this.backUniform).toVar('bodyDepth');
+              const depth = bodyDelta.dot(back).toVar('bodyDepth');
               const lateralSquared = bodyDelta.dot(bodyDelta)
                 .sub(depth.mul(depth))
                 .max(0)
@@ -747,13 +1749,80 @@ export class GpuCapeSimulation {
               If(lateralSquared.lessThan(radiusSquared), () => {
                 const normalizedLateral = lateralSquared.div(radiusSquared).clamp(0, 1);
                 const surfaceDepth = axisDepth.w.mul(float(1).sub(normalizedLateral).sqrt());
-                const penetration = surfaceDepth.sub(depth).max(0);
-                position.addAssign(this.backUniform.mul(penetration));
+                const backCorrection = surfaceDepth.sub(depth).max(0);
+                If(
+                  backCorrection.greaterThan(0)
+                    .and(depth.greaterThan(axisDepth.w.negate())),
+                  () => {
+                    const contactNormal = back.toVar('bodyContactNormal');
+                    const penetration = backCorrection.toVar('bodyPenetration');
+                    If(depth.lessThan(0), () => {
+                      // A front-side vertex exits laterally instead of being
+                      // teleported through the full body depth. Match WebGL's
+                      // topology-stable side; the center column falls back to
+                      // the particle's prior spatial side.
+                      const depthRatio = depth.div(axisDepth.w).clamp(-1, 0);
+                      const lateralBoundary = startRadius.w.mul(
+                        float(1).sub(depthRatio.mul(depthRatio)).max(0).sqrt(),
+                      );
+                      const spatialSide = previousPosition
+                        .sub(anchorState.xyz)
+                        .dot(bodyRight);
+                      const preferredSide = select(
+                        topologySide.abs().greaterThan(0.000_001),
+                        topologySide,
+                        spatialSide,
+                      ).toVar('bodyPreferredSide');
+                      If(preferredSide.abs().greaterThan(0.000_001), () => {
+                        contactNormal.assign(bodyRight.mul(
+                          select(preferredSide.greaterThan(0), 1, -1),
+                        ));
+                      }).Else(() => {
+                        const preferredDelta = previousPosition.sub(closest)
+                          .toVar('bodyPreferredDelta');
+                        const preferredDepth = preferredDelta.dot(back);
+                        const preferredLateral = preferredDelta
+                          .sub(back.mul(preferredDepth))
+                          .mul(vec3(1, 0, 1))
+                          .toVar('bodyPreferredLateral');
+                        If(preferredLateral.length().greaterThan(0.000_001), () => {
+                          contactNormal.assign(preferredLateral.normalize());
+                        }).ElseIf(lateralSquared.greaterThan(0.000_001), () => {
+                          contactNormal.assign(
+                            bodyDelta.sub(back.mul(depth)).normalize(),
+                          );
+                        }).Else(() => {
+                          contactNormal.assign(bodyRight);
+                        });
+                      });
+                      const lateralCorrection = lateralBoundary
+                        .sub(bodyDelta.dot(contactNormal));
+                      penetration.assign(select(
+                        lateralCorrection.greaterThan(0),
+                        lateralCorrection,
+                        backCorrection,
+                      ));
+                    });
+                    If(penetration.greaterThan(0), () => {
+                      const correction = contactNormal.mul(penetration);
+                      position.addAssign(correction);
+                      previousPosition.addAssign(correction);
+                      const inwardMotion = position.sub(previousPosition)
+                        .dot(contactNormal)
+                        .min(0);
+                      previousPosition.addAssign(contactNormal.mul(inwardMotion));
+                      bodyCorrectionUsed.addAssign(penetration);
+                      bodyCorrectionThisPass.addAssign(penetration);
+                    });
+                  },
+                );
               });
             },
           );
         },
       );
+
+      const worldContactStart = position.toVar('worldContactStart');
 
       position.z.assign(position.z.clamp(CAVE.endZ + 0.08, CAVE.startZ - 0.08));
       const caveSegmentPosition = float(CAVE.startZ).sub(position.z)
@@ -882,16 +1951,17 @@ export class GpuCapeSimulation {
       Loop(
         {
           start: uint(0),
-          end: uint(this.worldSphereCountUniform),
+          end: uint(worldCounts.x),
           type: 'uint',
           condition: '<',
         },
         ({ i }) => {
-          const sphere = this.worldSphereBuffer.element(i);
+          const sphere = this.worldSphereBuffer.element(
+            capeIndex.mul(uint(MAX_WORLD_SPHERES)).add(i),
+          );
           const sphereDelta = position.sub(sphere.xyz).toVar('sphereDelta');
           const sphereDistanceSquared = sphereDelta.dot(sphereDelta).toVar('sphereDistanceSquared');
           If(sphereDistanceSquared.lessThan(sphere.w.mul(sphere.w)), () => {
-            worldContactEvents.addAssign(1);
             const sphereDistance = sphereDistanceSquared.sqrt().toVar('sphereDistance');
             const sphereNormal = vec3(0, 1, 0).toVar('sphereNormal');
             If(sphereDistance.greaterThan(0.000_001), () => {
@@ -927,9 +1997,11 @@ export class GpuCapeSimulation {
       );
 
       Loop(
-        { start: uint(0), end: uint(this.rockCountUniform), type: 'uint', condition: '<' },
+        { start: uint(0), end: uint(worldCounts.y), type: 'uint', condition: '<' },
         ({ i }) => {
-          const rockBase = i.mul(uint(ROCK_BUFFER_STRIDE));
+          const rockBase = capeIndex
+            .mul(uint(MAX_WORLD_ROCKS * ROCK_BUFFER_STRIDE))
+            .add(i.mul(uint(ROCK_BUFFER_STRIDE)));
           const rockCenterLimit = this.rockBuffer.element(rockBase);
           const rockMinimum = this.rockBuffer.element(rockBase.add(1));
           const rockMaximum = this.rockBuffer.element(rockBase.add(2));
@@ -1006,7 +2078,6 @@ export class GpuCapeSimulation {
                     .and(sweepEntry.greaterThanEqual(0))
                     .and(sweepEntry.lessThanEqual(1)),
                   () => {
-                    worldContactEvents.addAssign(1);
                     rockSweepResolved.assign(bool(true));
                     const sweepHit = previousPosition.add(sweepMotion.mul(sweepEntry))
                       .toVar('rockSweepHit');
@@ -1143,7 +2214,6 @@ export class GpuCapeSimulation {
             });
             const signedRockDistance = select(insideRock, rockDistance.negate(), rockDistance);
             If(signedRockDistance.lessThan(CLOTH_ROCK_CLEARANCE), () => {
-              worldContactEvents.addAssign(1);
               const belowWalkableShoulder = position.y.lessThanEqual(rockMinimum.w);
               const trappedAtFloor = rockNormal.y.lessThan(0)
                 .and(position.y.lessThanEqual(caveFloor.add(CLOTH_ROCK_CLEARANCE * 2)));
@@ -1242,22 +2312,33 @@ export class GpuCapeSimulation {
         maximumX.assign(center.add(0.08));
       });
       position.x.assign(position.x.clamp(minimumX, maximumX));
-      const contactCorrection = position.sub(contactStart).toVar('contactCorrection');
-      previousPosition.addAssign(contactCorrection);
-      If(contactCorrection.dot(contactCorrection).greaterThan(0.000_000_1), () => {
-        const contactNormal = contactCorrection.normalize().toVar('contactNormal');
+      const worldContactCorrection = position.sub(worldContactStart)
+        .toVar('worldContactCorrection');
+      If(
+        bodyCorrectionThisPass.greaterThan(BODY_CONTACT_RECONCILIATION_START)
+          .or(worldContactCorrection.dot(worldContactCorrection).greaterThan(0.000_000_1)),
+        () => {
+          atomicOr(this.materialContactFlagBuffer.element(capeIndex), uint(1));
+        },
+      );
+      // Point-body corrections already updated previousPosition sequentially,
+      // exactly like WebGL. Only the later fixed-world displacement remains.
+      previousPosition.addAssign(worldContactCorrection);
+      If(worldContactCorrection.dot(worldContactCorrection).greaterThan(0.000_000_1), () => {
+        const contactNormal = worldContactCorrection.normalize().toVar('contactNormal');
         const inwardMotion = position.sub(previousPosition)
           .dot(contactNormal)
           .min(0)
           .toVar('contactInwardMotion');
         previousPosition.addAssign(contactNormal.mul(inwardMotion));
       });
+      }
       this.previousBuffer.element(index).assign(vec4(
         previousPosition,
         rockCorrectionUsed.add(select(rockSweepResolved, 1, 0)),
       ));
 
-        target.element(index).assign(vec4(position, worldContactEvents));
+        target.element(index).assign(vec4(position, bodyCorrectionUsed));
       });
       return float(0);
     }, 'float').setLayout({
@@ -1272,9 +2353,8 @@ export class GpuCapeSimulation {
 
   /**
    * Complementary rock-edge/cloth-face contact. Vertex collision handles
-   * ordinary contact; this restores a face-only crossing to the particle's
-   * previous continuous position without scatter writes or a corrective
-   * impulse that can grow into a spike.
+   * ordinary contact; this applies bounded, velocity-neutral separation only
+   * when a rock crosses the triangle interior while all vertices remain clear.
    */
   private createRockFaceColorFunction(
     buffer: typeof this.positionBuffer,
@@ -1558,7 +2638,12 @@ export class GpuCapeSimulation {
       inputs: [{ name: 'sample', type: 'vec3' }],
     }) : null;
 
-    return Fn<readonly [THREE.Node<'uint'>], THREE.Node<'float'>>(([color]) => {
+    return Fn<
+      readonly [THREE.Node<'uint'>, THREE.Node<'uint'>, THREE.Node<'uint'>],
+      THREE.Node<'float'>
+    >(([color, triangleSlot, capeIndex]) => {
+      const capeBase = capeIndex.mul(uint(PARTICLE_COUNT));
+      const worldCounts = this.worldCountUniform.element(capeIndex);
       const orientation = color.mod(uint(2));
       const columnParity = color.div(uint(2)).mod(uint(2));
       const rowParity = color.div(uint(4));
@@ -1568,7 +2653,6 @@ export class GpuCapeSimulation {
         uint(Math.ceil((CAPE.rows - 1) / 2)),
         uint(Math.floor((CAPE.rows - 1) / 2)),
       );
-      const triangleSlot = instanceIndex;
       If(triangleSlot.lessThan(coloredRows.mul(coloredColumns)), () => {
         const localRow = triangleSlot.div(coloredColumns);
         const localColumn = triangleSlot.mod(coloredColumns);
@@ -1576,13 +2660,16 @@ export class GpuCapeSimulation {
         const cellColumn = columnParity.add(localColumn.mul(2));
         const topLeft = cellRow.mul(uint(CAPE.columns)).add(cellColumn);
         const bottomLeft = topLeft.add(uint(CAPE.columns));
-        const firstIndex = select(orientation.equal(uint(0)), topLeft, bottomLeft);
-        const secondIndex = select(
+        const firstLocalIndex = select(orientation.equal(uint(0)), topLeft, bottomLeft);
+        const secondLocalIndex = select(
           orientation.equal(uint(0)),
           bottomLeft,
           bottomLeft.add(1),
         );
-        const thirdIndex = topLeft.add(1);
+        const thirdLocalIndex = topLeft.add(1);
+        const firstIndex = capeBase.add(firstLocalIndex);
+        const secondIndex = capeBase.add(secondLocalIndex);
+        const thirdIndex = capeBase.add(thirdLocalIndex);
         const first = buffer.element(firstIndex).xyz;
         const second = buffer.element(secondIndex).xyz;
         const third = buffer.element(thirdIndex).xyz;
@@ -1618,16 +2705,18 @@ export class GpuCapeSimulation {
           : triangleMaximum;
         const faceCorrection = vec3(0).toVar('rockFaceCorrection');
         const hadFaceContact = bool(false).toVar('rockFaceHadContact');
-        const previousTriangleSafe = bool(true).toVar('rockFacePreviousTriangleSafe');
         Loop(
           {
             start: uint(0),
-            end: uint(this.worldSphereCountUniform),
+            end: uint(worldCounts.x),
             type: 'uint',
             condition: '<',
           },
           ({ i: sphereIndex }) => {
-            const sphere = this.worldSphereBuffer.element(sphereIndex);
+            const sphere = this.worldSphereBuffer.element(
+              capeIndex.mul(uint(MAX_WORLD_SPHERES)).add(sphereIndex),
+            );
+            const sphereRadiusSquared = sphere.w.mul(sphere.w);
             const overlapsSphere = faceTriangleMaximum.x
               .greaterThanEqual(sphere.x.sub(sphere.w))
               .and(faceTriangleMinimum.x.lessThanEqual(sphere.x.add(sphere.w)))
@@ -1636,15 +2725,6 @@ export class GpuCapeSimulation {
               .and(faceTriangleMaximum.z.greaterThanEqual(sphere.z.sub(sphere.w)))
               .and(faceTriangleMinimum.z.lessThanEqual(sphere.z.add(sphere.w)));
             If(overlapsSphere, () => {
-              const previousIntersects = sphereIntersectsTriangle(
-                sphere,
-                previousFirst,
-                previousSecond,
-                previousThird,
-              );
-              If(previousIntersects, () => {
-                previousTriangleSafe.assign(bool(false));
-              });
               const currentIntersects = sphereIntersectsTriangle(
                 sphere,
                 first,
@@ -1669,7 +2749,14 @@ export class GpuCapeSimulation {
                   sweptThirdThreeQuarter,
                 ))
                 : currentIntersects;
-              If(intersects, () => {
+              const triangleHasVertexContact = first.sub(sphere.xyz).dot(first.sub(sphere.xyz))
+                .lessThanEqual(sphereRadiusSquared.add(0.000_001))
+                .or(second.sub(sphere.xyz).dot(second.sub(sphere.xyz))
+                  .lessThanEqual(sphereRadiusSquared.add(0.000_001)))
+                .or(third.sub(sphere.xyz).dot(third.sub(sphere.xyz))
+                  .lessThanEqual(sphereRadiusSquared.add(0.000_001)))
+                .toVar('sphereTriangleHasVertexContact');
+              If(intersects.and(triangleHasVertexContact.not()), () => {
                 const centroid = first.add(second).add(third).div(3);
                 const resolvedNormal = centroid.sub(sphere.xyz)
                   .toVar('sphereFaceResolvedNormal');
@@ -1687,10 +2774,11 @@ export class GpuCapeSimulation {
           },
         );
         Loop(
-          { start: uint(0), end: uint(this.rockCountUniform), type: 'uint', condition: '<' },
+          { start: uint(0), end: uint(worldCounts.y), type: 'uint', condition: '<' },
           ({ i: rockIndex }) => {
-            const rockBase = rockIndex.mul(uint(ROCK_BUFFER_STRIDE));
-            const rockCenterLimit = this.rockBuffer.element(rockBase);
+            const rockBase = capeIndex
+              .mul(uint(MAX_WORLD_ROCKS * ROCK_BUFFER_STRIDE))
+              .add(rockIndex.mul(uint(ROCK_BUFFER_STRIDE)));
             const rockMinimum = this.rockBuffer.element(rockBase.add(1));
             const rockMaximum = this.rockBuffer.element(rockBase.add(2));
             const overlapsRock = faceTriangleMaximum.x.greaterThanEqual(rockMinimum.x)
@@ -1700,22 +2788,13 @@ export class GpuCapeSimulation {
               .and(faceTriangleMaximum.z.greaterThanEqual(rockMinimum.z))
               .and(faceTriangleMinimum.z.lessThanEqual(rockMaximum.z));
             If(overlapsRock, () => {
-              const previousOverlapsRock = previousTriangleMaximum.x
-                .greaterThanEqual(rockMinimum.x)
-                .and(previousTriangleMinimum.x.lessThanEqual(rockMaximum.x))
-                .and(previousTriangleMaximum.y.greaterThanEqual(rockMinimum.y))
-                .and(previousTriangleMinimum.y.lessThanEqual(rockMaximum.y))
-                .and(previousTriangleMaximum.z.greaterThanEqual(rockMinimum.z))
-                .and(previousTriangleMinimum.z.lessThanEqual(rockMaximum.z));
               const triangleIntersects = bool(false).toVar('rockFaceTriangleIntersects');
-              const previousTriangleIntersects = bool(false)
-                .toVar('rockFacePreviousTriangleIntersects');
-              const previousFirstInside = previousOverlapsRock
-                .toVar('rockFacePreviousFirstInside');
-              const previousSecondInside = previousOverlapsRock
-                .toVar('rockFacePreviousSecondInside');
-              const previousThirdInside = previousOverlapsRock
-                .toVar('rockFacePreviousThirdInside');
+              const firstSurfaceDistance = float(-1_000_000)
+                .toVar('rockFaceFirstSurfaceDistance');
+              const secondSurfaceDistance = float(-1_000_000)
+                .toVar('rockFaceSecondSurfaceDistance');
+              const thirdSurfaceDistance = float(-1_000_000)
+                .toVar('rockFaceThirdSurfaceDistance');
               Loop(
                 {
                   start: uint(0),
@@ -1729,6 +2808,15 @@ export class GpuCapeSimulation {
                   const rockSecond = this.rockBuffer.element(rockFaceBase.add(1)).xyz;
                   const rockThird = this.rockBuffer.element(rockFaceBase.add(2)).xyz;
                   const rockPlane = this.rockBuffer.element(rockFaceBase.add(3));
+                  firstSurfaceDistance.assign(
+                    firstSurfaceDistance.max(rockPlane.xyz.dot(first).sub(rockPlane.w)),
+                  );
+                  secondSurfaceDistance.assign(
+                    secondSurfaceDistance.max(rockPlane.xyz.dot(second).sub(rockPlane.w)),
+                  );
+                  thirdSurfaceDistance.assign(
+                    thirdSurfaceDistance.max(rockPlane.xyz.dot(third).sub(rockPlane.w)),
+                  );
                   const rockFaceMinimum = rockFirst.min(rockSecond).min(rockThird);
                   const rockFaceMaximum = rockFirst.max(rockSecond).max(rockThird);
                   const overlapsRockFace = faceTriangleMaximum.x
@@ -1775,52 +2863,19 @@ export class GpuCapeSimulation {
                       triangleIntersects.assign(bool(true));
                     });
                   });
-                  If(previousOverlapsRock, () => {
-                    If(rockPlane.xyz.dot(previousFirst).sub(rockPlane.w).greaterThan(0.000_001), () => {
-                      previousFirstInside.assign(bool(false));
-                    });
-                    If(rockPlane.xyz.dot(previousSecond).sub(rockPlane.w).greaterThan(0.000_001), () => {
-                      previousSecondInside.assign(bool(false));
-                    });
-                    If(rockPlane.xyz.dot(previousThird).sub(rockPlane.w).greaterThan(0.000_001), () => {
-                      previousThirdInside.assign(bool(false));
-                    });
-                    const previousOverlapsRockFace = previousTriangleMaximum.x
-                      .greaterThanEqual(rockFaceMinimum.x)
-                      .and(previousTriangleMinimum.x.lessThanEqual(rockFaceMaximum.x))
-                      .and(previousTriangleMaximum.y.greaterThanEqual(rockFaceMinimum.y))
-                      .and(previousTriangleMinimum.y.lessThanEqual(rockFaceMaximum.y))
-                      .and(previousTriangleMaximum.z.greaterThanEqual(rockFaceMinimum.z))
-                      .and(previousTriangleMinimum.z.lessThanEqual(rockFaceMaximum.z));
-                    If(previousOverlapsRockFace, () => {
-                      const previousIntersects = trianglesIntersect(
-                        previousFirst,
-                        previousSecond,
-                        previousThird,
-                        rockFirst,
-                        rockSecond,
-                        rockThird,
-                      );
-                      If(previousIntersects, () => {
-                        previousTriangleIntersects.assign(bool(true));
-                      });
-                    });
-                  });
                 },
               );
-              If(
-                previousTriangleIntersects
-                  .or(previousFirstInside)
-                  .or(previousSecondInside)
-                  .or(previousThirdInside),
-                () => {
-                  previousTriangleSafe.assign(bool(false));
-                },
-              );
-              If(triangleIntersects, () => {
+              const triangleHasVertexContact = firstSurfaceDistance
+                .lessThanEqual(CLOTH_ROCK_CLEARANCE + 0.000_5)
+                .or(secondSurfaceDistance.lessThanEqual(CLOTH_ROCK_CLEARANCE + 0.000_5))
+                .or(thirdSurfaceDistance.lessThanEqual(CLOTH_ROCK_CLEARANCE + 0.000_5))
+                .toVar('rockTriangleHasVertexContact');
+              If(triangleIntersects.and(triangleHasVertexContact.not()), () => {
                 const centroid = first.add(second).add(third).div(3)
                   .toVar('rockFaceCentroid');
-                const resolvedNormal = centroid.sub(rockCenterLimit.xyz)
+                const resolvedNormal = centroid.sub(
+                  this.rockBuffer.element(rockBase).xyz,
+                )
                   .toVar('rockFaceResolvedNormal');
                 If(resolvedNormal.dot(resolvedNormal).greaterThan(0.000_001), () => {
                   resolvedNormal.assign(resolvedNormal.normalize());
@@ -1861,39 +2916,25 @@ export class GpuCapeSimulation {
           If(caveFaceCorrection.abs().greaterThan(0.000_001), () => {
             faceCorrection.x.addAssign(caveFaceCorrection.clamp(-0.015, 0.015));
             hadFaceContact.assign(bool(true));
-            // A previous cloth face can pierce the same curved wall, so cave
-            // recovery must use the sampled separating correction, not rollback.
-            previousTriangleSafe.assign(bool(false));
           });
         }
         const correctionLength = faceCorrection.length().toVar('rockFaceCorrectionLength');
         If(correctionLength.greaterThan(0.015), () => {
           faceCorrection.mulAssign(float(0.015).div(correctionLength));
         });
-        If(hadFaceContact.and(previousTriangleSafe), () => {
-          const restorePrevious = (
-            particleIndex: THREE.Node<'uint'>,
-            previousPosition: THREE.Node<'vec3'>,
-          ): void => {
-            If(particleIndex.greaterThanEqual(uint(CAPE.columns)), () => {
-              const state = buffer.element(particleIndex);
-              buffer.element(particleIndex).assign(vec4(
-                previousPosition,
-                state.w.add(1),
-              ));
-            });
-          };
-          restorePrevious(firstIndex, previousFirst);
-          restorePrevious(secondIndex, previousSecond);
-          restorePrevious(thirdIndex, previousThird);
-        }).ElseIf(hadFaceContact, () => {
+        If(hadFaceContact, () => {
+          atomicOr(this.materialContactFlagBuffer.element(capeIndex), uint(1));
+        });
+        If(hadFaceContact, () => {
           const applyCorrection = (particleIndex: THREE.Node<'uint'>): void => {
-            If(particleIndex.greaterThanEqual(uint(CAPE.columns)), () => {
+            If(
+              particleIndex.mod(uint(PARTICLE_COUNT)).greaterThanEqual(uint(CAPE.columns)),
+              () => {
               const state = buffer.element(particleIndex);
               const corrected = state.xyz.add(faceCorrection).toVar('correctedRockFace');
               buffer.element(particleIndex).assign(vec4(
                 corrected,
-                state.w.add(1),
+                state.w,
               ));
               const previousState = this.previousBuffer.element(particleIndex);
               const correctedPrevious = previousState.xyz
@@ -1904,11 +2945,12 @@ export class GpuCapeSimulation {
                 .dot(faceNormal)
                 .min(0);
               correctedPrevious.addAssign(faceNormal.mul(inwardMotion));
-              this.previousBuffer.element(particleIndex).assign(vec4(
+                this.previousBuffer.element(particleIndex).assign(vec4(
                 correctedPrevious,
                 previousState.w,
               ));
-            });
+              },
+            );
           };
           applyCorrection(firstIndex);
           applyCorrection(secondIndex);
@@ -1919,21 +2961,33 @@ export class GpuCapeSimulation {
     }, 'float').setLayout({
       name: `capeRockFaceColorPass${passName}`,
       type: 'float',
-      inputs: [{ name: 'color', type: 'uint' }],
+      inputs: [
+        { name: 'color', type: 'uint' },
+        { name: 'triangleSlot', type: 'uint' },
+        { name: 'capeIndex', type: 'uint' },
+      ],
     });
   }
 
   /**
-   * Resolves body-capsule points against cloth faces with a graph-colored
-   * triangle schedule. Triangles in one color share no vertices, so an
-   * invocation can apply the CPU solver's barycentric correction to all
-   * three particles without atomics or competing scatter writes.
+   * Adds one fixed barycentric cloth sample at each triangle centroid. Unlike
+   * the removed inverse body-point sweep, this follows the same point-capsule
+   * query as real cloth particles and activates only when every real vertex is
+   * already clear. One deepest correction is redistributed to the triangle so
+   * overlapping character capsules cannot turn it into a rigid manifold.
    */
-  private createBodyFaceColorFunction(
+  private createVirtualBodyContactColorFunction(
     buffer: typeof this.positionBuffer,
     passName: string,
   ) {
-    return Fn<readonly [THREE.Node<'uint'>], THREE.Node<'float'>>(([color]) => {
+    return Fn<
+      readonly [THREE.Node<'uint'>, THREE.Node<'uint'>, THREE.Node<'uint'>],
+      THREE.Node<'float'>
+    >(([color, triangleSlot, capeIndex]) => {
+      const capeBase = capeIndex.mul(uint(PARTICLE_COUNT));
+      const anchorState = this.anchorStateUniform.element(capeIndex);
+      const bodyState = this.bodyStateUniform.element(capeIndex);
+      const back = bodyState.xyz;
       const orientation = color.mod(uint(2));
       const columnParity = color.div(uint(2)).mod(uint(2));
       const rowParity = color.div(uint(4));
@@ -1943,7 +2997,6 @@ export class GpuCapeSimulation {
         uint(Math.ceil((CAPE.rows - 1) / 2)),
         uint(Math.floor((CAPE.rows - 1) / 2)),
       );
-      const triangleSlot = instanceIndex;
       If(triangleSlot.lessThan(coloredRows.mul(coloredColumns)), () => {
         const localRow = triangleSlot.div(coloredColumns);
         const localColumn = triangleSlot.mod(coloredColumns);
@@ -1951,214 +3004,245 @@ export class GpuCapeSimulation {
         const cellColumn = columnParity.add(localColumn.mul(2));
         const topLeft = cellRow.mul(uint(CAPE.columns)).add(cellColumn);
         const bottomLeft = topLeft.add(uint(CAPE.columns));
-        const firstIndex = select(orientation.equal(uint(0)), topLeft, bottomLeft);
-        const secondIndex = select(
+        const firstLocalIndex = select(orientation.equal(uint(0)), topLeft, bottomLeft);
+        const secondLocalIndex = select(
           orientation.equal(uint(0)),
           bottomLeft,
           bottomLeft.add(1),
         );
-        const thirdIndex = topLeft.add(1);
+        const thirdLocalIndex = topLeft.add(1);
+        const firstIndex = capeBase.add(firstLocalIndex);
+        const secondIndex = capeBase.add(secondLocalIndex);
+        const thirdIndex = capeBase.add(thirdLocalIndex);
         const firstState = buffer.element(firstIndex);
         const secondState = buffer.element(secondIndex);
         const thirdState = buffer.element(thirdIndex);
-        const firstStart = firstState.xyz.toVar('bodyFaceFirstStart');
-        const secondStart = secondState.xyz.toVar('bodyFaceSecondStart');
-        const thirdStart = thirdState.xyz.toVar('bodyFaceThirdStart');
-        const first = firstStart.toVar('bodyFaceFirst');
-        const second = secondStart.toVar('bodyFaceSecond');
-        const third = thirdStart.toVar('bodyFaceThird');
-        const firstMass = select(firstIndex.lessThan(uint(CAPE.columns)), 0, 1);
-        const secondMass = select(secondIndex.lessThan(uint(CAPE.columns)), 0, 1);
-        const thirdMass = select(thirdIndex.lessThan(uint(CAPE.columns)), 0, 1);
-        const triangleMinimum = first.min(second).min(third);
-        const triangleMaximum = first.max(second).max(third);
+        const first = firstState.xyz;
+        const second = secondState.xyz;
+        const third = thirdState.xyz;
+        const firstMass = select(firstLocalIndex.lessThan(uint(CAPE.columns)), 0, 1);
+        const secondMass = select(secondLocalIndex.lessThan(uint(CAPE.columns)), 0, 1);
+        const thirdMass = select(thirdLocalIndex.lessThan(uint(CAPE.columns)), 0, 1);
+        const virtualPoint = first.add(second).add(third)
+          .mul(VIRTUAL_BODY_BARYCENTRIC_WEIGHT)
+          .toVar('virtualBodyPoint');
+        const previousVirtualPoint = this.previousBuffer.element(firstIndex).xyz
+          .add(this.previousBuffer.element(secondIndex).xyz)
+          .add(this.previousBuffer.element(thirdIndex).xyz)
+          .mul(VIRTUAL_BODY_BARYCENTRIC_WEIGHT)
+          .toVar('previousVirtualBodyPoint');
+        const virtualColumn = float(firstLocalIndex.mod(uint(CAPE.columns)))
+          .add(float(secondLocalIndex.mod(uint(CAPE.columns))))
+          .add(float(thirdLocalIndex.mod(uint(CAPE.columns))))
+          .mul(VIRTUAL_BODY_BARYCENTRIC_WEIGHT);
+        const topologySide = virtualColumn.div(CAPE.columns - 1).sub(0.5);
+        const bodyRight = vec3(
+          back.z,
+          0,
+          back.x.negate(),
+        ).normalize().toVar('virtualBodyRight');
+        const virtualCorrection = vec3(0).toVar('virtualBodyCorrection');
+        const virtualCorrectionLengthSquared = float(0)
+          .toVar('virtualBodyCorrectionLengthSquared');
 
         Loop(
-          { start: uint(0), end: uint(this.bodyCountUniform), type: 'uint', condition: '<' },
-          ({ i: bodyIndex }) => {
-            const bodyBase = bodyIndex.mul(uint(BODY_BUFFER_STRIDE));
+          { start: uint(0), end: uint(bodyState.w), type: 'uint', condition: '<' },
+          ({ i }) => {
+            const bodyBase = capeIndex
+              .mul(uint(MAX_BODY_COLLIDERS * BODY_BUFFER_STRIDE))
+              .add(i.mul(uint(BODY_BUFFER_STRIDE)));
             const startRadius = this.bodyBuffer.element(bodyBase);
             const axisDepth = this.bodyBuffer.element(bodyBase.add(1));
-            const faceInfo = this.bodyBuffer.element(bodyBase.add(4));
-            const segments = uint(faceInfo.x);
-            const lateralRadius = faceInfo.y;
-            const depthRadius = faceInfo.z;
-            const boundsRadius = lateralRadius.max(depthRadius);
-            const bodyEnd = startRadius.xyz.add(axisDepth.xyz);
-            const bodyMinimum = startRadius.xyz.min(bodyEnd).sub(boundsRadius);
-            const bodyMaximum = startRadius.xyz.max(bodyEnd).add(boundsRadius);
-            const overlapsBody = bodyMaximum.x.greaterThanEqual(triangleMinimum.x)
-              .and(bodyMinimum.x.lessThanEqual(triangleMaximum.x))
-              .and(bodyMaximum.y.greaterThanEqual(triangleMinimum.y))
-              .and(bodyMinimum.y.lessThanEqual(triangleMaximum.y))
-              .and(bodyMaximum.z.greaterThanEqual(triangleMinimum.z))
-              .and(bodyMinimum.z.lessThanEqual(triangleMaximum.z));
-            If(overlapsBody, () => {
-              Loop(
-                { start: uint(0), end: segments.add(1), type: 'uint', condition: '<' },
-                ({ i: sampleIndex }) => {
-                  const progress = select(
-                    segments.greaterThan(uint(0)),
-                    float(sampleIndex).div(float(segments)),
-                    0,
-                  );
-                  const center = startRadius.xyz.add(axisDepth.xyz.mul(progress));
-                  const overlapsBounds = center.x.add(boundsRadius)
-                    .greaterThanEqual(triangleMinimum.x)
-                    .and(center.x.sub(boundsRadius).lessThanEqual(triangleMaximum.x))
-                    .and(center.y.add(boundsRadius).greaterThanEqual(triangleMinimum.y))
-                    .and(center.y.sub(boundsRadius).lessThanEqual(triangleMaximum.y))
-                    .and(center.z.add(boundsRadius).greaterThanEqual(triangleMinimum.z))
-                    .and(center.z.sub(boundsRadius).lessThanEqual(triangleMaximum.z));
-                  If(overlapsBounds, () => {
-                    const ab = second.sub(first).toVar('coloredBodyFaceAB');
-                    const ac = third.sub(first).toVar('coloredBodyFaceAC');
-                    const ap = center.sub(first).toVar('coloredBodyFaceAP');
-                    const d1 = ab.dot(ap).toVar('coloredBodyFaceD1');
-                    const d2 = ac.dot(ap).toVar('coloredBodyFaceD2');
-                    const bp = center.sub(second).toVar('coloredBodyFaceBP');
-                    const d3 = ab.dot(bp).toVar('coloredBodyFaceD3');
-                    const d4 = ac.dot(bp).toVar('coloredBodyFaceD4');
-                    const cp = center.sub(third).toVar('coloredBodyFaceCP');
-                    const d5 = ab.dot(cp).toVar('coloredBodyFaceD5');
-                    const d6 = ac.dot(cp).toVar('coloredBodyFaceD6');
-                    const vc = d1.mul(d4).sub(d3.mul(d2)).toVar('coloredBodyFaceVC');
-                    const vb = d5.mul(d2).sub(d1.mul(d6)).toVar('coloredBodyFaceVB');
-                    const va = d3.mul(d6).sub(d5.mul(d4)).toVar('coloredBodyFaceVA');
-                    const closest = first.toVar('coloredBodyFaceClosest');
-                    const barycentric = vec3(1, 0, 0).toVar('coloredBodyFaceBarycentric');
-                    If(d1.lessThanEqual(0).and(d2.lessThanEqual(0)), () => {
-                      closest.assign(first);
-                      barycentric.assign(vec3(1, 0, 0));
-                    }).ElseIf(d3.greaterThanEqual(0).and(d4.lessThanEqual(d3)), () => {
-                      closest.assign(second);
-                      barycentric.assign(vec3(0, 1, 0));
-                    }).ElseIf(
-                      vc.lessThanEqual(0).and(d1.greaterThanEqual(0)).and(d3.lessThanEqual(0)),
-                      () => {
-                        const edge = d1.div(d1.sub(d3).max(0.000_001));
-                        closest.assign(first.add(ab.mul(edge)));
-                        barycentric.assign(vec3(float(1).sub(edge), edge, 0));
-                      },
-                    ).ElseIf(d6.greaterThanEqual(0).and(d5.lessThanEqual(d6)), () => {
-                      closest.assign(third);
-                      barycentric.assign(vec3(0, 0, 1));
-                    }).ElseIf(
-                      vb.lessThanEqual(0).and(d2.greaterThanEqual(0)).and(d6.lessThanEqual(0)),
-                      () => {
-                        const edge = d2.div(d2.sub(d6).max(0.000_001));
-                        closest.assign(first.add(ac.mul(edge)));
-                        barycentric.assign(vec3(float(1).sub(edge), 0, edge));
-                      },
-                    ).ElseIf(
-                      va.lessThanEqual(0)
-                        .and(d4.sub(d3).greaterThanEqual(0))
-                        .and(d5.sub(d6).greaterThanEqual(0)),
-                      () => {
-                        const firstEdge = d4.sub(d3);
-                        const secondEdge = d5.sub(d6);
-                        const edge = firstEdge.div(firstEdge.add(secondEdge).max(0.000_001));
-                        closest.assign(second.add(third.sub(second).mul(edge)));
-                        barycentric.assign(vec3(0, float(1).sub(edge), edge));
-                      },
-                    ).Else(() => {
-                      const reciprocal = va.add(vb).add(vc).max(0.000_001).reciprocal();
-                      const secondWeight = vb.mul(reciprocal);
-                      const thirdWeight = vc.mul(reciprocal);
-                      barycentric.assign(vec3(
-                        float(1).sub(secondWeight).sub(thirdWeight),
-                        secondWeight,
-                        thirdWeight,
-                      ));
-                      closest.assign(first.add(ab.mul(secondWeight)).add(ac.mul(thirdWeight)));
-                    });
+            const lateralAxis = this.bodyBuffer.element(bodyBase.add(2));
+            const verticalBounds = this.bodyBuffer.element(bodyBase.add(3));
+            const radiusSquared = startRadius.w.mul(startRadius.w);
 
-                    const delta = closest.sub(center).toVar('coloredBodyFaceDelta');
-                    const depth = delta.dot(this.backUniform).toVar('coloredBodyFaceDepth');
-                    const lateralSquared = delta.dot(delta)
-                      .sub(depth.mul(depth))
-                      .max(0)
-                      .toVar('coloredBodyFaceLateralSquared');
-                    If(lateralSquared.lessThan(lateralRadius.mul(lateralRadius)), () => {
-                      const surfaceDepth = depthRadius.mul(
-                        float(1).sub(
-                          lateralSquared.div(lateralRadius.mul(lateralRadius)),
-                        ).max(0).sqrt(),
-                      );
-                      const penetration = surfaceDepth.sub(depth).max(0);
-                      const denominator = firstMass.mul(barycentric.x.mul(barycentric.x))
-                        .add(secondMass.mul(barycentric.y.mul(barycentric.y)))
-                        .add(thirdMass.mul(barycentric.z.mul(barycentric.z)));
-                      If(
-                        penetration.greaterThan(0)
-                          .and(denominator.greaterThan(0.000_001)),
-                        () => {
-                          const lambda = penetration.div(denominator);
-                          first.addAssign(this.backUniform.mul(
-                            firstMass.mul(barycentric.x).mul(lambda),
-                          ));
-                          second.addAssign(this.backUniform.mul(
-                            secondMass.mul(barycentric.y).mul(lambda),
-                          ));
-                          third.addAssign(this.backUniform.mul(
-                            thirdMass.mul(barycentric.z).mul(lambda),
-                          ));
-                        },
-                      );
-                    });
-                  });
-                },
+            const pointPenetrates = (sample: THREE.Node<'vec3'>): THREE.Node<'bool'> => {
+              const fromStart = sample.sub(startRadius.xyz);
+              const sampleDepth = fromStart.dot(back);
+              const sampleLateral = fromStart.sub(back.mul(sampleDepth));
+              const progress = select(
+                lateralAxis.w.greaterThan(0.000_001),
+                sampleLateral.dot(lateralAxis.xyz).div(lateralAxis.w).clamp(0, 1),
+                0,
               );
+              const closest = startRadius.xyz.add(axisDepth.xyz.mul(progress));
+              const delta = sample.sub(closest);
+              const depth = delta.dot(back);
+              const lateralSquared = delta.dot(delta).sub(depth.mul(depth)).max(0);
+              const surfaceDepth = axisDepth.w.mul(
+                float(1).sub(lateralSquared.div(radiusSquared).clamp(0, 1)).sqrt(),
+              );
+              return sample.y.greaterThanEqual(verticalBounds.x)
+                .and(sample.y.lessThanEqual(verticalBounds.y))
+                .and(lateralSquared.lessThan(radiusSquared))
+                .and(surfaceDepth.sub(depth).greaterThan(0))
+                .and(depth.greaterThan(axisDepth.w.negate()));
+            };
+
+            const triangleHasVertexContact = pointPenetrates(first)
+              .or(pointPenetrates(second))
+              .or(pointPenetrates(third))
+              .toVar('triangleHasVertexContact');
+            If(triangleHasVertexContact.not().and(pointPenetrates(virtualPoint)), () => {
+              const fromStart = virtualPoint.sub(startRadius.xyz)
+                .toVar('virtualBodyFromStart');
+              const pointDepth = fromStart.dot(back)
+                .toVar('virtualBodyPointDepth');
+              const pointLateral = fromStart.sub(back.mul(pointDepth))
+                .toVar('virtualBodyPointLateral');
+              const progress = select(
+                lateralAxis.w.greaterThan(0.000_001),
+                pointLateral.dot(lateralAxis.xyz).div(lateralAxis.w).clamp(0, 1),
+                0,
+              );
+              const closest = startRadius.xyz.add(axisDepth.xyz.mul(progress));
+              const delta = virtualPoint.sub(closest).toVar('virtualBodyDelta');
+              const depth = delta.dot(back).toVar('virtualBodyDepth');
+              const lateralSquared = delta.dot(delta).sub(depth.mul(depth)).max(0)
+                .toVar('virtualBodyLateralSquared');
+              const surfaceDepth = axisDepth.w.mul(
+                float(1).sub(lateralSquared.div(radiusSquared).clamp(0, 1)).sqrt(),
+              );
+              const contactNormal = back.toVar('virtualBodyContactNormal');
+              const penetration = surfaceDepth.sub(depth).max(0)
+                .toVar('virtualBodyPenetration');
+              If(depth.lessThan(0), () => {
+                const depthRatio = depth.div(axisDepth.w).clamp(-1, 0);
+                const lateralBoundary = startRadius.w.mul(
+                  float(1).sub(depthRatio.mul(depthRatio)).max(0).sqrt(),
+                );
+                const spatialSide = previousVirtualPoint
+                  .sub(anchorState.xyz)
+                  .dot(bodyRight);
+                const preferredSide = select(
+                  topologySide.abs().greaterThan(0.000_001),
+                  topologySide,
+                  spatialSide,
+                ).toVar('virtualBodyPreferredSide');
+                If(preferredSide.abs().greaterThan(0.000_001), () => {
+                  contactNormal.assign(bodyRight.mul(
+                    select(preferredSide.greaterThan(0), 1, -1),
+                  ));
+                }).Else(() => {
+                  const preferredDelta = previousVirtualPoint.sub(closest);
+                  const preferredDepth = preferredDelta.dot(back);
+                  const preferredLateral = preferredDelta
+                    .sub(back.mul(preferredDepth))
+                    .mul(vec3(1, 0, 1));
+                  If(preferredLateral.length().greaterThan(0.000_001), () => {
+                    contactNormal.assign(preferredLateral.normalize());
+                  }).ElseIf(lateralSquared.greaterThan(0.000_001), () => {
+                    contactNormal.assign(
+                      delta.sub(back.mul(depth)).normalize(),
+                    );
+                  }).Else(() => {
+                    contactNormal.assign(bodyRight);
+                  });
+                });
+                const lateralCorrection = lateralBoundary.sub(delta.dot(contactNormal));
+                penetration.assign(select(
+                  lateralCorrection.greaterThan(0),
+                  lateralCorrection,
+                  penetration,
+                ));
+              });
+              const candidate = contactNormal.mul(penetration)
+                .toVar('virtualBodyCandidate');
+              const candidateLengthSquared = candidate.dot(candidate);
+              If(candidateLengthSquared.greaterThan(virtualCorrectionLengthSquared), () => {
+                virtualCorrection.assign(candidate);
+                virtualCorrectionLengthSquared.assign(candidateLengthSquared);
+              });
             });
           },
         );
 
-        const storeCorrection = (
-          particleIndex: THREE.Node<'uint'>,
-          state: THREE.Node<'vec4'>,
-          start: THREE.Node<'vec3'>,
-          corrected: THREE.Node<'vec3'>,
-        ): void => {
-          buffer.element(particleIndex).assign(vec4(corrected, state.w));
-          const previousState = this.previousBuffer.element(particleIndex);
-          const correctedPrevious = previousState.xyz
-            .add(corrected.sub(start))
-            .toVar('correctedPreviousBodyFace');
-          const inwardMotion = corrected.sub(correctedPrevious)
-            .dot(this.backUniform)
-            .min(0);
-          correctedPrevious.addAssign(this.backUniform.mul(inwardMotion));
-          this.previousBuffer.element(particleIndex).assign(vec4(
-            correctedPrevious,
-            previousState.w,
-          ));
-        };
-        storeCorrection(firstIndex, firstState, firstStart, first);
-        storeCorrection(secondIndex, secondState, secondStart, second);
-        storeCorrection(thirdIndex, thirdState, thirdStart, third);
+        const correctionLength = virtualCorrection.length()
+          .toVar('virtualBodyCorrectionLength');
+        If(correctionLength.greaterThan(MAXIMUM_VIRTUAL_BODY_CORRECTION_PER_STEP), () => {
+          virtualCorrection.mulAssign(
+            float(MAXIMUM_VIRTUAL_BODY_CORRECTION_PER_STEP)
+              .div(correctionLength.max(0.000_001)),
+          );
+        });
+        const denominator = firstMass.add(secondMass).add(thirdMass)
+          .mul(VIRTUAL_BODY_BARYCENTRIC_WEIGHT ** 2)
+          .toVar('virtualBodyMassDenominator');
+        If(
+          virtualCorrectionLengthSquared.greaterThan(0.000_000_1)
+            .and(denominator.greaterThan(0.000_001)),
+          () => {
+            atomicOr(this.materialContactFlagBuffer.element(capeIndex), uint(1));
+            const normal = virtualCorrection.normalize().toVar('virtualBodyMotionNormal');
+            const lambdaCorrection = virtualCorrection.div(denominator);
+            const applyCorrection = (
+              particleIndex: THREE.Node<'uint'>,
+              state: THREE.Node<'vec4'>,
+              inverseMass: THREE.Node<'float'>,
+            ): void => {
+              If(inverseMass.greaterThan(0), () => {
+                const particleCorrection = lambdaCorrection
+                  .mul(inverseMass.mul(VIRTUAL_BODY_BARYCENTRIC_WEIGHT));
+                const corrected = state.xyz.add(particleCorrection);
+                buffer.element(particleIndex).assign(vec4(corrected, state.w));
+                const previousState = this.previousBuffer.element(particleIndex);
+                const correctedPrevious = previousState.xyz.add(particleCorrection)
+                  .toVar('correctedPreviousVirtualBody');
+                const inwardMotion = corrected.sub(correctedPrevious)
+                  .dot(normal)
+                  .min(0);
+                correctedPrevious.addAssign(normal.mul(inwardMotion));
+                this.previousBuffer.element(particleIndex).assign(vec4(
+                  correctedPrevious,
+                  previousState.w,
+                ));
+              });
+            };
+            applyCorrection(firstIndex, firstState, firstMass);
+            applyCorrection(secondIndex, secondState, secondMass);
+            applyCorrection(thirdIndex, thirdState, thirdMass);
+          },
+        );
       });
       return float(0);
     }, 'float').setLayout({
-      name: `capeBodyFaceColorPass${passName}`,
+      name: `capeVirtualBodyContactColorPass${passName}`,
       type: 'float',
-      inputs: [{ name: 'color', type: 'uint' }],
+      inputs: [
+        { name: 'color', type: 'uint' },
+        { name: 'triangleSlot', type: 'uint' },
+        { name: 'capeIndex', type: 'uint' },
+      ],
     });
   }
 
-  private createSleepKernel(): THREE.ComputeNode {
-    return Fn(() => {
-      const index = instanceIndex;
-      const position = this.positionBuffer.element(index);
-      this.previousBuffer.element(index).assign(vec4(position.xyz, 0));
-    })().compute(PARTICLE_COUNT).setName('Cape sleep');
-  }
-
-  private createInitialState(): Float32Array {
+  private createInitialState(anchors: CapeAnchors): Float32Array {
     const state = new Float32Array(PARTICLE_COUNT * 4);
+    const anchorWidth = anchors.right.distanceTo(anchors.left);
+    const right = anchors.right.clone().sub(anchors.left).normalize();
+    const center = anchors.left.clone().add(anchors.right).multiplyScalar(0.5);
     for (let row = 0; row < CAPE.rows; row += 1) {
+      const down = row / (CAPE.rows - 1);
+      const width = getCapeRestWidth(anchorWidth, down, this.settings.width);
       for (let column = 0; column < CAPE.columns; column += 1) {
         const index = row * CAPE.columns + column;
-        const position = this.diagnosticMirror.getParticlePosition(column, row);
+        const across = column / (CAPE.columns - 1) - 0.5;
+        const position = center.clone()
+          .addScaledVector(right, across * width)
+          .addScaledVector(anchors.back, getCapeRestBackOffset(down, across))
+          .add(new THREE.Vector3(
+            0,
+            -down * this.settings.length * (1 - Math.abs(across) * 0.085),
+            0,
+          ));
+        if (row === 0) {
+          const progress = column / (CAPE.columns - 1);
+          const neckline = Math.sin(progress * Math.PI);
+          position.lerpVectors(anchors.left, anchors.right, progress);
+          position.y += neckline * CAPE.attachment.necklineRise;
+          position.addScaledVector(anchors.back, neckline * CAPE.attachment.necklineDepth);
+        }
         state[index * 4] = position.x;
         state[index * 4 + 1] = position.y;
         state[index * 4 + 2] = position.z;
@@ -2171,6 +3255,7 @@ export class GpuCapeSimulation {
   private createTopology(initialState: Float32Array): {
     readonly packed: Float32Array;
     readonly normalNeighbors: Uint32Array;
+    readonly orderedConstraints: Float32Array;
   } {
     const constraints: ConstraintDefinition[] = [];
     const readPosition = (index: number): THREE.Vector3 => new THREE.Vector3(
@@ -2184,7 +3269,6 @@ export class GpuCapeSimulation {
       secondColumn: number,
       secondRow: number,
       stiffness: number,
-      structural: boolean,
     ): void => {
       const first = firstRow * CAPE.columns + firstColumn;
       const second = secondRow * CAPE.columns + secondColumn;
@@ -2193,43 +3277,16 @@ export class GpuCapeSimulation {
         second,
         restLength: readPosition(first).distanceTo(readPosition(second)),
         stiffness,
-        structural,
       });
     };
-    for (let row = 0; row < CAPE.rows; row += 1) {
-      for (let column = 0; column < CAPE.columns; column += 1) {
-        if (column + 1 < CAPE.columns) addConstraint(column, row, column + 1, row, 0.93, true);
-        if (row + 1 < CAPE.rows) addConstraint(column, row, column, row + 1, 0.96, true);
-        if (column + 1 < CAPE.columns && row + 1 < CAPE.rows) {
-          addConstraint(column, row, column + 1, row + 1, 0.8, false);
-          addConstraint(column + 1, row, column, row + 1, 0.8, false);
-        }
-        if (column + 2 < CAPE.columns) addConstraint(column, row, column + 2, row, 0.58, false);
-        if (row + 2 < CAPE.rows) addConstraint(column, row, column, row + 2, 0.82, false);
-        if (column + 3 < CAPE.columns) addConstraint(column, row, column + 3, row, 0.16, false);
-        if (row + 3 < CAPE.rows) addConstraint(column, row, column, row + 3, 0.38, false);
-      }
-    }
-
-    const adjacency: ConstraintLink[][] = Array.from({ length: PARTICLE_COUNT }, () => []);
-    for (const constraint of constraints) {
-      const firstMass = constraint.first < CAPE.columns ? 0 : 1;
-      const secondMass = constraint.second < CAPE.columns ? 0 : 1;
-      const totalMass = firstMass + secondMass;
-      adjacency[constraint.first]?.push({
-        neighbor: constraint.second,
-        restLength: constraint.restLength,
-        stiffness: constraint.stiffness,
-        massShare: totalMass > 0 ? firstMass / totalMass : 0,
-        structural: constraint.structural,
-      });
-      adjacency[constraint.second]?.push({
-        neighbor: constraint.first,
-        restLength: constraint.restLength,
-        stiffness: constraint.stiffness,
-        massShare: totalMass > 0 ? secondMass / totalMass : 0,
-        structural: constraint.structural,
-      });
+    for (const definition of CAPE_DISTANCE_CONSTRAINTS) {
+      addConstraint(
+        definition.firstColumn,
+        definition.firstRow,
+        definition.secondColumn,
+        definition.secondRow,
+        definition.stiffness,
+      );
     }
     const normalNeighbors = new Uint32Array(PARTICLE_COUNT * 4);
     for (let row = 0; row < CAPE.rows; row += 1) {
@@ -2242,52 +3299,106 @@ export class GpuCapeSimulation {
       }
     }
 
-    const flatLinks = adjacency.flat();
-    const linkBase = PARTICLE_COUNT * TOPOLOGY_METADATA_STRIDE;
-    const packed = new Float32Array((linkBase + flatLinks.length) * 4);
-    let pointer = 0;
-    adjacency.forEach((particleLinks, particleIndex) => {
+    const packed = new Float32Array(PARTICLE_COUNT * TOPOLOGY_METADATA_STRIDE * 4);
+    for (let particleIndex = 0; particleIndex < PARTICLE_COUNT; particleIndex += 1) {
       const metadataOffset = particleIndex * TOPOLOGY_METADATA_STRIDE * 4;
       const neighborOffset = particleIndex * 4;
-      packed[metadataOffset] = linkBase + pointer;
-      packed[metadataOffset + 1] = particleLinks.length;
+      const row = Math.floor(particleIndex / CAPE.columns);
+      const rowLeft = row * CAPE.columns;
+      const rowRight = rowLeft + CAPE.columns - 1;
+      packed[metadataOffset] = readPosition(rowLeft).distanceTo(readPosition(rowRight));
+      packed[metadataOffset + 1] = row + 1 < CAPE.rows
+        ? readPosition(particleIndex).distanceTo(readPosition(particleIndex + CAPE.columns))
+        : 0;
       packed[metadataOffset + 2] = normalNeighbors[neighborOffset] ?? particleIndex;
       packed[metadataOffset + 3] = normalNeighbors[neighborOffset + 1] ?? particleIndex;
       packed[metadataOffset + 4] = normalNeighbors[neighborOffset + 2] ?? particleIndex;
       packed[metadataOffset + 5] = normalNeighbors[neighborOffset + 3] ?? particleIndex;
-      for (const link of particleLinks) {
-        const linkOffset = (linkBase + pointer) * 4;
-        packed[linkOffset] = link.neighbor;
-        packed[linkOffset + 1] = link.restLength;
-        packed[linkOffset + 2] = link.structural ? -link.stiffness : link.stiffness;
-        packed[linkOffset + 3] = link.massShare;
-        pointer += 1;
-      }
-    });
-    return { packed, normalNeighbors };
+      packed[metadataOffset + 6] = row + 2 < CAPE.rows
+        ? readPosition(particleIndex).distanceTo(readPosition(particleIndex + CAPE.columns * 2))
+        : 0;
+      packed[metadataOffset + 7] = row + 3 < CAPE.rows
+        ? readPosition(particleIndex).distanceTo(readPosition(particleIndex + CAPE.columns * 3))
+        : 0;
+    }
+
+    const orderedConstraints = new Float32Array(constraints.length * 4);
+    for (let index = 0; index < constraints.length; index += 1) {
+      const constraint = constraints[index]!;
+      const offset = index * 4;
+      orderedConstraints[offset] = constraint.first;
+      orderedConstraints[offset + 1] = constraint.second;
+      orderedConstraints[offset + 2] = constraint.restLength;
+      orderedConstraints[offset + 3] = constraint.stiffness;
+    }
+    return {
+      packed,
+      normalNeighbors,
+      orderedConstraints,
+    };
   }
 
-  private updateAnchorBuffer(anchors: CapeAnchors): void {
-    this.anchorCenter.copy(anchors.left).add(anchors.right).multiplyScalar(0.5);
-    const array = this.anchorBuffer.value.array as Float32Array;
+  private updateAnchorValues(capeIndex: number, anchors: CapeAnchors): void {
+    const center = this.anchorStateValues[capeIndex]!;
+    center.set(
+      (anchors.left.x + anchors.right.x) * 0.5,
+      (anchors.left.y + anchors.right.y) * 0.5,
+      (anchors.left.z + anchors.right.z) * 0.5,
+      center.w,
+    );
+    if (capeIndex === 0) {
+      this.anchorCenter.set(center.x, center.y, center.z);
+      this.diagnosticMirror.synchronizeAnchorDiagnostics(anchors);
+    }
     for (let column = 0; column < CAPE.columns; column += 1) {
       const progress = column / (CAPE.columns - 1);
       const neckline = Math.sin(progress * Math.PI);
       this.anchorTarget.lerpVectors(anchors.left, anchors.right, progress);
       this.anchorTarget.y += neckline * CAPE.attachment.necklineRise;
       this.anchorTarget.addScaledVector(anchors.back, neckline * CAPE.attachment.necklineDepth);
-      const offset = column * 4;
-      array[offset] = this.anchorTarget.x;
-      array[offset + 1] = this.anchorTarget.y;
-      array[offset + 2] = this.anchorTarget.z;
-      array[offset + 3] = 0;
+      this.anchorValues[capeIndex * CAPE.columns + column]!.set(
+        this.anchorTarget.x,
+        this.anchorTarget.y,
+        this.anchorTarget.z,
+        0,
+      );
     }
-    this.anchorBuffer.value.needsUpdate = true;
   }
 
   private writeStorage(attribute: THREE.BufferAttribute, state: Float32Array): void {
     (attribute.array as Float32Array).set(state);
     attribute.needsUpdate = true;
+  }
+
+  private initializeCapeLane(capeIndex: number, anchors: CapeAnchors): void {
+    const state = this.createInitialState(anchors);
+    const offset = capeIndex * PARTICLE_COUNT * 4;
+    for (const attribute of [
+      this.positionBuffer.value,
+      this.scratchBuffer.value,
+      this.previousBuffer.value,
+    ]) {
+      (attribute.array as Float32Array).set(state, offset);
+      attribute.needsUpdate = true;
+    }
+    this.updateAnchorValues(capeIndex, anchors);
+    this.lastAnchors[capeIndex] = this.cloneAnchors(anchors);
+    this.idleDrapeRecoverySeconds[capeIndex] = 0;
+    this.anchorStateValues[capeIndex]!.w = 0;
+    this.worldColliderSources[capeIndex] = null;
+    this.worldCandidateCenters[capeIndex]!.set(
+      Number.POSITIVE_INFINITY,
+      Number.POSITIVE_INFINITY,
+      Number.POSITIVE_INFINITY,
+    );
+  }
+
+  private cloneAnchors(anchors: CapeAnchors): CapeAnchors {
+    return {
+      left: anchors.left.clone(),
+      right: anchors.right.clone(),
+      back: anchors.back.clone(),
+    };
   }
 
   private applySettingsUniforms(): void {
@@ -2297,6 +3408,7 @@ export class GpuCapeSimulation {
   }
 
   private updateBodyBuffers(
+    capeIndex: number,
     colliders: readonly CapsuleCollider[],
     back: THREE.Vector3,
   ): void {
@@ -2311,16 +3423,10 @@ export class GpuCapeSimulation {
       const lateralRadius = collider.radius + getClothBodyClearance(collider);
       const depthRadius = getClothBodyDepthRadius(collider);
       const verticalRadius = Math.max(lateralRadius, depthRadius);
-      const axisLength = axis.length();
-      const sampleSpacing = collider.faceSampleSpacing
-        ?? Math.max(0.04, lateralRadius * 0.82);
-      const faceSegments = axisLength < 0.000_001
-        ? 0
-        : Math.max(1, Math.ceil(axisLength / sampleSpacing));
-      const faceStepLength = faceSegments > 0 ? axisLength / faceSegments : 0;
-      const faceLateralRadius = Math.hypot(lateralRadius, faceStepLength * 0.5);
-      const faceDepthRadius = depthRadius * faceLateralRadius / lateralRadius;
-      const offset = index * BODY_BUFFER_STRIDE * 4;
+      const offset = (
+        capeIndex * MAX_BODY_COLLIDERS * BODY_BUFFER_STRIDE
+        + index * BODY_BUFFER_STRIDE
+      ) * 4;
       bodyData[offset] = collider.start.x;
       bodyData[offset + 1] = collider.start.y;
       bodyData[offset + 2] = collider.start.z;
@@ -2340,29 +3446,27 @@ export class GpuCapeSimulation {
         bodyData[offset + 12] = -1_000_000;
         bodyData[offset + 13] = 1_000_000;
       }
-      bodyData[offset + 16] = faceSegments;
-      bodyData[offset + 17] = faceLateralRadius;
-      bodyData[offset + 18] = faceDepthRadius;
     });
-    this.bodyCountUniform.value = colliders.length;
-    this.backUniform.value.copy(back);
+    this.bodyStateValues[capeIndex]!.set(back.x, back.y, back.z, colliders.length);
     this.bodyBuffer.value.needsUpdate = true;
   }
 
-  private updateWorldBuffers(colliders: readonly WorldCollider[]): void {
+  private updateWorldBuffers(capeIndex: number, colliders: readonly WorldCollider[]): void {
+    const centerState = this.anchorStateValues[capeIndex]!;
+    const center = new THREE.Vector3(centerState.x, centerState.y, centerState.z);
     if (
-      this.worldColliderSource === colliders
-      && this.worldCandidateCenter.distanceToSquared(this.anchorCenter)
+      this.worldColliderSources[capeIndex] === colliders
+      && this.worldCandidateCenters[capeIndex]!.distanceToSquared(center)
         < GPU_WORLD_CANDIDATE_REFRESH_DISTANCE ** 2
     ) return;
-    this.worldColliderSource = colliders;
-    this.worldCandidateCenter.copy(this.anchorCenter);
+    this.worldColliderSources[capeIndex] = colliders;
+    this.worldCandidateCenters[capeIndex]!.copy(center);
     const nearby = colliders.filter((collider) => {
       const queryRadius = isWorldRockCollider(collider)
         ? WORLD_ROCK_QUERY_RADIUS
         : WORLD_SPHERE_QUERY_RADIUS;
       const range = queryRadius + collider.radius;
-      return collider.center.distanceToSquared(this.anchorCenter) <= range * range;
+      return collider.center.distanceToSquared(center) <= range * range;
     });
     const spheres = nearby.filter((collider) => !isWorldRockCollider(collider));
     const rocks = nearby.filter(isWorldRockCollider);
@@ -2374,7 +3478,7 @@ export class GpuCapeSimulation {
     }
     const sphereData = this.worldSphereBuffer.value.array as Float32Array;
     spheres.forEach((collider, index) => {
-      const offset = index * 4;
+      const offset = (capeIndex * MAX_WORLD_SPHERES + index) * 4;
       sphereData[offset] = collider.center.x;
       sphereData[offset + 1] = collider.center.y;
       sphereData[offset + 2] = collider.center.z;
@@ -2388,7 +3492,10 @@ export class GpuCapeSimulation {
           `GPU rock ${rockIndex} has ${collider.faces.length} faces; expected ${ROCK_FACES_PER_COLLIDER}.`,
         );
       }
-      const rockOffset = rockIndex * ROCK_BUFFER_STRIDE * 4;
+      const rockOffset = (
+        capeIndex * MAX_WORLD_ROCKS * ROCK_BUFFER_STRIDE
+        + rockIndex * ROCK_BUFFER_STRIDE
+      ) * 4;
       rockData[rockOffset] = collider.center.x;
       rockData[rockOffset + 1] = collider.center.y;
       rockData[rockOffset + 2] = collider.center.z;
@@ -2421,8 +3528,7 @@ export class GpuCapeSimulation {
       });
     });
 
-    this.worldSphereCountUniform.value = spheres.length;
-    this.rockCountUniform.value = rocks.length;
+    this.worldCountValues[capeIndex]!.set(spheres.length, rocks.length, 0, 0);
     this.worldSphereBuffer.value.needsUpdate = true;
     this.rockBuffer.value.needsUpdate = true;
   }

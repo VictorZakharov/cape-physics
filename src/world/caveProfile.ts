@@ -108,6 +108,16 @@ export function caveInteriorBoundsAtHeight(
   return target;
 }
 
+export function isPointInsideCaveShell(
+  x: number,
+  y: number,
+  z: number,
+  clearance: number,
+  target: CaveHorizontalBounds,
+): boolean {
+  return caveShellSampler.containsPoint(x, y, z, clearance, target);
+}
+
 export function getCaveShellSampleData() {
   return caveShellSampler.getSampleData();
 }

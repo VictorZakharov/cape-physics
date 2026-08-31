@@ -23,7 +23,7 @@
 .performance-panel {
   top: clamp(14px, 2vw, 24px);
   left: clamp(14px, 2vw, 24px);
-  width: 178px;
+  width: 218px;
   padding: 11px 13px 10px;
   color: #8ee6d0;
   text-align: left;
@@ -111,6 +111,12 @@
   stroke-linejoin: round;
   stroke-width: 1.4;
   vector-effect: non-scaling-stroke;
+}
+
+.performance-panel__history .performance-panel__low-line {
+  stroke: #f6b66e;
+  stroke-dasharray: 2.5 2.5;
+  opacity: 0.82;
 }
 
 .performance-panel.has-frame-drop {
@@ -339,6 +345,10 @@
 }
 
 .customization__scene legend {
+  grid-column: 1 / -1;
+}
+
+.customization__range--bots {
   grid-column: 1 / -1;
 }
 

@@ -1,12 +1,17 @@
 import * as THREE from 'three';
 import type { InputController } from '../input/InputController';
-import { caveGroundHeightAt } from '../world/caveProfile';
+import {
+  caveGroundHeightAt,
+  isPointInsideCaveShell,
+} from '../world/caveProfile';
+import type { CaveHorizontalBounds } from '../world/CaveShellSampler';
 
 const MINIMUM_DISTANCE = 1.15;
 const MAXIMUM_DISTANCE = 7.2;
 const MINIMUM_PITCH = -1.18;
 const MAXIMUM_PITCH = 1.02;
 const CAMERA_GROUND_CLEARANCE = 0.18;
+const CAMERA_SHELL_CLEARANCE = 0.2;
 const GROUND_PROBES = 14;
 
 export class ThirdPersonCamera {
@@ -18,13 +23,11 @@ export class ThirdPersonCamera {
   private readonly direction = new THREE.Vector3();
   private readonly probe = new THREE.Vector3();
   private readonly orbitDelta = new THREE.Vector2();
-  private readonly raycastHits: THREE.Intersection[] = [];
-  private readonly raycaster = new THREE.Raycaster();
+  private readonly caveBounds: CaveHorizontalBounds = { minimum: 0, maximum: 0 };
 
   public constructor(
     public readonly camera: THREE.PerspectiveCamera,
     private readonly input: InputController,
-    private readonly colliders: THREE.Object3D[],
   ) {}
 
   public snapTo(focus: THREE.Vector3): void {
@@ -93,21 +96,10 @@ export class ThirdPersonCamera {
     const desiredDistance = this.direction.length();
     if (desiredDistance < 0.000_001) return false;
     this.direction.multiplyScalar(1 / desiredDistance);
-    this.raycaster.set(this.target, this.direction);
-    this.raycaster.near = 0.05;
-    this.raycaster.far = desiredDistance;
-    this.raycastHits.length = 0;
-    this.raycaster.intersectObjects(this.colliders, false, this.raycastHits);
-    const hit = this.raycastHits[0];
-    let obstructed = false;
-    if (hit && hit.distance < desiredDistance) {
-      this.desiredPosition.copy(this.target).addScaledVector(this.direction, Math.max(0.46, hit.distance - 0.2));
-      obstructed = true;
-    }
-    return this.resolveGroundIntersection() || obstructed;
+    return this.resolveCaveIntersection();
   }
 
-  private resolveGroundIntersection(): boolean {
+  private resolveCaveIntersection(): boolean {
     this.direction.copy(this.desiredPosition).sub(this.target);
     const distance = this.direction.length();
     if (distance < 0.000_001) return false;
@@ -115,7 +107,7 @@ export class ThirdPersonCamera {
     for (let sample = 1; sample <= GROUND_PROBES; sample += 1) {
       const fraction = sample / GROUND_PROBES;
       this.probe.copy(this.target).addScaledVector(this.direction, fraction);
-      if (this.isAboveGround(this.probe)) {
+      if (this.isSafePosition(this.probe)) {
         safeFraction = fraction;
         continue;
       }
@@ -124,7 +116,7 @@ export class ThirdPersonCamera {
       for (let iteration = 0; iteration < 7; iteration += 1) {
         const middle = (safeFraction + unsafeFraction) * 0.5;
         this.probe.copy(this.target).addScaledVector(this.direction, middle);
-        if (this.isAboveGround(this.probe)) safeFraction = middle;
+        if (this.isSafePosition(this.probe)) safeFraction = middle;
         else unsafeFraction = middle;
       }
       const paddedSafeFraction = safeFraction - Math.min(0.008, safeFraction * 0.25);
@@ -137,7 +129,14 @@ export class ThirdPersonCamera {
     return false;
   }
 
-  private isAboveGround(position: THREE.Vector3): boolean {
-    return position.y >= caveGroundHeightAt(position.x, position.z) + CAMERA_GROUND_CLEARANCE;
+  private isSafePosition(position: THREE.Vector3): boolean {
+    return position.y >= caveGroundHeightAt(position.x, position.z) + CAMERA_GROUND_CLEARANCE
+      && isPointInsideCaveShell(
+        position.x,
+        position.y,
+        position.z,
+        CAMERA_SHELL_CLEARANCE,
+        this.caveBounds,
+      );
   }
 }

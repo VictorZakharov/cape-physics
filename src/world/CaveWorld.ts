@@ -16,7 +16,6 @@ import { createSpeleothemGeometry } from './SpeleothemGeometry';
 
 export class CaveWorld {
   public readonly group = new THREE.Group();
-  public readonly cameraColliders: THREE.Object3D[];
   public readonly worldColliders: readonly WorldCollider[];
   public readonly contactRocks: readonly CapeContactRockPlacement[];
 
@@ -31,7 +30,6 @@ export class CaveWorld {
     this.group.add(this.walls, this.floor);
     this.createFormations(textures);
     this.contactRocks = this.createRockScatter(textures);
-    this.cameraColliders = [this.walls];
     this.worldColliders = this.colliderBuilder.colliders;
   }
 
@@ -94,6 +92,7 @@ export class CaveWorld {
     geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
     geometry.setIndex(indices);
     geometry.computeVertexNormals();
+    this.stitchWallSeamNormals(geometry, segments, radialSegments);
     geometry.computeBoundingSphere();
 
     const material = this.createMaterial(textures);
@@ -103,6 +102,35 @@ export class CaveWorld {
     mesh.name = 'Cave shell';
     mesh.receiveShadow = true;
     return mesh;
+  }
+
+  /**
+   * The first and last radial vertices occupy the same position but must stay
+   * duplicated so the UVs can wrap. BufferGeometry therefore computes their
+   * normals independently, which exposes the texture seam as a dark line.
+   * Average each duplicate pair so lighting remains continuous around the
+   * cave circumference without changing topology or UVs.
+   */
+  private stitchWallSeamNormals(
+    geometry: THREE.BufferGeometry,
+    segments: number,
+    radialSegments: number,
+  ): void {
+    const normals = geometry.getAttribute('normal');
+    const first = new THREE.Vector3();
+    const last = new THREE.Vector3();
+    const average = new THREE.Vector3();
+    const stride = radialSegments + 1;
+    for (let segment = 0; segment <= segments; segment += 1) {
+      const firstIndex = segment * stride;
+      const lastIndex = firstIndex + radialSegments;
+      first.fromBufferAttribute(normals, firstIndex);
+      last.fromBufferAttribute(normals, lastIndex);
+      average.copy(first).add(last).normalize();
+      normals.setXYZ(firstIndex, average.x, average.y, average.z);
+      normals.setXYZ(lastIndex, average.x, average.y, average.z);
+    }
+    normals.needsUpdate = true;
   }
 
   private createFloor(textures: SurfaceTextures): THREE.Mesh {

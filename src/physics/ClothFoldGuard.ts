@@ -3,7 +3,7 @@ import * as THREE from 'three';
 // A small upward tuck remains possible as cloth rides over contact, but it
 // cannot become the long crossed S-fold that used to form around stones.
 export const MAXIMUM_LOCAL_UPWARD_FOLD = 0.022;
-const FOLD_RELAXATION = 0.68;
+export const FOLD_RELAXATION = 0.8;
 
 /**
  * A heavy shoulder cape may flare horizontally, but a lower row cannot pass

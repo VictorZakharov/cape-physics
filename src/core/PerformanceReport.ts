@@ -36,6 +36,8 @@ export interface PerformanceReportDetails {
     readonly capeSleeping: boolean;
     readonly worldColliders: number;
     readonly activeRipples: number;
+    readonly botCount: number;
+    readonly simulatedCapes: number;
   };
   readonly page: {
     readonly visibility: DocumentVisibilityState;
@@ -79,7 +81,7 @@ export function formatPerformanceReport(input: PerformanceReportInput): string {
   const capeSolverLines = capeSolver
     ? capeSolver.implementation === 'webgpu-compute'
       ? [
-        `Cape solver: WebGPU compute PBD at ${Math.round(1 / PHYSICS_STEP)} Hz | ${CAPE.columns * CAPE.rows} GPU-resident particles | ${CAPE.solverIterations} Jacobi projection passes | 25 batched dispatches in 1 compute submission/step`,
+        `Cape solver: packed WebGPU compute PBD at ${Math.round(1 / PHYSICS_STEP)} Hz | ${CAPE.columns * CAPE.rows * scene.simulatedCapes} active GPU-resident particles across ${scene.simulatedCapes} of 11 preallocated capes | ${CAPE.solverIterations} graph-colored projection passes across packed lanes | 25 dispatches in 1 compute submission/step`,
         'Cape timing: no animation-loop particle readback or GPU fence; main-thread physics above measures command preparation/submission, not GPU completion',
       ]
       : [
@@ -101,9 +103,9 @@ export function formatPerformanceReport(input: PerformanceReportInput): string {
     `Quality: ${quality.label} | ${metric(quality.scale, 3)} resolution scale | ${quality.targetResizes} render-target resizes`,
     `Main thread: ${metric(workload.averageMainThreadMilliseconds)} ms average | p95 ${metric(workload.p95MainThreadMilliseconds)} ms | physics ${metric(workload.averagePhysicsMilliseconds)} ms | scene ${metric(workload.averageSceneMilliseconds)} ms | render submission ${metric(workload.averageRenderMilliseconds)} ms | ${metric(workload.averagePhysicsSteps)} physics steps/callback average, ${workload.maximumPhysicsSteps} maximum`,
     ...capeSolverLines,
-    `Scene: ${metric(scene.simulationSeconds, 2)} s simulated | ${renderer.drawCalls} draw calls | ${renderer.triangles} triangles | ${renderer.programs} programs | ${scene.worldColliders} cape colliders | ${scene.activeRipples} active ripples | cape ${scene.capeSleeping ? 'sleeping' : 'active'}`,
+    `Scene: ${metric(scene.simulationSeconds, 2)} s simulated | ${scene.botCount} performance bots | ${scene.simulatedCapes} simulated capes | ${renderer.drawCalls} draw calls | ${renderer.triangles} triangles | ${renderer.programs} programs | ${scene.worldColliders} cape colliders/cape | ${scene.activeRipples} active ripples | player cape ${scene.capeSleeping ? 'sleeping' : 'active'}`,
     `Page state: ${page.visibility} | ${page.focused ? 'focused' : 'not focused'} | DPR ${metric(page.devicePixelRatio)} | ${displayTopology}`,
-    'Timing caveat: rendered FPS and browser callback cadence are not physical panel measurements; render submission is main-thread time, not GPU completion',
+    'Timing caveat: display FPS is refresh/vsync capped and therefore cannot compare backend headroom; main-thread render submission is not GPU completion',
     `Page: ${page.url}`,
     `Runtime: ${runtime.platform}`,
     `User agent (raw): ${runtime.userAgent}`,

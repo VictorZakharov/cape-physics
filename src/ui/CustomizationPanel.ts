@@ -5,11 +5,16 @@ import {
   type CapePhysicsSettings,
 } from '../physics/CapeSettings';
 import { invariant } from '../utils/assert';
+import {
+  BOT_COUNT_RANGE,
+  normalizeBotCount,
+} from '../player/BotMovementInput';
 
 export interface CustomizationSettings extends CapePhysicsSettings {
   readonly lights: boolean;
   readonly shadows: boolean;
   readonly reflections: boolean;
+  readonly bots: number;
 }
 
 export const DEFAULT_CUSTOMIZATION_SETTINGS: CustomizationSettings = Object.freeze({
@@ -17,17 +22,24 @@ export const DEFAULT_CUSTOMIZATION_SETTINGS: CustomizationSettings = Object.free
   lights: true,
   shadows: true,
   reflections: true,
+  bots: 0,
 });
 
-type NumericSetting = keyof CapePhysicsSettings;
+type PhysicsNumericSetting = keyof CapePhysicsSettings;
+type NumericSetting = PhysicsNumericSetting | 'bots';
 type ToggleSetting = 'lights' | 'shadows' | 'reflections';
 
-const NUMERIC_SETTINGS: readonly NumericSetting[] = [
+const PHYSICS_NUMERIC_SETTINGS: readonly PhysicsNumericSetting[] = [
   'length',
   'width',
   'stiffness',
   'damping',
   'weight',
+];
+
+const NUMERIC_SETTINGS: readonly NumericSetting[] = [
+  ...PHYSICS_NUMERIC_SETTINGS,
+  'bots',
 ];
 
 const TOGGLE_SETTINGS: readonly ToggleSetting[] = ['lights', 'shadows', 'reflections'];
@@ -79,7 +91,9 @@ export class CustomizationPanel {
         this.root.querySelector<HTMLOutputElement>(`[data-customization-value="${name}"]`),
         `Customization output ${name} is missing.`,
       );
-      const range = CAPE_PHYSICS_SETTING_RANGES[name];
+      const range = name === 'bots'
+        ? BOT_COUNT_RANGE
+        : CAPE_PHYSICS_SETTING_RANGES[name];
       input.min = String(range.min);
       input.max = String(range.max);
       input.step = String(range.step);
@@ -126,6 +140,16 @@ export class CustomizationPanel {
   private readonly handleNumericInput = (event: Event): void => {
     const input = event.currentTarget as HTMLInputElement;
     const name = input.dataset.customizationSetting as NumericSetting;
+    if (name === 'bots') {
+      this.settings = {
+        ...this.settings,
+        bots: normalizeBotCount(input.valueAsNumber),
+      };
+      this.updateOutput(name);
+      this.status.textContent = 'Custom settings active';
+      this.emitChange();
+      return;
+    }
     const physics = normalizeCapePhysicsSettings({
       ...this.settings,
       [name]: input.valueAsNumber,
@@ -184,7 +208,9 @@ export class CustomizationPanel {
     const output = this.outputElements.get(name);
     if (!output) return;
     const value = this.settings[name];
-    output.value = name === 'length' || name === 'width'
+    output.value = name === 'bots'
+      ? value.toFixed(0)
+      : name === 'length' || name === 'width'
       ? `${value.toFixed(2)} m`
       : `${value.toFixed(2)}×`;
   }

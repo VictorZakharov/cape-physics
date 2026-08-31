@@ -73,6 +73,10 @@ export class ClothRockCollision {
     this.beginPass();
   }
 
+  public getCorrectionUsed(index: number): number {
+    return this.faceCorrectionUsed[index] ?? 0;
+  }
+
   public beginPass(): void {
     this.faceCorrectionUsed.fill(0);
   }

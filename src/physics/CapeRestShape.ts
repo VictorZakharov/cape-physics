@@ -3,6 +3,16 @@ import { CAPE } from '../config';
 
 const SHOULDER_WIDTH = 0.5;
 const SHOULDER_EXPANSION_END = 0.1;
+// This is a unilateral collapse limit, not a width spring. Healthy cloth is
+// comfortably above it, so normal waves and contact folds remain untouched.
+export const MINIMUM_CAPE_ROW_SPAN_RATIO = 0.38;
+export const CAPE_ROW_SPAN_RELAXATION = 0.65;
+// A cape row may bow gently around the body or a formation, but its interior
+// cannot wrap far away from the chord between its outer edges. Limiting only
+// endpoint span still permits the U-shaped, tubular cross-section that made
+// the GPU cape look like a rigid windsock.
+export const MAXIMUM_CAPE_ROW_CURL_RATIO = 0.12;
+export const CAPE_ROW_CURL_RELAXATION = 0.7;
 
 export function getCapeRestWidth(
   anchorWidth: number,

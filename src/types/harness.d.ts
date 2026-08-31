@@ -105,12 +105,29 @@ interface CapeDemoDiagnostics {
     readonly maximumEnvironmentFacePenetration: number;
     readonly maximumParticleMotion: number;
     readonly maximumParticleVerticalMotion: number;
+    readonly particleMotion: {
+      readonly particleIndex: number;
+      readonly displacement: readonly [number, number, number];
+      readonly verticalParticleIndex: number;
+      readonly verticalDelta: number;
+      readonly rockContact: {
+        readonly pointCorrection: number;
+        readonly faceCorrection: number;
+        readonly swept: boolean;
+        readonly bodyPointCorrection: number;
+        readonly bodyFaceCorrection: number;
+      };
+    };
     readonly sleeping: boolean;
     readonly minimumSelfSeparation: number;
     readonly maximumUpwardFold: number;
     readonly hemDrop: number;
     readonly minimumLowerCapeDrop: number;
     readonly maximumLowerCapeLateralOffset: number;
+    readonly averageLowerCapeSpanRatio: number;
+    readonly capeRowTwistRange: number;
+    readonly capeCenterlineDeviation: number;
+    readonly maximumLowerCapeRowCurlRatio: number;
     readonly hemBackOffset: number;
     readonly minimumHemGroundClearance: number;
     readonly minimumActiveRockSurfaceDistance: number | null;
@@ -174,10 +191,92 @@ declare global {
       setRunning: (running: boolean) => void;
       jump: () => void;
       advance: (options: { duration: number; frameStep?: number }) => Promise<CapeDemoDiagnostics>;
+      traceCapeScenario: (options: {
+        scenario:
+          | 'raised-drop'
+          | 'falling-forward-start'
+          | 'forward-start'
+          | 'forward-stop'
+          | 'reverse'
+          | 'back-and-forth'
+          | 'lightweight-stop';
+        frames?: number;
+        sampleEvery?: number;
+      }) => Promise<{
+        readonly scenario:
+          | 'raised-drop'
+          | 'falling-forward-start'
+          | 'forward-start'
+          | 'forward-stop'
+          | 'reverse'
+          | 'back-and-forth'
+          | 'lightweight-stop';
+        readonly renderer: 'webgpu' | 'webgl';
+        readonly physicsStep: number;
+        readonly samples: readonly {
+          readonly frame: number;
+          readonly time: number;
+          readonly playerPosition: readonly number[];
+          readonly playerYaw: number;
+          readonly playerSpeed: number;
+          readonly particles: readonly number[];
+          readonly hemDrop: number;
+          readonly hemBackOffset: number;
+          readonly maximumParticleMotion: number;
+          readonly particleMotion: {
+            readonly particleIndex: number;
+            readonly displacement: readonly [number, number, number];
+            readonly verticalParticleIndex: number;
+            readonly verticalDelta: number;
+            readonly rockContact: {
+              readonly pointCorrection: number;
+              readonly faceCorrection: number;
+              readonly swept: boolean;
+              readonly bodyPointCorrection: number;
+              readonly bodyFaceCorrection: number;
+            };
+          };
+          readonly maximumLowerParticleHeight: number;
+          readonly maximumLowerHorizontalOffset: number;
+          readonly centerlineDeviation: number;
+          readonly rowTwistRange: number;
+          readonly maximumNecklineAttachmentError: number;
+          readonly maximumBodyPenetration: number;
+          readonly bodyPenetrationByKind: {
+            readonly point: number;
+            readonly face: number;
+            readonly maximum: number;
+          };
+          readonly bodyPenetrationByCollider: Readonly<Record<string, number>>;
+          readonly maximumStructuralError: number;
+          readonly minimumSelfSeparation: number;
+          readonly maximumUpwardFold: number;
+          readonly lowerCapeSpanRatio: number;
+          readonly lowerCapeRowCurlRatio: number;
+        }[];
+      }>;
+      tracePackedCapeBatch: (options?: {
+        bots?: number;
+        frames?: number;
+        sampleEvery?: number;
+      }) => Promise<{
+        readonly renderer: 'webgpu';
+        readonly physicsStep: number;
+        readonly botCount: number;
+        readonly samples: readonly {
+          readonly frame: number;
+          readonly capes: readonly {
+            readonly capeIndex: number;
+            readonly maximumNecklineAttachmentError: number;
+            readonly particles: readonly number[];
+          }[];
+        }[];
+      }>;
       profile: (options: {
         duration: number;
         frameStep?: number;
         synchronizationInterval?: number;
+        includeDiagnostics?: boolean;
       }) => Promise<{
         readonly frames: number;
         readonly synchronizationInterval: number;
@@ -196,10 +295,22 @@ declare global {
         readonly averageGpuTotalMilliseconds: number | null;
         readonly p95GpuTotalMilliseconds: number | null;
         readonly gpuTimestampSamples: number;
+        readonly scenePhaseMilliseconds: {
+          readonly camera: number;
+          readonly cameraFade: number;
+          readonly water: number;
+          readonly torches: number;
+          readonly veins: number;
+          readonly atmosphere: number;
+          readonly lighting: number;
+        };
         readonly programsBefore: number;
         readonly programsAfter: number;
-        readonly diagnostics: CapeDemoDiagnostics;
+        readonly diagnostics: CapeDemoDiagnostics | null;
       }>;
+      profileGpuKernels: (options?: { samples?: number }) => Promise<import(
+        '../physics/GpuCapeSimulation'
+      ).GpuCapeKernelProfile>;
       runDepthOcclusionProbe: () => Promise<DepthOcclusionProbeResult>;
       runShadowLayerProbe: () => Promise<ShadowLayerProbeResult>;
     };

@@ -54,9 +54,16 @@ export const EMPTY_WORKLOAD_SNAPSHOT: WorkloadSnapshot = Object.freeze({
 export class PerformanceMonitor {
   private readonly panel: HTMLElement;
   private readonly fpsLabel: HTMLElement;
+  private readonly fpsCaption: HTMLElement;
+  private readonly averageLabel: HTMLElement;
   private readonly frameTimeLabel: HTMLElement;
+  private readonly frameP95Label: HTMLElement;
+  private readonly mainWorkLabel: HTMLElement;
+  private readonly mainP95Label: HTMLElement;
   private readonly lowLabel: HTMLElement;
-  private readonly historyPath: SVGPathElement;
+  private readonly triangleLabel: HTMLElement;
+  private readonly averageHistoryPath: SVGPathElement;
+  private readonly lowHistoryPath: SVGPathElement;
   private readonly historyGraphic: SVGElement;
   private readonly copyLabel: HTMLElement;
   private readonly sampleTimestamps = new Float64Array(MAXIMUM_FRAME_SAMPLES);
@@ -68,7 +75,8 @@ export class PerformanceMonitor {
   private readonly physicsStepCounts = new Uint8Array(MAXIMUM_FRAME_SAMPLES);
   private readonly durationScratch: number[] = [];
   private readonly workloadScratch: number[] = [];
-  private readonly history: number[] = [];
+  private readonly averageFpsHistory: number[] = [];
+  private readonly onePercentLowHistory: number[] = [];
   private sampleStart = 0;
   private sampleCount = 0;
   private workloadStart = 0;
@@ -97,9 +105,16 @@ export class PerformanceMonitor {
   ) {
     this.panel = invariant(root.querySelector<HTMLElement>('[data-performance-panel]'), 'Performance panel is missing.');
     this.fpsLabel = invariant(root.querySelector<HTMLElement>('[data-fps]'), 'FPS label is missing.');
+    this.fpsCaption = invariant(root.querySelector<HTMLElement>('[data-fps-caption]'), 'FPS caption is missing.');
+    this.averageLabel = invariant(root.querySelector<HTMLElement>('[data-fps-average]'), 'Average-FPS label is missing.');
     this.frameTimeLabel = invariant(root.querySelector<HTMLElement>('[data-frame-time]'), 'Frame-time label is missing.');
+    this.frameP95Label = invariant(root.querySelector<HTMLElement>('[data-frame-p95]'), 'Frame p95 label is missing.');
+    this.mainWorkLabel = invariant(root.querySelector<HTMLElement>('[data-main-work]'), 'Main-work label is missing.');
+    this.mainP95Label = invariant(root.querySelector<HTMLElement>('[data-main-p95]'), 'Main-work p95 label is missing.');
     this.lowLabel = invariant(root.querySelector<HTMLElement>('[data-fps-low]'), 'Low-FPS label is missing.');
-    this.historyPath = invariant(root.querySelector<SVGPathElement>('[data-fps-history-line]'), 'FPS history path is missing.');
+    this.triangleLabel = invariant(root.querySelector<HTMLElement>('[data-triangles]'), 'Triangle label is missing.');
+    this.averageHistoryPath = invariant(root.querySelector<SVGPathElement>('[data-fps-average-line]'), 'Average-FPS history path is missing.');
+    this.lowHistoryPath = invariant(root.querySelector<SVGPathElement>('[data-fps-low-line]'), 'Low-FPS history path is missing.');
     this.historyGraphic = invariant(root.querySelector<SVGElement>('[data-fps-history]'), 'FPS history graphic is missing.');
     this.copyLabel = invariant(root.querySelector<HTMLElement>('[data-performance-copy]'), 'Performance copy label is missing.');
     this.panel.addEventListener('click', this.handleCopy);
@@ -171,9 +186,11 @@ export class PerformanceMonitor {
     this.workloadStart = 0;
     this.workloadCount = 0;
     this.workloadSnapshot = EMPTY_WORKLOAD_SNAPSHOT;
-    this.history.length = 0;
+    this.averageFpsHistory.length = 0;
+    this.onePercentLowHistory.length = 0;
     this.lastTimestamp = null;
-    this.historyPath.setAttribute('d', '');
+    this.averageHistoryPath.setAttribute('d', '');
+    this.lowHistoryPath.setAttribute('d', '');
   };
 
   public dispose(): void {
@@ -201,7 +218,19 @@ export class PerformanceMonitor {
     const medianFrameTime = this.sortedPercentile(0.5);
     const p95FrameTime = this.sortedPercentile(0.95);
     const p99FrameTime = this.sortedPercentile(0.99);
-    const onePercentLow = p99FrameTime > 0 ? 1_000 / p99FrameTime : 0;
+    // A 1% low is the rate represented by the average of the slowest one
+    // percent of frames, not simply the inverse of the p99 boundary sample.
+    const slowFrameCount = Math.max(1, Math.ceil(this.durationScratch.length * 0.01));
+    let slowFrameTotal = 0;
+    for (
+      let index = Math.max(0, this.durationScratch.length - slowFrameCount);
+      index < this.durationScratch.length;
+      index += 1
+    ) {
+      slowFrameTotal += this.durationScratch[index] ?? 0;
+    }
+    const slowFrameAverage = slowFrameTotal / slowFrameCount;
+    const onePercentLow = slowFrameAverage > 0 ? 1_000 / slowFrameAverage : 0;
     const fastFrame = this.sortedPercentile(0.1);
     const rawRefresh = fastFrame > 0 ? 1_000 / fastFrame : 60;
     const commonRefreshRates = [30, 60, 75, 90, 100, 120, 144, 165, 240];
@@ -233,8 +262,10 @@ export class PerformanceMonitor {
       windowElapsedMilliseconds,
     };
     this.recalculateWorkload();
-    this.history.push(averageFps);
-    if (this.history.length > 78) this.history.shift();
+    this.averageFpsHistory.push(averageFps);
+    this.onePercentLowHistory.push(onePercentLow);
+    if (this.averageFpsHistory.length > 78) this.averageFpsHistory.shift();
+    if (this.onePercentLowHistory.length > 78) this.onePercentLowHistory.shift();
   }
 
   private recalculateWorkload(): void {
@@ -296,25 +327,64 @@ export class PerformanceMonitor {
   }
 
   private paint(): void {
-    const { averageFps, onePercentLow, averageFrameTime, refreshEstimate } = this.snapshot;
-    this.fpsLabel.textContent = averageFps > 0 ? Math.round(averageFps).toString() : '--';
-    this.frameTimeLabel.textContent = averageFrameTime > 0 ? averageFrameTime.toFixed(1) : '--';
-    this.lowLabel.textContent = onePercentLow > 0 ? Math.round(onePercentLow).toString() : '--';
+    const {
+      averageFps,
+      onePercentLow,
+      averageFrameTime,
+      p95FrameTime,
+      refreshEstimate,
+    } = this.snapshot;
+    const {
+      averageMainThreadMilliseconds,
+      p95MainThreadMilliseconds,
+      sampleCount: workloadSampleCount,
+    } = this.workloadSnapshot;
+    const refreshCapped = this.snapshot.sampleCount >= 30
+      && averageFps >= refreshEstimate * 0.97;
+    this.fpsLabel.textContent = averageFps > 0 ? averageFps.toFixed(2) : '--';
+    this.averageLabel.textContent = averageFps > 0 ? averageFps.toFixed(2) : '--';
+    this.lowLabel.textContent = onePercentLow > 0 ? onePercentLow.toFixed(2) : '--';
+    this.fpsCaption.textContent = refreshCapped
+      ? 'DISPLAY FPS / VSYNC-CAPPED'
+      : 'DISPLAY FPS / LAST 15S';
+    this.frameTimeLabel.textContent = averageFrameTime > 0
+      ? averageFrameTime.toFixed(2)
+      : '--';
+    this.frameP95Label.textContent = p95FrameTime > 0
+      ? p95FrameTime.toFixed(2)
+      : '--';
+    this.mainWorkLabel.textContent = workloadSampleCount > 0
+      ? averageMainThreadMilliseconds.toFixed(2)
+      : '--';
+    this.mainP95Label.textContent = workloadSampleCount > 0
+      ? p95MainThreadMilliseconds.toFixed(2)
+      : '--';
+    this.triangleLabel.textContent = this.getReportDetails().renderer.triangles
+      .toLocaleString('en-US');
     this.historyGraphic.setAttribute(
       'aria-label',
-      `Rendered frame rate over the last ${(this.snapshot.windowElapsedMilliseconds / 1_000).toFixed(1)} seconds: ${Math.round(averageFps)} average, ${Math.round(onePercentLow)} one-percent low`,
+      `Display cadence over the last ${(this.snapshot.windowElapsedMilliseconds / 1_000).toFixed(1)} seconds: ${averageFps.toFixed(2)} average FPS, ${onePercentLow.toFixed(2)} one-percent low; main-thread work ${averageMainThreadMilliseconds.toFixed(2)} milliseconds average and ${p95MainThreadMilliseconds.toFixed(2)} milliseconds p95`,
     );
     this.panel.classList.toggle('has-frame-drop', averageFps > 0 && averageFps < Math.min(52, refreshEstimate * 0.78));
 
     const width = 154;
     const height = 31;
-    const ceiling = Math.max(60, refreshEstimate);
-    const path = this.history.map((fps, index) => {
-      const x = this.history.length <= 1 ? 0 : index / (this.history.length - 1) * width;
-      const y = height - Math.min(1, fps / ceiling) * (height - 1);
+    const minimumPlottedFps = refreshEstimate * 0.7;
+    const maximumPlottedFps = refreshEstimate * 1.02;
+    const fpsPath = (history: readonly number[]) => history.map((fps, index) => {
+      const x = history.length <= 1 ? 0 : index / (history.length - 1) * width;
+      const normalized = Math.max(
+        0,
+        Math.min(
+          1,
+          (fps - minimumPlottedFps) / (maximumPlottedFps - minimumPlottedFps),
+        ),
+      );
+      const y = (1 - normalized) * (height - 1);
       return `${index === 0 ? 'M' : 'L'}${x.toFixed(1)} ${y.toFixed(1)}`;
     }).join(' ');
-    this.historyPath.setAttribute('d', path);
+    this.averageHistoryPath.setAttribute('d', fpsPath(this.averageFpsHistory));
+    this.lowHistoryPath.setAttribute('d', fpsPath(this.onePercentLowHistory));
   }
 
   private readonly handleCopy = (): void => {

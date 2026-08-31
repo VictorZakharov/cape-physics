@@ -4,6 +4,7 @@ import { CAPE, PHYSICS_STEP, PLAYER } from '../src/config';
 import { createRockTextures } from '../src/graphics/proceduralTextures';
 import { CapeSimulation } from '../src/physics/CapeSimulation';
 import { CLOTH_BODY_CLEARANCE } from '../src/physics/ClothBodyCollision';
+import { CLOTH_THICKNESS } from '../src/physics/ClothSelfCollision';
 import {
   CLOTH_WORLD_CLEARANCE,
   getClothWorldClearance,
@@ -39,7 +40,121 @@ describe('CapeSimulation', () => {
     expect(cape.getParticlePosition(0, 0).distanceTo(anchors.left)).toBeLessThan(0.000_001);
     expect(cape.getParticlePosition(CAPE.columns - 1, 0).distanceTo(anchors.right)).toBeLessThan(0.000_001);
     expect(cape.getMaximumStructuralError()).toBeLessThan(0.035);
+    expect(cape.getAverageLowerCapeSpanRatio(anchors)).toBeGreaterThan(0.45);
     expect(Number.isFinite(cape.getParticlePosition(6, CAPE.rows - 1).lengthSq())).toBe(true);
+  });
+
+  test('preserves a falling cape\'s downward momentum when forward movement begins', () => {
+    const cape = new CapeSimulation(anchors);
+    const dynamicAnchors: CapeAnchors = {
+      left: anchors.left.clone(),
+      right: anchors.right.clone(),
+      back: anchors.back.clone(),
+    };
+    const positionData = new Float32Array(CAPE.columns * CAPE.rows * 4);
+    const previousY = new Float64Array(CAPE.columns * CAPE.rows);
+    const center = anchors.left.clone().add(anchors.right).multiplyScalar(0.5);
+    for (let row = 0; row < CAPE.rows; row += 1) {
+      for (let column = 0; column < CAPE.columns; column += 1) {
+        const index = row * CAPE.columns + column;
+        const position = cape.getParticlePosition(column, row);
+        const offset = position.clone().sub(center);
+        if (row > 0) position.y = center.y + Math.abs(offset.y);
+        position.toArray(positionData, index * 4);
+        previousY[index] = position.y;
+      }
+    }
+    cape.overwriteStateForHarness(positionData, positionData);
+
+    const characterVelocity = new THREE.Vector3();
+    const firstLowerRow = Math.floor(CAPE.rows * 0.5);
+    const captureLowerVerticalStep = (): { average: number; maximum: number } => {
+      let total = 0;
+      let count = 0;
+      let maximum = Number.NEGATIVE_INFINITY;
+      for (let row = firstLowerRow; row < CAPE.rows; row += 1) {
+        for (let column = 0; column < CAPE.columns; column += 1) {
+          const index = row * CAPE.columns + column;
+          const currentY = cape.getParticlePosition(column, row).y;
+          const verticalStep = currentY - (previousY[index] ?? currentY);
+          total += verticalStep;
+          count += 1;
+          maximum = Math.max(maximum, verticalStep);
+          previousY[index] = currentY;
+        }
+      }
+      return { average: total / Math.max(1, count), maximum };
+    };
+
+    let preStartAverageVerticalStep = 0;
+    for (let frame = 0; frame < 30; frame += 1) {
+      cape.step(
+        PHYSICS_STEP,
+        dynamicAnchors,
+        [],
+        [],
+        characterVelocity,
+        frame * PHYSICS_STEP,
+      );
+      preStartAverageVerticalStep = captureLowerVerticalStep().average;
+    }
+
+    let forwardSpeed = 0;
+    let maximumLowerUpwardStep = 0;
+    let maximumAverageLowerUpwardStep = Number.NEGATIVE_INFINITY;
+    for (let frame = 0; frame < 30; frame += 1) {
+      const velocityBlend = 1 - Math.exp(-PLAYER.acceleration * PHYSICS_STEP);
+      forwardSpeed = THREE.MathUtils.lerp(forwardSpeed, PLAYER.walkSpeed, velocityBlend);
+      characterVelocity.set(0, 0, -forwardSpeed);
+      const forwardStep = forwardSpeed * PHYSICS_STEP;
+      dynamicAnchors.left.z -= forwardStep;
+      dynamicAnchors.right.z -= forwardStep;
+      cape.step(
+        PHYSICS_STEP,
+        dynamicAnchors,
+        [],
+        [],
+        characterVelocity,
+        (frame + 30) * PHYSICS_STEP,
+      );
+      const verticalStep = captureLowerVerticalStep();
+      maximumLowerUpwardStep = Math.max(maximumLowerUpwardStep, verticalStep.maximum);
+      maximumAverageLowerUpwardStep = Math.max(
+        maximumAverageLowerUpwardStep,
+        verticalStep.average,
+      );
+    }
+
+    expect(preStartAverageVerticalStep).toBeLessThan(-0.000_5);
+    expect(maximumAverageLowerUpwardStep).toBeLessThan(0.001);
+    expect(maximumLowerUpwardStep).toBeLessThan(CLOTH_THICKNESS);
+  });
+
+  test('opens a tubular row collapse without flattening normal cloth', () => {
+    const cape = new CapeSimulation(anchors);
+    const positionData = new Float32Array(CAPE.columns * CAPE.rows * 4);
+    const previousData = new Float32Array(positionData.length);
+    for (let row = 0; row < CAPE.rows; row += 1) {
+      for (let column = 0; column < CAPE.columns; column += 1) {
+        const index = row * CAPE.columns + column;
+        const position = cape.getParticlePosition(column, row);
+        if (row >= Math.floor(CAPE.rows * 0.58)) {
+          position.addScaledVector(
+            anchors.back,
+            Math.sin(column / (CAPE.columns - 1) * Math.PI) * 0.42,
+          );
+        }
+        position.toArray(positionData, index * 4);
+        position.toArray(previousData, index * 4);
+      }
+    }
+    cape.overwriteStateFromGpu(positionData, previousData);
+    expect(cape.getMaximumLowerCapeRowCurlRatio(anchors)).toBeGreaterThan(0.3);
+
+    cape.step(PHYSICS_STEP, anchors, [], [], new THREE.Vector3(), 0);
+
+    expect(cape.getMaximumLowerCapeRowCurlRatio(anchors)).toBeLessThan(0.14);
+    expect(cape.getAverageLowerCapeSpanRatio(anchors)).toBeGreaterThan(0.8);
   });
 
   test('wraps behind the body instead of tunneling through during reversal', () => {
@@ -200,6 +315,13 @@ describe('CapeSimulation', () => {
     let maximumBodyPenetration = 0;
     let maximumRockPenetration = 0;
     let minimumBootRockGap = Number.POSITIVE_INFINITY;
+    let maximumUpwardParticleStep = 0;
+    const previousParticleY = new Float64Array(CAPE.rows * CAPE.columns);
+    for (let row = 0; row < CAPE.rows; row += 1) {
+      for (let column = 0; column < CAPE.columns; column += 1) {
+        previousParticleY[row * CAPE.columns + column] = cape.getParticlePosition(column, row).y;
+      }
+    }
     const bootAxis = new THREE.Vector3();
     const bootToRock = new THREE.Vector3();
     const closestBootPoint = new THREE.Vector3();
@@ -238,6 +360,17 @@ describe('CapeSimulation', () => {
         walkingVelocity,
         tick * PHYSICS_STEP,
       );
+      for (let row = 1; row < CAPE.rows; row += 1) {
+        for (let column = 0; column < CAPE.columns; column += 1) {
+          const particleIndex = row * CAPE.columns + column;
+          const currentY = cape.getParticlePosition(column, row).y;
+          maximumUpwardParticleStep = Math.max(
+            maximumUpwardParticleStep,
+            currentY - (previousParticleY[particleIndex] ?? currentY),
+          );
+          previousParticleY[particleIndex] = currentY;
+        }
+      }
       maximumBootPenetration = Math.max(
         maximumBootPenetration,
         cape.getMaximumBodyPenetration(bootColliders, characterAnchors.back),
@@ -258,6 +391,7 @@ describe('CapeSimulation', () => {
     expect(maximumBootPenetration).toBeLessThan(0.002);
     expect(maximumBodyPenetration).toBeLessThan(0.002);
     expect(maximumRockPenetration).toBeLessThan(0.002);
+    expect(maximumUpwardParticleStep).toBeLessThan(0.05);
   });
 
   test('keeps a maximum-length walking cape outside floor rocks every step', () => {
@@ -326,7 +460,9 @@ describe('CapeSimulation', () => {
     const cave = new CaveWorld(createRockTextures(16));
     const character = new Character();
     const collision = new WorldCollisionResolver(cave.worldColliders);
-    character.root.position.set(1.68, 0, -31.6);
+    // Start just beyond the deterministic lower formation so the walking
+    // trail must brush it even with speed-proportional cloth drag.
+    character.root.position.set(1.68, 0, -31.4);
     collision.resolvePlayer(character.root.position);
     character.root.updateMatrixWorld(true);
     let characterAnchors = character.getCapeAnchors();
@@ -525,6 +661,41 @@ describe('CapeSimulation', () => {
 
     cape.step(PHYSICS_STEP, anchors, bodyColliders, [], new THREE.Vector3(0, 0, -3), 901 * PHYSICS_STEP);
     expect(cape.isSleeping()).toBe(false);
+  });
+
+  test('does not sleep a lightweight cape while it remains suspended behind the neckline', () => {
+    const cape = new CapeSimulation(anchors, { weight: 0.5 });
+    const suspended = new Float32Array(CAPE.columns * CAPE.rows * 4);
+    for (let row = 0; row < CAPE.rows; row += 1) {
+      const down = row / (CAPE.rows - 1);
+      for (let column = 0; column < CAPE.columns; column += 1) {
+        const index = row * CAPE.columns + column;
+        const position = cape.getParticlePosition(column, row)
+          .addScaledVector(anchors.back, down * 1.15);
+        position.y += down * 0.58;
+        suspended[index * 4] = position.x;
+        suspended[index * 4 + 1] = position.y;
+        suspended[index * 4 + 2] = position.z;
+      }
+    }
+    cape.overwriteStateForHarness(suspended);
+
+    for (let frame = 0; frame < 480; frame += 1) {
+      cape.step(
+        PHYSICS_STEP,
+        anchors,
+        [],
+        [],
+        new THREE.Vector3(),
+        frame * PHYSICS_STEP,
+      );
+      if (cape.isSleeping()) {
+        expect(cape.getMaximumLowerCapeHorizontalOffset()).toBeLessThan(0.18);
+      }
+    }
+
+    expect(cape.getHemDrop()).toBeGreaterThan(1.3);
+    expect(cape.getMaximumLowerCapeHorizontalOffset()).toBeLessThan(0.18);
   });
 
   test('curves the pinned neckline behind the shoulders without body penetration', () => {

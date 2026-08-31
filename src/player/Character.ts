@@ -2,6 +2,10 @@ import * as THREE from 'three';
 import { CAMERA_NEAR_OPACITY, CAPE } from '../config';
 import type { CapsuleCollider } from '../physics/colliders';
 import {
+  CRIMSON_CAPE_PALETTE,
+  type CapeFabricPalette,
+} from '../physics/CapeAppearance';
+import {
   CharacterAnimator,
   type CharacterAnimationDiagnostics,
 } from './CharacterAnimator';
@@ -87,7 +91,9 @@ export class Character {
   private capeAttachment!: THREE.Group;
   private opacity = 1;
 
-  public constructor() {
+  public constructor(
+    private readonly capePalette: CapeFabricPalette = CRIMSON_CAPE_PALETTE,
+  ) {
     this.root.name = 'Procedural hero';
     this.root.add(this.rig);
     this.buildBody();
@@ -101,6 +107,10 @@ export class Character {
     verticalVelocity = 0,
   ): void {
     this.animator.update(delta, planarSpeed, grounded, verticalVelocity);
+  }
+
+  public resetAnimation(): void {
+    this.animator.reset();
   }
 
   public getCapeAnchors(): CapeAnchors {
@@ -181,6 +191,15 @@ export class Character {
     };
   }
 
+  public dispose(): void {
+    const geometries = new Set<THREE.BufferGeometry>();
+    this.root.traverse((object) => {
+      if (object instanceof THREE.Mesh) geometries.add(object.geometry);
+    });
+    geometries.forEach((geometry) => geometry.dispose());
+    this.materials.forEach((material) => material.dispose());
+  }
+
   private buildBody(): void {
     const armor = new THREE.MeshPhysicalMaterial({
       color: 0x2a383d,
@@ -195,11 +214,11 @@ export class Character {
     const cloth = new THREE.MeshStandardMaterial({ color: 0x20282a, roughness: 0.94, metalness: 0 });
     const skin = new THREE.MeshStandardMaterial({ color: 0x8f5b42, roughness: 0.84, metalness: 0 });
     const capeFabric = new THREE.MeshPhysicalMaterial({
-      color: 0x940a13,
+      color: this.capePalette.attachmentColor,
       roughness: 0.78,
       metalness: 0.01,
       sheen: 0.92,
-      sheenColor: new THREE.Color(0x6f0713),
+      sheenColor: new THREE.Color(this.capePalette.sheenColor),
       sheenRoughness: 0.72,
       side: THREE.DoubleSide,
     });
