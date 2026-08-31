@@ -89,7 +89,7 @@ type CapeFactory = (
 
 interface PerformanceBot {
   readonly character: Character;
-  readonly cape: CapeInstance;
+  readonly cape: CapeInstance | null;
   readonly input: BotMovementInput;
   readonly controller: CharacterController;
 }
@@ -344,6 +344,11 @@ export class CapeDemo {
     this.scene.add(this.cape.mesh);
     await this.loading.update(0.73, 'Rigging movement and camera');
     this.configureCharacterRenderObjects(this.character, this.cape);
+    if (!(this.cape instanceof CapeSimulation)) {
+      this.scene.add(this.cape.botMesh);
+      this.cape.botMesh.layers.set(CHARACTER_RENDER_LAYER);
+      enableCameraIndependentShadowCaster(this.cape.botMesh, 'webgpu');
+    }
 
     this.input = new InputController(this.canvas, this.dismissOnboarding);
     this.mobileControls = new MobileControls(this.canvas, this.input);
@@ -450,7 +455,7 @@ export class CapeDemo {
         this.fixedTime,
       );
       for (const bot of this.performanceBots) {
-        if (!(bot.cape instanceof CapeSimulation)) {
+        if (!bot.cape || !(bot.cape instanceof CapeSimulation)) {
           throw new Error('Mixed CPU and GPU cape simulations are unsupported.');
         }
         bot.cape.step(
@@ -465,27 +470,18 @@ export class CapeDemo {
       return;
     }
 
-    const computeNodes = [...this.cape.prepareStep(
-      step,
-      this.character.getCapeAnchors(),
-      this.character.getCapeColliders(),
-      this.worldColliders,
-      this.character.velocity,
-      this.fixedTime,
-    )];
-    for (const bot of this.performanceBots) {
-      if (bot.cape instanceof CapeSimulation) {
-        throw new Error('Mixed CPU and GPU cape simulations are unsupported.');
-      }
-      computeNodes.push(...bot.cape.prepareStep(
-        step,
-        bot.character.getCapeAnchors(),
-        bot.character.getCapeColliders(),
-        this.worldColliders,
-        bot.character.velocity,
-        this.fixedTime,
-      ));
-    }
+    const computeNodes = this.cape.prepareBatchStep(step, [
+      {
+        anchors: this.character.getCapeAnchors(),
+        bodyColliders: this.character.getCapeColliders(),
+        characterVelocity: this.character.velocity,
+      },
+      ...this.performanceBots.map((bot) => ({
+        anchors: bot.character.getCapeAnchors(),
+        bodyColliders: bot.character.getCapeColliders(),
+        characterVelocity: bot.character.velocity,
+      })),
+    ], this.worldColliders, this.fixedTime);
     const renderer = invariant(
       this.pipeline.getWebGpuRenderer(),
       'WebGPU renderer is missing for the GPU cape batch.',
@@ -563,7 +559,7 @@ export class CapeDemo {
     this.cape.updateSettings(settings, this.character.getCapeAnchors());
     this.reconcilePerformanceBots(settings.bots);
     for (const bot of this.performanceBots) {
-      bot.cape.updateSettings(settings, bot.character.getCapeAnchors());
+      bot.cape?.updateSettings(settings, bot.character.getCapeAnchors());
     }
     if (settleDimensions) this.stabilizeAllCapes();
     this.applySceneCustomization(settings);
@@ -582,9 +578,13 @@ export class CapeDemo {
   }
 
   private stabilizeAllCapes(): void {
+    if (!(this.cape instanceof CapeSimulation)) {
+      this.syncCapeGeometries();
+      return;
+    }
     this.stabilizeCape();
     this.performanceBots.forEach((bot) => {
-      this.stabilizeCapeInstance(bot.character, bot.cape);
+      if (bot.cape) this.stabilizeCapeInstance(bot.character, bot.cape);
     });
     this.syncCapeGeometries();
   }
@@ -630,11 +630,13 @@ export class CapeDemo {
     character.root.rotation.y = index * 0.73;
     character.root.updateMatrixWorld(true);
 
-    const cape = this.capeFactory(
-      character.getCapeAnchors(),
-      this.customizationSettings,
-      BOT_CYAN_CAPE_PALETTE,
-    );
+    const cape = this.cape instanceof CapeSimulation
+      ? this.capeFactory(
+        character.getCapeAnchors(),
+        this.customizationSettings,
+        BOT_CYAN_CAPE_PALETTE,
+      )
+      : null;
     const input = new BotMovementInput(index);
     input.update(this.fixedTime);
     const bot: PerformanceBot = {
@@ -643,19 +645,20 @@ export class CapeDemo {
       input,
       controller: new CharacterController(character, input, this.worldCollision),
     };
-    this.scene.add(character.root, cape.mesh);
+    this.scene.add(character.root);
+    if (cape) this.scene.add(cape.mesh);
     this.configureCharacterRenderObjects(character, cape);
     // A GPU cape starts from the authored drape already. Running twelve
     // immediate steps here synchronously compiled every new compute graph on
     // the range-input event and caused multi-second UI freezes.
     if (cape instanceof CapeSimulation) this.stabilizeCapeInstance(character, cape);
-    cape.syncGeometry();
+    cape?.syncGeometry();
     return bot;
   }
 
   private configureCharacterRenderObjects(
     character: Character,
-    cape: CapeInstance,
+    cape: CapeInstance | null,
   ): void {
     const backend = this.pipeline.usesNodeRenderer() ? 'webgpu' : 'webgl';
     character.root.traverse((object) => {
@@ -664,18 +667,23 @@ export class CapeDemo {
         enableCameraIndependentShadowCaster(object, backend);
       }
     });
-    cape.mesh.layers.set(CHARACTER_RENDER_LAYER);
-    enableCameraIndependentShadowCaster(cape.mesh, backend);
+    if (cape) {
+      cape.mesh.layers.set(CHARACTER_RENDER_LAYER);
+      enableCameraIndependentShadowCaster(cape.mesh, backend);
+    }
   }
 
   private syncCapeGeometries(): void {
     this.cape.syncGeometry();
-    this.performanceBots.forEach((bot) => bot.cape.syncGeometry());
+    this.performanceBots.forEach((bot) => bot.cape?.syncGeometry());
   }
 
   private disposePerformanceBot(bot: PerformanceBot): void {
-    this.scene.remove(bot.character.root, bot.cape.mesh);
-    bot.cape.dispose();
+    this.scene.remove(bot.character.root);
+    if (bot.cape) {
+      this.scene.remove(bot.cape.mesh);
+      bot.cape.dispose();
+    }
     bot.character.dispose();
   }
 
