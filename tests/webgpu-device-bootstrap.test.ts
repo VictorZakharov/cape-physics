@@ -59,6 +59,7 @@ describe('WebGPU device bootstrap', () => {
     };
 
     await expect(requestWebGpuDevice(gpu, {
+      requestedFeatures: ['core-features-and-limits'],
       requiredLimits: { maxStorageBuffersPerShaderStage: 8 },
       onStage: (stage) => stages.push(stage),
     })).resolves.toBe(device);
@@ -69,10 +70,24 @@ describe('WebGPU device bootstrap', () => {
     expect(descriptors).toEqual([{
       requiredFeatures: [
         'core-features-and-limits',
-        'timestamp-query',
       ],
       requiredLimits: { maxStorageBuffersPerShaderStage: 8 },
     }]);
+  });
+
+  test('does not enable unrelated adapter features', async () => {
+    const descriptors: GPUDeviceDescriptor[] = [];
+    const adapter = fakeAdapter(async (descriptor) => {
+      descriptors.push(descriptor ?? {});
+      return { destroy() {} } as GPUDevice;
+    });
+
+    await requestWebGpuDevice({ requestAdapter: async () => adapter }, {
+      requestedFeatures: ['core-features-and-limits'],
+    });
+
+    expect(descriptors[0]?.requiredFeatures).toEqual(['core-features-and-limits']);
+    expect(descriptors[0]?.requiredFeatures).not.toContain('timestamp-query');
   });
 
   test('classifies a missing adapter without constructing a renderer', async () => {

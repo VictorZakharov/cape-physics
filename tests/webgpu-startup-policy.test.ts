@@ -5,34 +5,10 @@ const macChrome151 = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
   + 'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36';
 
 describe('WebGPU startup safety policy', () => {
-  test('blocks Chromium 151 on macOS before requesting an adapter', () => {
+  test('does not substitute a platform blocklist for a WebGPU fix', () => {
     expect(evaluateWebGpuStartupPolicy({
       apiAvailable: true,
       userAgent: macChrome151,
-    })).toEqual({
-      allowed: false,
-      code: 'chromium-151-macos',
-      reason: 'WebGPU is disabled on Chromium 151 for macOS because its GPU-process failure can also disable WebGL. Use WebGL or update Chrome.',
-    });
-  });
-
-  test('does not extend the temporary version gate to a future Chrome release', () => {
-    expect(evaluateWebGpuStartupPolicy({
-      apiAvailable: true,
-      userAgent: macChrome151.replace('Chrome/151', 'Chrome/152'),
-    })).toMatchObject({
-      allowed: true,
-      code: 'allowed',
-    });
-  });
-
-  test('does not block Chrome 151 on Windows', () => {
-    expect(evaluateWebGpuStartupPolicy({
-      apiAvailable: true,
-      userAgent: macChrome151.replace(
-        'Macintosh; Intel Mac OS X 10_15_7',
-        'Windows NT 10.0; Win64; x64',
-      ),
     })).toMatchObject({
       allowed: true,
       code: 'allowed',
@@ -50,7 +26,7 @@ describe('WebGPU startup safety policy', () => {
         failures: [{
           attemptId: 'lost',
           renderer: 'webgpu',
-          stage: 'webgpu-device-lost',
+          stage: 'webgpu-device-lost-after-submit-first-frame',
           name: 'Error',
           message: 'A valid external Instance reference no longer exists.',
           stack: null,

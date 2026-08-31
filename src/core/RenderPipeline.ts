@@ -21,6 +21,10 @@ const WEBGPU_REQUIRED_LIMITS = {
   maxStorageBuffersPerShaderStage: 8,
 } as const;
 
+const WEBGPU_BASE_FEATURES: readonly GPUFeatureName[] = [
+  'core-features-and-limits',
+];
+
 export type RendererInitializationStage = WebGpuBootstrapStage
   | 'webgpu-safety-check'
   | 'construct-webgpu-renderer'
@@ -103,6 +107,9 @@ export class RenderPipeline {
       observer.onStage?.(failedStage);
       if (this.webGpuBlockReason) throw new Error(this.webGpuBlockReason);
       device = await requestWebGpuDevice(navigator.gpu, {
+        requestedFeatures: this.trackTimestamps
+          ? [...WEBGPU_BASE_FEATURES, 'timestamp-query']
+          : WEBGPU_BASE_FEATURES,
         requiredLimits: WEBGPU_REQUIRED_LIMITS,
         onStage: (stage) => {
           failedStage = stage;

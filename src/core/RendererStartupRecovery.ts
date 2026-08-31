@@ -117,6 +117,7 @@ export class RendererStartupRecovery {
   private readonly userAgent: string;
   private readonly pageUrl: string;
   private state: PersistedRendererStartupState;
+  private lastStage: string | null;
 
   public constructor(options: RendererStartupRecoveryOptions = {}) {
     this.storage = options.storage ?? null;
@@ -132,6 +133,7 @@ export class RendererStartupRecovery {
       // in-memory state machine must still keep startup safe.
     }
     this.state = parseState(stored);
+    this.lastStage = this.state.current?.stage ?? null;
   }
 
   public begin(renderer: RendererPreference, explicitSelection = false): void {
@@ -162,11 +164,13 @@ export class RendererStartupRecovery {
         updatedAt: timestamp,
       },
     };
+    this.lastStage = 'construct-demo';
     this.persist();
   }
 
   public stage(stage: string): void {
     if (!this.state.current) return;
+    this.lastStage = stage;
     this.state = {
       ...this.state,
       current: {
@@ -264,6 +268,11 @@ export class RendererStartupRecovery {
       automaticReloads: this.state.automaticReloads,
       recoveryPending: this.state.recoveryPending,
     };
+  }
+
+  /** Last application stage reached, retained after successful startup. */
+  public getLastStage(): string | null {
+    return this.state.current?.stage ?? this.lastStage;
   }
 
   private appendFailure(attempt: RendererStartupAttempt, error: unknown): void {

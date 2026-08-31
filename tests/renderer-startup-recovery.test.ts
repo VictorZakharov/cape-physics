@@ -151,4 +151,14 @@ describe('renderer startup recovery', () => {
       },
     });
   });
+
+  test('retains the last successful application stage after startup completes', () => {
+    const state = recovery(new MemoryStorage(), { value: 10 }, ['gpu']);
+    state.begin('webgpu');
+    state.stage('submit-first-frame');
+    state.complete('webgpu');
+
+    expect(state.getDiagnostics().current).toBeNull();
+    expect(state.getLastStage()).toBe('submit-first-frame');
+  });
 });

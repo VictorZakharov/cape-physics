@@ -13,6 +13,7 @@ interface BootstrapTimers {
 
 export interface WebGpuDeviceBootstrapOptions {
   readonly timeoutMilliseconds?: number;
+  readonly requestedFeatures?: readonly GPUFeatureName[];
   readonly requiredLimits?: Record<string, number>;
   readonly onStage?: (stage: WebGpuBootstrapStage) => void;
   readonly timers?: BootstrapTimers;
@@ -106,7 +107,13 @@ export async function requestWebGpuDevice(
   }
 
   options.onStage?.('request-webgpu-device');
-  const requiredFeatures = Array.from(adapter.features) as GPUFeatureName[];
+  // Request only features the application actually uses. Enabling every
+  // adapter feature opts the device into experimental driver paths (for
+  // example timestamp queries, shader-f16, and subgroups) even when the app
+  // never submits work that needs them.
+  const requiredFeatures = (options.requestedFeatures ?? []).filter(
+    (feature) => adapter.features.has(feature),
+  );
   let deviceRequest: Promise<GPUDevice>;
   try {
     deviceRequest = adapter.requestDevice({

@@ -323,11 +323,12 @@ export class CapeDemo {
     if (this.pipeline.getActualBackend() === 'webgpu') {
       this.stopDeviceLossWatch = this.pipeline.onDeviceLost((info) => {
         const detail = info.message || info.reason || 'unknown device error';
+        const lastStage = this.startupRecovery.getLastStage() ?? 'unknown-stage';
         console.warn(`WebGPU device lost: ${detail}`);
         this.recoverWithWebGL(
           'WebGPU stopped responding; restarting once with WebGL',
           new Error(detail),
-          'webgpu-device-lost',
+          `webgpu-device-lost-after-${lastStage}`,
         );
       });
     } else if (this.rendererPreference === 'webgpu') {
@@ -432,13 +433,10 @@ export class CapeDemo {
     this.thirdPersonCamera.snapTo(this.character.root.position);
     await this.loading.update(0.78, 'Placing traveller lights');
     if (usesNodeRenderer) {
+      this.startupRecovery.stage('create-webgpu-lighting');
       const { WebGpuCinematicLighting } = await import('./lighting/WebGpuCinematicLighting');
       await this.loading.update(0.8, 'Creating WebGPU light pipelines');
-      const nodeRenderer = invariant(
-        this.pipeline.getNodeRenderer(),
-        'WebGPU node renderer is missing.',
-      );
-      this.lighting = new WebGpuCinematicLighting(this.scene, nodeRenderer);
+      this.lighting = new WebGpuCinematicLighting(this.scene);
       await this.loading.update(0.82, 'Binding WebGPU shadows and reflections');
     } else {
       const webGlRenderer = invariant(
