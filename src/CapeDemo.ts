@@ -137,6 +137,18 @@ interface CapeTrajectoryReport {
   readonly samples: readonly CapeTrajectorySample[];
 }
 
+interface PackedCapeBatchSample {
+  readonly frame: number;
+  readonly capes: Awaited<ReturnType<GpuCapeSimulation['readBatchStateForHarness']>>;
+}
+
+interface PackedCapeBatchReport {
+  readonly renderer: 'webgpu';
+  readonly physicsStep: number;
+  readonly botCount: number;
+  readonly samples: readonly PackedCapeBatchSample[];
+}
+
 function createScenePhaseTotals(): ScenePhaseTotals {
   return {
     camera: 0,
@@ -198,6 +210,9 @@ export class CapeDemo {
   private webGpuRecoveryStarted = false;
   private webGpuStartupTimer: number | null = null;
   private stopDeviceLossWatch: (() => void) | null = null;
+  private gpuValidationScopeStarted = false;
+  private gpuValidationError: string | null = null;
+  private gpuValidationPending: Promise<void> | null = null;
   private customizationSettings: CustomizationSettings;
   private readonly stabilizationVelocity = new THREE.Vector3();
   private readonly savedLightIntensities = new Map<THREE.Light, number>();
@@ -471,7 +486,7 @@ export class CapeDemo {
       return;
     }
 
-    const computeNodes = this.cape.prepareBatchStep(step, [
+    this.submitGpuCapeBatch(step, [
       {
         anchors: this.character.getCapeAnchors(),
         bodyColliders: this.character.getCapeColliders(),
@@ -483,12 +498,50 @@ export class CapeDemo {
         characterVelocity: bot.character.velocity,
       })),
     ], this.worldColliders, this.fixedTime);
+  };
+
+  private submitGpuCapeBatch(
+    step: number,
+    inputs: Parameters<GpuCapeSimulation['prepareBatchStep']>[1],
+    worldColliders: readonly WorldCollider[],
+    time: number,
+  ): void {
+    if (this.cape instanceof CapeSimulation) {
+      throw new Error('GPU cape submission requires the WebGPU solver.');
+    }
+    const computeNodes = this.cape.prepareBatchStep(step, inputs, worldColliders, time);
     const renderer = invariant(
       this.pipeline.getWebGpuRenderer(),
       'WebGPU renderer is missing for the GPU cape batch.',
     );
+    if (!this.harnessMode || this.gpuValidationScopeStarted) {
+      renderer.compute(computeNodes);
+      return;
+    }
+
+    const device = (renderer.backend as { readonly device?: GPUDevice }).device;
+    if (!device) {
+      renderer.compute(computeNodes);
+      return;
+    }
+    this.gpuValidationScopeStarted = true;
+    device.pushErrorScope('validation');
     renderer.compute(computeNodes);
-  };
+    this.gpuValidationPending = device.popErrorScope()
+      .then((error) => {
+        this.gpuValidationError = error?.message ?? null;
+      })
+      .catch((error: unknown) => {
+        this.gpuValidationError = error instanceof Error ? error.message : String(error);
+      });
+  }
+
+  private async assertGpuComputeValid(): Promise<void> {
+    await this.gpuValidationPending;
+    if (this.gpuValidationError) {
+      throw new Error(`WebGPU cape compute validation failed: ${this.gpuValidationError}`);
+    }
+  }
 
   private updateScene(delta: number): void {
     const playerPosition = this.character.root.position;
@@ -775,6 +828,7 @@ export class CapeDemo {
       },
       advance: ({ duration, frameStep = 1 / 60 }) => this.advanceHarness(duration, frameStep),
       traceCapeScenario: (options) => this.traceCapeScenario(options),
+      tracePackedCapeBatch: (options) => this.tracePackedCapeBatch(options),
       profile: ({
         duration,
         frameStep = 1 / 60,
@@ -948,6 +1002,7 @@ export class CapeDemo {
         }
       }
       if (frame % sampleInterval === 0) {
+        await this.assertGpuComputeValid();
         await this.cape.refreshDiagnostics();
         samples.push(this.captureCapeTrajectorySample(frame));
       }
@@ -956,14 +1011,22 @@ export class CapeDemo {
       this.characterController.update(PHYSICS_STEP, this.thirdPersonCamera.yaw);
       this.characterController.consumeLandingImpact();
       this.character.root.updateMatrixWorld(true);
-      this.cape.step(
-        PHYSICS_STEP,
-        this.character.getCapeAnchors(),
-        this.character.getCapeColliders(),
-        [],
-        this.character.velocity,
-        this.fixedTime,
-      );
+      if (this.cape instanceof CapeSimulation) {
+        this.cape.step(
+          PHYSICS_STEP,
+          this.character.getCapeAnchors(),
+          this.character.getCapeColliders(),
+          [],
+          this.character.velocity,
+          this.fixedTime,
+        );
+      } else {
+        this.submitGpuCapeBatch(PHYSICS_STEP, [{
+          anchors: this.character.getCapeAnchors(),
+          bodyColliders: this.character.getCapeColliders(),
+          characterVelocity: this.character.velocity,
+        }], [], this.fixedTime);
+      }
       this.cape.syncGeometry();
       this.pipeline.renderManual(PHYSICS_STEP);
     }
@@ -974,6 +1037,61 @@ export class CapeDemo {
       physicsStep: PHYSICS_STEP,
       samples,
     };
+  }
+
+  private async tracePackedCapeBatch({
+    bots = 2,
+    frames = 90,
+    sampleEvery = 6,
+  }: {
+    bots?: number;
+    frames?: number;
+    sampleEvery?: number;
+  } = {}): Promise<PackedCapeBatchReport> {
+    if (this.cape instanceof CapeSimulation) {
+      throw new Error('Packed cape batch tracing requires the WebGPU solver.');
+    }
+    const botCount = THREE.MathUtils.clamp(Math.round(bots), 1, 10);
+    const frameCount = THREE.MathUtils.clamp(Math.round(frames), 2, 360);
+    const sampleInterval = THREE.MathUtils.clamp(Math.round(sampleEvery), 1, 30);
+    const previousBotCount = this.performanceBots.length;
+    this.reconcilePerformanceBots(0);
+    this.resetHarnessPlayer();
+    this.fixedTime = 0;
+    this.cape.updateSettings(DEFAULT_CAPE_PHYSICS_SETTINGS, this.character.getCapeAnchors());
+    this.cape.reset(this.character.getCapeAnchors());
+    this.reconcilePerformanceBots(botCount);
+    const samples: PackedCapeBatchSample[] = [];
+    try {
+      for (let frame = 0; frame < frameCount; frame += 1) {
+        const moving = frame >= 10;
+        const horizontal = moving
+          ? (Math.floor((frame - 10) / 20) % 2 === 0 ? 0.55 : -0.55)
+          : 0;
+        this.input.setVirtualMovement(horizontal, moving ? 1 : 0);
+        // Exercise the production packed submission path: one compute graph,
+        // one workgroup per player/bot cape, and each lane's live anchors.
+        this.simulateStep(PHYSICS_STEP);
+        this.syncCapeGeometries();
+        this.pipeline.renderManual(PHYSICS_STEP);
+        if (frame % sampleInterval === 0 || frame === frameCount - 1) {
+          await this.assertGpuComputeValid();
+          samples.push({
+            frame,
+            capes: await this.cape.readBatchStateForHarness(),
+          });
+        }
+      }
+      return {
+        renderer: 'webgpu',
+        physicsStep: PHYSICS_STEP,
+        botCount,
+        samples,
+      };
+    } finally {
+      this.input.clearVirtualMovement();
+      this.reconcilePerformanceBots(previousBotCount);
+    }
   }
 
   private async profileHarness(

@@ -21,7 +21,10 @@ describe('WebGPU multi-cape submission architecture', () => {
       'const constraintIndex = instanceIndex.mod(uint(PARTICLE_COUNT));',
     );
     expect(gpuSource).toContain('return this.computeSequence.slice();');
-    expect(demoSource).toContain('const computeNodes = this.cape.prepareBatchStep(step, [');
+    expect(demoSource).toContain('this.submitGpuCapeBatch(step, [');
+    expect(demoSource).toContain(
+      'const computeNodes = this.cape.prepareBatchStep(step, inputs, worldColliders, time);',
+    );
     expect(demoSource).toContain('renderer.compute(computeNodes);');
     expect(demoSource).not.toContain('computeNodes.push(...bot.cape.prepareStep(');
     expect(demoSource).toContain('const cape = this.cape instanceof CapeSimulation');

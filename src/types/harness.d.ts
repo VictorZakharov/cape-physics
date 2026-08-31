@@ -255,6 +255,23 @@ declare global {
           readonly lowerCapeRowCurlRatio: number;
         }[];
       }>;
+      tracePackedCapeBatch: (options?: {
+        bots?: number;
+        frames?: number;
+        sampleEvery?: number;
+      }) => Promise<{
+        readonly renderer: 'webgpu';
+        readonly physicsStep: number;
+        readonly botCount: number;
+        readonly samples: readonly {
+          readonly frame: number;
+          readonly capes: readonly {
+            readonly capeIndex: number;
+            readonly maximumNecklineAttachmentError: number;
+            readonly particles: readonly number[];
+          }[];
+        }[];
+      }>;
       profile: (options: {
         duration: number;
         frameStep?: number;

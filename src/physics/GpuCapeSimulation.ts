@@ -127,6 +127,13 @@ export interface GpuCapeStepInput {
   readonly characterVelocity: THREE.Vector3;
 }
 
+export interface GpuCapeBatchHarnessState {
+  readonly capeIndex: number;
+  readonly maximumNecklineAttachmentError: number;
+  /** Particle triples in neckline-local right/up/back coordinates. */
+  readonly particles: readonly number[];
+}
+
 const PARTICLE_COUNT = CAPE.columns * CAPE.rows;
 export const MAXIMUM_GPU_CAPES = 11;
 const PACKED_PARTICLE_COUNT = PARTICLE_COUNT * MAXIMUM_GPU_CAPES;
@@ -723,6 +730,51 @@ export class GpuCapeSimulation {
     // is not a world-contact counter. World contact totals remain unavailable
     // without adding a readback-only storage binding to the hot compute path.
     this.worldContactsLastStep = 0;
+  }
+
+  /**
+   * Local GPU-harness readback for every active packed lane. Production never
+   * calls this; it exists so batch correctness is verified from GPU state
+   * instead of inferred from source text or screenshots.
+   */
+  public async readBatchStateForHarness(): Promise<readonly GpuCapeBatchHarnessState[]> {
+    const positions = new Float32Array(
+      await this.renderer.getArrayBufferAsync(this.positionBuffer.value),
+    );
+    return Array.from({ length: this.activeCapeCount }, (_, capeIndex) => {
+      const anchors = this.lastAnchors[capeIndex];
+      if (!anchors) throw new Error(`Missing anchors for GPU cape lane ${capeIndex}.`);
+      const center = anchors.left.clone().add(anchors.right).multiplyScalar(0.5);
+      const right = anchors.right.clone().sub(anchors.left).normalize();
+      const capeBase = capeIndex * PARTICLE_COUNT;
+      const particles: number[] = [];
+      for (let localIndex = 0; localIndex < PARTICLE_COUNT; localIndex += 1) {
+        const offset = (capeBase + localIndex) * 4;
+        const particle = new THREE.Vector3(
+          positions[offset]!,
+          positions[offset + 1]!,
+          positions[offset + 2]!,
+        ).sub(center);
+        particles.push(particle.dot(right), particle.y, particle.dot(anchors.back));
+      }
+      const leftOffset = capeBase * 4;
+      const rightOffset = (capeBase + CAPE.columns - 1) * 4;
+      const leftError = new THREE.Vector3(
+        positions[leftOffset]!,
+        positions[leftOffset + 1]!,
+        positions[leftOffset + 2]!,
+      ).distanceTo(anchors.left);
+      const rightError = new THREE.Vector3(
+        positions[rightOffset]!,
+        positions[rightOffset + 1]!,
+        positions[rightOffset + 2]!,
+      ).distanceTo(anchors.right);
+      return {
+        capeIndex,
+        maximumNecklineAttachmentError: Math.max(leftError, rightError),
+        particles,
+      };
+    });
   }
 
   /** Harness-only state injection; production simulation never performs this upload. */
@@ -1526,10 +1578,14 @@ export class GpuCapeSimulation {
   ): THREE.ComputeNode {
     return Fn(() => {
       const capeIndex = workgroupId.x;
+      const triangleSlot = localId.x;
       If(capeIndex.lessThan(this.activeCapeCountUniform), () => {
         const passResult = float(0).toVar('faceSweepResult');
         for (let color = 0; color < 8; color += 1) {
-          passResult.assign(colorPass(uint(color)));
+          // Built-in invocation IDs are scoped to the compute entry point.
+          // Pass the slot explicitly so TSL does not emit an unresolved
+          // `localId` reference inside the generated helper function.
+          passResult.assign(colorPass(uint(color), triangleSlot, capeIndex));
           storageBarrier();
         }
       });
@@ -2582,8 +2638,10 @@ export class GpuCapeSimulation {
       inputs: [{ name: 'sample', type: 'vec3' }],
     }) : null;
 
-    return Fn<readonly [THREE.Node<'uint'>], THREE.Node<'float'>>(([color]) => {
-      const capeIndex = workgroupId.x;
+    return Fn<
+      readonly [THREE.Node<'uint'>, THREE.Node<'uint'>, THREE.Node<'uint'>],
+      THREE.Node<'float'>
+    >(([color, triangleSlot, capeIndex]) => {
       const capeBase = capeIndex.mul(uint(PARTICLE_COUNT));
       const worldCounts = this.worldCountUniform.element(capeIndex);
       const orientation = color.mod(uint(2));
@@ -2595,7 +2653,6 @@ export class GpuCapeSimulation {
         uint(Math.ceil((CAPE.rows - 1) / 2)),
         uint(Math.floor((CAPE.rows - 1) / 2)),
       );
-      const triangleSlot = localId.x;
       If(triangleSlot.lessThan(coloredRows.mul(coloredColumns)), () => {
         const localRow = triangleSlot.div(coloredColumns);
         const localColumn = triangleSlot.mod(coloredColumns);
@@ -2904,7 +2961,11 @@ export class GpuCapeSimulation {
     }, 'float').setLayout({
       name: `capeRockFaceColorPass${passName}`,
       type: 'float',
-      inputs: [{ name: 'color', type: 'uint' }],
+      inputs: [
+        { name: 'color', type: 'uint' },
+        { name: 'triangleSlot', type: 'uint' },
+        { name: 'capeIndex', type: 'uint' },
+      ],
     });
   }
 
@@ -2919,8 +2980,10 @@ export class GpuCapeSimulation {
     buffer: typeof this.positionBuffer,
     passName: string,
   ) {
-    return Fn<readonly [THREE.Node<'uint'>], THREE.Node<'float'>>(([color]) => {
-      const capeIndex = workgroupId.x;
+    return Fn<
+      readonly [THREE.Node<'uint'>, THREE.Node<'uint'>, THREE.Node<'uint'>],
+      THREE.Node<'float'>
+    >(([color, triangleSlot, capeIndex]) => {
       const capeBase = capeIndex.mul(uint(PARTICLE_COUNT));
       const anchorState = this.anchorStateUniform.element(capeIndex);
       const bodyState = this.bodyStateUniform.element(capeIndex);
@@ -2934,7 +2997,6 @@ export class GpuCapeSimulation {
         uint(Math.ceil((CAPE.rows - 1) / 2)),
         uint(Math.floor((CAPE.rows - 1) / 2)),
       );
-      const triangleSlot = localId.x;
       If(triangleSlot.lessThan(coloredRows.mul(coloredColumns)), () => {
         const localRow = triangleSlot.div(coloredColumns);
         const localColumn = triangleSlot.mod(coloredColumns);
@@ -3147,7 +3209,11 @@ export class GpuCapeSimulation {
     }, 'float').setLayout({
       name: `capeVirtualBodyContactColorPass${passName}`,
       type: 'float',
-      inputs: [{ name: 'color', type: 'uint' }],
+      inputs: [
+        { name: 'color', type: 'uint' },
+        { name: 'triangleSlot', type: 'uint' },
+        { name: 'capeIndex', type: 'uint' },
+      ],
     });
   }
 

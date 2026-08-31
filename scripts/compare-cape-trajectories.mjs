@@ -66,6 +66,10 @@ const sampleEvery = Number.parseInt(process.env.CAPE_TRAJECTORY_SAMPLE_EVERY ?? 
 if (!Number.isInteger(sampleEvery) || sampleEvery < 1 || sampleEvery > 12) {
   throw new Error('CAPE_TRAJECTORY_SAMPLE_EVERY must be an integer from 1 to 12.');
 }
+const packedBatchBots = Number.parseInt(process.env.CAPE_TRAJECTORY_BATCH_BOTS ?? '2', 10);
+if (!Number.isInteger(packedBatchBots) || packedBatchBots < 1 || packedBatchBots > 10) {
+  throw new Error('CAPE_TRAJECTORY_BATCH_BOTS must be an integer from 1 to 10.');
+}
 const scenarioFrames = {
   'raised-drop': 120,
   'falling-forward-start': 180,
@@ -88,6 +92,7 @@ const browserCandidates = [
 ].filter(Boolean);
 const browserExecutable = browserCandidates.find(existsSync);
 if (!browserExecutable) throw new Error('Edge or Chrome was not found; set CAPE_EDGE_PATH.');
+const deferredCleanupErrors = [];
 
 function particleDistance(first, second, offset) {
   return Math.hypot(
@@ -491,13 +496,88 @@ function compareReports(webgl, webgpu) {
   };
 }
 
+function summarizePackedBatch(report) {
+  const capeCount = report.botCount + 1;
+  const maximumNecklineAttachmentErrors = Array(capeCount).fill(0);
+  const maximumLocalParticleSteps = Array(capeCount).fill(0);
+  const previousParticles = Array(capeCount).fill(null);
+  for (const sample of report.samples) {
+    assert(
+      sample.capes.length === capeCount,
+      `packed WebGPU batch returned ${sample.capes.length} capes instead of ${capeCount}`,
+    );
+    for (const cape of sample.capes) {
+      const capeIndex = cape.capeIndex;
+      assert(capeIndex >= 0 && capeIndex < capeCount, `packed WebGPU lane ${capeIndex} is invalid`);
+      assert(
+        cape.particles.length === CAPE.columns * CAPE.rows * 3,
+        `packed WebGPU lane ${capeIndex} returned an incomplete particle grid`,
+      );
+      assert(
+        cape.particles.every(Number.isFinite),
+        `packed WebGPU lane ${capeIndex} produced non-finite particles`,
+      );
+      maximumNecklineAttachmentErrors[capeIndex] = Math.max(
+        maximumNecklineAttachmentErrors[capeIndex],
+        cape.maximumNecklineAttachmentError,
+      );
+      const previous = previousParticles[capeIndex];
+      if (previous) {
+        for (let offset = CAPE.columns * 3; offset < cape.particles.length; offset += 3) {
+          maximumLocalParticleSteps[capeIndex] = Math.max(
+            maximumLocalParticleSteps[capeIndex],
+            particleDistance(previous, cape.particles, offset),
+          );
+        }
+      }
+      previousParticles[capeIndex] = cape.particles;
+    }
+  }
+  return {
+    capeCount,
+    samples: report.samples.length,
+    maximumNecklineAttachmentErrors,
+    maximumLocalParticleSteps,
+  };
+}
+
+function validatePackedBatch(summary) {
+  assert(summary.samples >= 2, 'packed WebGPU batch did not produce enough samples');
+  summary.maximumNecklineAttachmentErrors.forEach((maximumError, capeIndex) => {
+    validateNecklineAttachment({
+      scenario: `packed-batch lane ${capeIndex}`,
+      renderer: 'WebGPU',
+      maximumError,
+    });
+  });
+  summary.maximumLocalParticleSteps.forEach((maximumStep, capeIndex) => {
+    assert(
+      Number.isFinite(maximumStep) && maximumStep >= 0.001,
+      `packed WebGPU lane ${capeIndex} remained frozen (${maximumStep} m local step)`,
+    );
+  });
+}
+
 async function captureRenderer(renderer, staticPort) {
   mkdirSync(temporaryParent, { recursive: true });
-  const temporaryRoot = mkdtempSync(join(temporaryParent, `cape-trajectory-${renderer}-`));
+  const configuredRoot = process.env[
+    `CAPE_TRAJECTORY_${renderer.toUpperCase()}_PROFILE_ROOT`
+  ];
+  const temporaryRoot = configuredRoot
+    ? resolve(configuredRoot)
+    : mkdtempSync(join(temporaryParent, `cape-trajectory-${renderer}-`));
+  if (!temporaryRoot.toLowerCase().startsWith(`${temporaryParent.toLowerCase()}\\`)) {
+    throw new Error(`Trajectory profile root must stay under ${temporaryParent}: ${temporaryRoot}`);
+  }
+  mkdirSync(temporaryRoot, { recursive: true });
   const debugPort = await reservePort();
   const pageUrl = `http://127.0.0.1:${staticPort}/?harness=1&renderer=${renderer}`;
   const browser = spawn(browserExecutable, [
     '--headless=new',
+    // This local-only harness loads the repository build with background
+    // networking disabled. On Windows, Chromium's sandbox gives generated
+    // profile files ACLs that the launching account cannot remove afterward.
+    '--no-sandbox',
     '--no-first-run',
     '--no-default-browser-check',
     '--disable-background-networking',
@@ -531,7 +611,11 @@ async function captureRenderer(renderer, staticPort) {
     if (!page?.webSocketDebuggerUrl) throw new Error('Browser did not expose the trajectory page.');
     debuggerConnection = await connectDebugger(page.webSocketDebuggerUrl);
     const { command } = debuggerConnection;
-    await Promise.all([command('Runtime.enable'), command('Page.enable')]);
+    await Promise.all([
+      command('Runtime.enable'),
+      command('Page.enable'),
+      command('Log.enable'),
+    ]);
     await waitForExpression(command, 'window.__CAPE_DEMO__?.ready === true', 60_000);
     const diagnostics = await evaluate(command, 'window.__CAPE_DEMO__.getDiagnostics()');
     if (diagnostics.renderer.actual !== renderer) {
@@ -548,17 +632,58 @@ async function captureRenderer(renderer, staticPort) {
         })})`,
       );
     }
+    if (renderer === 'webgpu') {
+      reports.packedBatch = await evaluate(
+        command,
+        `window.__CAPE_DEMO__.tracePackedCapeBatch(${JSON.stringify({
+          bots: packedBatchBots,
+          frames: 90,
+          sampleEvery: 6,
+        })})`,
+      );
+    }
     return reports;
   } catch (error) {
-    throw new Error(`${renderer} trajectory capture failed: ${error.message}\n${browserLog}`);
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
+    const runtimeLog = (debuggerConnection?.events ?? [])
+      .filter((event) => (
+        event.method === 'Runtime.consoleAPICalled'
+        || event.method === 'Runtime.exceptionThrown'
+        || event.method === 'Log.entryAdded'
+      ))
+      .map((event) => {
+        if (event.method === 'Runtime.consoleAPICalled') {
+          return (event.params?.args ?? [])
+            .map((argument) => argument.value ?? argument.description ?? '')
+            .join(' ');
+        }
+        if (event.method === 'Runtime.exceptionThrown') {
+          return event.params?.exceptionDetails?.exception?.description
+            ?? event.params?.exceptionDetails?.text
+            ?? '';
+        }
+        return event.params?.entry?.text ?? '';
+      })
+      .filter(Boolean)
+      .join('\n');
+    throw new Error(
+      `${renderer} trajectory capture failed: ${error.message}`
+      + `${runtimeLog ? `\nRuntime diagnostics:\n${runtimeLog}` : ''}`
+      + `\n${browserLog}`,
+    );
   } finally {
-    await runCleanupSteps([
-      ['browser shutdown', () => closeBrowserProcess(browser, debuggerConnection)],
-      ['temporary browser profile', async () => {
-        rmSync(temporaryRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 250 });
-        if (existsSync(temporaryRoot)) throw new Error(`Directory remains: ${temporaryRoot}`);
-      }],
-    ]);
+    try {
+      await runCleanupSteps([
+        ['browser shutdown', () => closeBrowserProcess(browser, debuggerConnection)],
+        ['temporary browser profile', async () => {
+          rmSync(temporaryRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 250 });
+          if (existsSync(temporaryRoot)) throw new Error(`Directory remains: ${temporaryRoot}`);
+        }],
+      ]);
+    } catch (error) {
+      deferredCleanupErrors.push(error);
+      console.error(`${renderer} cleanup failed: ${error.message}`);
+    }
   }
 }
 
@@ -584,11 +709,7 @@ try {
       parity: compareReports(webgl[scenario], webgpu[scenario]),
     },
   ]));
-  if (enforce) {
-    for (const scenario of requestedScenarios) {
-      validateScenario(scenario, webgl[scenario], webgpu[scenario], comparisons[scenario]);
-    }
-  }
+  const packedBatch = summarizePackedBatch(webgpu.packedBatch);
   const result = {
     generatedAt: new Date().toISOString(),
     validationReceipt: {
@@ -597,19 +718,39 @@ try {
       sourceFiles: validationSourcePaths.map(
         (path) => relative(repositoryRoot, path).replaceAll('\\', '/'),
       ),
-      passed: enforce,
+      passed: false,
     },
     browser: browserExecutable,
     scenarios: requestedScenarios,
     enforced: enforce,
     sampleEvery,
+    packedBatch,
     comparisons,
     traces: { webgl, webgpu },
   };
   mkdirSync(dirname(outputPath), { recursive: true });
   writeFileSync(outputPath, `${JSON.stringify(result, null, 2)}\n`);
+  let validationError;
+  if (enforce) {
+    try {
+      for (const scenario of requestedScenarios) {
+        validateScenario(scenario, webgl[scenario], webgpu[scenario], comparisons[scenario]);
+      }
+      validatePackedBatch(packedBatch);
+      result.validationReceipt.passed = true;
+      writeFileSync(outputPath, `${JSON.stringify(result, null, 2)}\n`);
+    } catch (error) {
+      validationError = error;
+    }
+  }
   console.log(JSON.stringify({ generatedAt: result.generatedAt, comparisons }, null, 2));
   console.log(`Cape trajectory report written to ${outputPath}`);
+  if (validationError || deferredCleanupErrors.length > 0) {
+    throw new AggregateError(
+      [validationError, ...deferredCleanupErrors].filter(Boolean),
+      'Cape trajectory audit failed.',
+    );
+  }
 } finally {
   await close(server);
 }
