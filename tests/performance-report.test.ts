@@ -72,6 +72,8 @@ describe('performance report', () => {
         capeSleeping: false,
         worldColliders: 2_260,
         activeRipples: 7,
+        botCount: 6,
+        simulatedCapes: 7,
       },
       page: {
         visibility: 'visible',
@@ -92,7 +94,8 @@ describe('performance report', () => {
     expect(report).toContain('Renderer: WebGL 2.0 | Example Vendor | Example GPU');
     expect(report).toContain('Renderer selection: requested WEBGPU | active WEBGL | fallback active');
     expect(report).toContain('138498 triangles');
-    expect(report).toContain('2260 cape colliders');
+    expect(report).toContain('6 performance bots | 7 simulated capes');
+    expect(report).toContain('2260 cape colliders/cape');
     expect(report).toContain('Main thread: 5.40 ms average | p95 8.20 ms');
     expect(report).toContain('Timing caveat: display FPS is refresh/vsync capped');
     expect(report).toContain('sequential CPU PBD Gauss-Seidel at 120 Hz');

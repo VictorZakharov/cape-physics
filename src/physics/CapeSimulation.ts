@@ -1,6 +1,10 @@
 import * as THREE from 'three';
 import { CAMERA_NEAR_OPACITY, CAPE, PLAYER } from '../config';
 import { createCapeFabricTextures } from '../graphics/proceduralTextures';
+import {
+  CRIMSON_CAPE_PALETTE,
+  type CapeFabricPalette,
+} from './CapeAppearance';
 import type { CapeAnchors } from '../player/Character';
 import {
   CAPE_DRAG_PER_SECOND,
@@ -109,6 +113,7 @@ export class CapeSimulation {
   public constructor(
     initialAnchors: CapeAnchors,
     settings: Partial<CapePhysicsSettings> = {},
+    appearance: CapeFabricPalette = CRIMSON_CAPE_PALETTE,
   ) {
     this.settings = normalizeCapePhysicsSettings(settings);
     const particleCount = CAPE.columns * CAPE.rows;
@@ -123,7 +128,7 @@ export class CapeSimulation {
     const geometry = this.createGeometry();
     this.positionAttribute = geometry.getAttribute('position') as THREE.BufferAttribute;
 
-    const textures = createCapeFabricTextures();
+    const textures = createCapeFabricTextures(256, appearance);
     textures.color.repeat.set(1, 1);
     textures.normal.repeat.set(1, 1);
     textures.roughness.repeat.set(1, 1);
@@ -135,14 +140,14 @@ export class CapeSimulation {
       roughness: 0.78,
       metalness: 0.01,
       sheen: 0.92,
-      sheenColor: new THREE.Color(0x6f0713),
+      sheenColor: new THREE.Color(appearance.sheenColor),
       sheenRoughness: 0.72,
       clearcoat: 0.04,
       side: THREE.DoubleSide,
       transparent: false,
       depthWrite: true,
     });
-    material.name = 'Woven crimson cape';
+    material.name = appearance.materialName;
     this.mesh = new THREE.Mesh(geometry, material);
     this.mesh.name = 'PBD cape';
     this.mesh.castShadow = true;
@@ -497,6 +502,18 @@ export class CapeSimulation {
     const nextOpacity = THREE.MathUtils.clamp(opacity, CAMERA_NEAR_OPACITY, 1);
     if (Math.abs(nextOpacity - this.opacity) < 0.002) return;
     this.opacity = nextOpacity;
+  }
+
+  public dispose(): void {
+    this.mesh.geometry.dispose();
+    this.disposeMaterial();
+  }
+
+  public disposeMaterial(): void {
+    this.mesh.material.map?.dispose();
+    this.mesh.material.normalMap?.dispose();
+    this.mesh.material.roughnessMap?.dispose();
+    this.mesh.material.dispose();
   }
 
   public getParticlePosition(column: number, row: number): THREE.Vector3 {

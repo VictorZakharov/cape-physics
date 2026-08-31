@@ -1,4 +1,8 @@
 import * as THREE from 'three';
+import {
+  CRIMSON_CAPE_PALETTE,
+  type CapeFabricPalette,
+} from '../physics/CapeAppearance';
 import { periodicFbm } from '../utils/random';
 
 export interface SurfaceTextures {
@@ -86,7 +90,10 @@ export function createRockTextures(size = 512): SurfaceTextures {
   };
 }
 
-export function createCapeFabricTextures(size = 256): Pick<SurfaceTextures, 'color' | 'normal' | 'roughness'> {
+export function createCapeFabricTextures(
+  size = 256,
+  palette: CapeFabricPalette = CRIMSON_CAPE_PALETTE,
+): Pick<SurfaceTextures, 'color' | 'normal' | 'roughness'> {
   const color = new Uint8Array(size * size * 4);
   const normal = new Uint8Array(size * size * 4);
   const roughness = new Uint8Array(size * size * 4);
@@ -105,15 +112,15 @@ export function createCapeFabricTextures(size = 256): Pick<SurfaceTextures, 'col
       const sideTrim = 1 - smoothstep(0.018, 0.052, Math.min(u, 1 - u));
       const hemTrim = 1 - smoothstep(0.018, 0.052, v);
       const trim = Math.max(sideTrim, hemTrim) * 0.72;
-      const fabricRed = 148 * shade * ageVariation;
-      const fabricGreen = 10 * shade;
-      const fabricBlue = 19 * shade;
+      const fabricRed = palette.fabric[0] * shade * ageVariation;
+      const fabricGreen = palette.fabric[1] * shade;
+      const fabricBlue = palette.fabric[2] * shade;
       writePixel(
         color,
         index,
-        THREE.MathUtils.lerp(fabricRed, 158, trim),
-        THREE.MathUtils.lerp(fabricGreen, 73, trim),
-        THREE.MathUtils.lerp(fabricBlue, 28, trim),
+        THREE.MathUtils.lerp(fabricRed, palette.trim[0], trim),
+        THREE.MathUtils.lerp(fabricGreen, palette.trim[1], trim),
+        THREE.MathUtils.lerp(fabricBlue, palette.trim[2], trim),
       );
       writePixel(normal, index, 128 + (threadX - threadY) * 18, 128 + (threadY - threadX) * 18, 249);
       const rough = 188 + noise * 35 - weave * 18;

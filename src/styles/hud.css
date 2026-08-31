@@ -348,6 +348,10 @@
   grid-column: 1 / -1;
 }
 
+.customization__range--bots {
+  grid-column: 1 / -1;
+}
+
 .customization__switch {
   position: relative;
   display: grid;

@@ -38,7 +38,15 @@ import {
   CAPE_FLUTTER_ACCELERATION,
 } from './CapeAerodynamics';
 import { CAPE_DISTANCE_CONSTRAINTS } from './CapeConstraintTopology';
+import {
+  MAXIMUM_VIRTUAL_BODY_CORRECTION_PER_STEP,
+  VIRTUAL_BODY_BARYCENTRIC_WEIGHT,
+} from './GpuVirtualBodyContact';
 import { CapeSimulation } from './CapeSimulation';
+import {
+  CRIMSON_CAPE_PALETTE,
+  type CapeFabricPalette,
+} from './CapeAppearance';
 import {
   CAPE_ROW_CURL_RELAXATION,
   CAPE_ROW_SPAN_RELAXATION,
@@ -209,11 +217,12 @@ export class GpuCapeSimulation {
     renderer: THREE.WebGPURenderer,
     initialAnchors: CapeAnchors,
     settings: Partial<CapePhysicsSettings> = {},
+    appearance: CapeFabricPalette = CRIMSON_CAPE_PALETTE,
   ) {
     this.renderer = renderer;
     this.settings = normalizeCapePhysicsSettings(settings);
     this.applySettingsUniforms();
-    this.diagnosticMirror = new CapeSimulation(initialAnchors, this.settings);
+    this.diagnosticMirror = new CapeSimulation(initialAnchors, this.settings, appearance);
 
     const initialState = this.createInitialState();
     this.positionBuffer = instancedArray(initialState.slice(), 'vec4');
@@ -305,11 +314,12 @@ export class GpuCapeSimulation {
       true,
     );
     // Animated character contact stays particle-to-capsule inside the
-    // projection kernels. Do not invert that query by projecting sampled body
-    // points through every cloth face: overlapping torso and shoulder samples
-    // turn the triangles into a rigid manifold. If this mesh ever needs denser
-    // contact sampling, add fixed barycentric virtual cloth particles and test
-    // those against the capsules like ordinary particles.
+    // projection kernels. A single final virtual-particle pass covers the
+    // triangle interiors only when all three real vertices are clear.
+    const positionVirtualBodyContacts = this.createFaceSweepKernel(
+      this.createVirtualBodyContactColorFunction(this.positionBuffer, 'Position'),
+      'Cape virtual body contacts',
+    );
     const positionRockFaces = this.createFaceSweepKernel(
       this.createRockFaceColorFunction(this.positionBuffer, 'Position', false, true),
       'Cape rock faces in position',
@@ -364,6 +374,7 @@ export class GpuCapeSimulation {
       positionRockFaces,
       finalSelfPositionToScratch,
       finalContactScratchToPosition,
+      positionVirtualBodyContacts,
       positionRockFaces,
       reconcileBodyContactVelocity,
       reconcileProjectionVerticalVelocity,
@@ -390,11 +401,12 @@ export class GpuCapeSimulation {
     ];
 
     const geometry = this.diagnosticMirror.mesh.geometry;
+    this.diagnosticMirror.disposeMaterial();
     geometry.setAttribute(
       'capeNormalNeighbors',
       new THREE.Uint32BufferAttribute(topology.normalNeighbors, 4),
     );
-    const textures = createCapeFabricTextures();
+    const textures = createCapeFabricTextures(256, appearance);
     textures.color.repeat.set(1, 1);
     textures.normal.repeat.set(1, 1);
     textures.roughness.repeat.set(1, 1);
@@ -406,14 +418,14 @@ export class GpuCapeSimulation {
       roughness: 0.78,
       metalness: 0.01,
       sheen: 0.92,
-      sheenColor: new THREE.Color(0x6f0713),
+      sheenColor: new THREE.Color(appearance.sheenColor),
       sheenRoughness: 0.72,
       clearcoat: 0.04,
       side: THREE.DoubleSide,
       transparent: false,
       depthWrite: true,
     });
-    material.name = 'GPU woven crimson cape';
+    material.name = `GPU ${appearance.materialName.toLowerCase()}`;
     material.positionNode = Fn(({ material: materialContext }) => {
       const position = this.positionBuffer.element(vertexIndex).xyz.toVar();
       const neighbors = attribute<'uvec4'>('capeNormalNeighbors', 'uvec4');
@@ -526,6 +538,14 @@ export class GpuCapeSimulation {
   }
 
   public setOpacity(_opacity: number): void {}
+
+  public dispose(): void {
+    this.mesh.geometry.dispose();
+    this.mesh.material.map?.dispose();
+    this.mesh.material.normalMap?.dispose();
+    this.mesh.material.roughnessMap?.dispose();
+    this.mesh.material.dispose();
+  }
 
   public async refreshDiagnostics(): Promise<void> {
     if (this.submittedSteps === 0) return;
@@ -2048,9 +2068,8 @@ export class GpuCapeSimulation {
 
   /**
    * Complementary rock-edge/cloth-face contact. Vertex collision handles
-   * ordinary contact; this restores a face-only crossing to the particle's
-   * previous continuous position without scatter writes or a corrective
-   * impulse that can grow into a spike.
+   * ordinary contact; this applies bounded, velocity-neutral separation only
+   * when a rock crosses the triangle interior while all vertices remain clear.
    */
   private createRockFaceColorFunction(
     buffer: typeof this.positionBuffer,
@@ -2394,7 +2413,6 @@ export class GpuCapeSimulation {
           : triangleMaximum;
         const faceCorrection = vec3(0).toVar('rockFaceCorrection');
         const hadFaceContact = bool(false).toVar('rockFaceHadContact');
-        const previousTriangleSafe = bool(true).toVar('rockFacePreviousTriangleSafe');
         Loop(
           {
             start: uint(0),
@@ -2404,6 +2422,7 @@ export class GpuCapeSimulation {
           },
           ({ i: sphereIndex }) => {
             const sphere = this.worldSphereBuffer.element(sphereIndex);
+            const sphereRadiusSquared = sphere.w.mul(sphere.w);
             const overlapsSphere = faceTriangleMaximum.x
               .greaterThanEqual(sphere.x.sub(sphere.w))
               .and(faceTriangleMinimum.x.lessThanEqual(sphere.x.add(sphere.w)))
@@ -2412,15 +2431,6 @@ export class GpuCapeSimulation {
               .and(faceTriangleMaximum.z.greaterThanEqual(sphere.z.sub(sphere.w)))
               .and(faceTriangleMinimum.z.lessThanEqual(sphere.z.add(sphere.w)));
             If(overlapsSphere, () => {
-              const previousIntersects = sphereIntersectsTriangle(
-                sphere,
-                previousFirst,
-                previousSecond,
-                previousThird,
-              );
-              If(previousIntersects, () => {
-                previousTriangleSafe.assign(bool(false));
-              });
               const currentIntersects = sphereIntersectsTriangle(
                 sphere,
                 first,
@@ -2445,7 +2455,14 @@ export class GpuCapeSimulation {
                   sweptThirdThreeQuarter,
                 ))
                 : currentIntersects;
-              If(intersects, () => {
+              const triangleHasVertexContact = first.sub(sphere.xyz).dot(first.sub(sphere.xyz))
+                .lessThanEqual(sphereRadiusSquared.add(0.000_001))
+                .or(second.sub(sphere.xyz).dot(second.sub(sphere.xyz))
+                  .lessThanEqual(sphereRadiusSquared.add(0.000_001)))
+                .or(third.sub(sphere.xyz).dot(third.sub(sphere.xyz))
+                  .lessThanEqual(sphereRadiusSquared.add(0.000_001)))
+                .toVar('sphereTriangleHasVertexContact');
+              If(intersects.and(triangleHasVertexContact.not()), () => {
                 const centroid = first.add(second).add(third).div(3);
                 const resolvedNormal = centroid.sub(sphere.xyz)
                   .toVar('sphereFaceResolvedNormal');
@@ -2475,22 +2492,13 @@ export class GpuCapeSimulation {
               .and(faceTriangleMaximum.z.greaterThanEqual(rockMinimum.z))
               .and(faceTriangleMinimum.z.lessThanEqual(rockMaximum.z));
             If(overlapsRock, () => {
-              const previousOverlapsRock = previousTriangleMaximum.x
-                .greaterThanEqual(rockMinimum.x)
-                .and(previousTriangleMinimum.x.lessThanEqual(rockMaximum.x))
-                .and(previousTriangleMaximum.y.greaterThanEqual(rockMinimum.y))
-                .and(previousTriangleMinimum.y.lessThanEqual(rockMaximum.y))
-                .and(previousTriangleMaximum.z.greaterThanEqual(rockMinimum.z))
-                .and(previousTriangleMinimum.z.lessThanEqual(rockMaximum.z));
               const triangleIntersects = bool(false).toVar('rockFaceTriangleIntersects');
-              const previousTriangleIntersects = bool(false)
-                .toVar('rockFacePreviousTriangleIntersects');
-              const previousFirstInside = previousOverlapsRock
-                .toVar('rockFacePreviousFirstInside');
-              const previousSecondInside = previousOverlapsRock
-                .toVar('rockFacePreviousSecondInside');
-              const previousThirdInside = previousOverlapsRock
-                .toVar('rockFacePreviousThirdInside');
+              const firstSurfaceDistance = float(-1_000_000)
+                .toVar('rockFaceFirstSurfaceDistance');
+              const secondSurfaceDistance = float(-1_000_000)
+                .toVar('rockFaceSecondSurfaceDistance');
+              const thirdSurfaceDistance = float(-1_000_000)
+                .toVar('rockFaceThirdSurfaceDistance');
               Loop(
                 {
                   start: uint(0),
@@ -2504,6 +2512,15 @@ export class GpuCapeSimulation {
                   const rockSecond = this.rockBuffer.element(rockFaceBase.add(1)).xyz;
                   const rockThird = this.rockBuffer.element(rockFaceBase.add(2)).xyz;
                   const rockPlane = this.rockBuffer.element(rockFaceBase.add(3));
+                  firstSurfaceDistance.assign(
+                    firstSurfaceDistance.max(rockPlane.xyz.dot(first).sub(rockPlane.w)),
+                  );
+                  secondSurfaceDistance.assign(
+                    secondSurfaceDistance.max(rockPlane.xyz.dot(second).sub(rockPlane.w)),
+                  );
+                  thirdSurfaceDistance.assign(
+                    thirdSurfaceDistance.max(rockPlane.xyz.dot(third).sub(rockPlane.w)),
+                  );
                   const rockFaceMinimum = rockFirst.min(rockSecond).min(rockThird);
                   const rockFaceMaximum = rockFirst.max(rockSecond).max(rockThird);
                   const overlapsRockFace = faceTriangleMaximum.x
@@ -2550,49 +2567,14 @@ export class GpuCapeSimulation {
                       triangleIntersects.assign(bool(true));
                     });
                   });
-                  If(previousOverlapsRock, () => {
-                    If(rockPlane.xyz.dot(previousFirst).sub(rockPlane.w).greaterThan(0.000_001), () => {
-                      previousFirstInside.assign(bool(false));
-                    });
-                    If(rockPlane.xyz.dot(previousSecond).sub(rockPlane.w).greaterThan(0.000_001), () => {
-                      previousSecondInside.assign(bool(false));
-                    });
-                    If(rockPlane.xyz.dot(previousThird).sub(rockPlane.w).greaterThan(0.000_001), () => {
-                      previousThirdInside.assign(bool(false));
-                    });
-                    const previousOverlapsRockFace = previousTriangleMaximum.x
-                      .greaterThanEqual(rockFaceMinimum.x)
-                      .and(previousTriangleMinimum.x.lessThanEqual(rockFaceMaximum.x))
-                      .and(previousTriangleMaximum.y.greaterThanEqual(rockFaceMinimum.y))
-                      .and(previousTriangleMinimum.y.lessThanEqual(rockFaceMaximum.y))
-                      .and(previousTriangleMaximum.z.greaterThanEqual(rockFaceMinimum.z))
-                      .and(previousTriangleMinimum.z.lessThanEqual(rockFaceMaximum.z));
-                    If(previousOverlapsRockFace, () => {
-                      const previousIntersects = trianglesIntersect(
-                        previousFirst,
-                        previousSecond,
-                        previousThird,
-                        rockFirst,
-                        rockSecond,
-                        rockThird,
-                      );
-                      If(previousIntersects, () => {
-                        previousTriangleIntersects.assign(bool(true));
-                      });
-                    });
-                  });
                 },
               );
-              If(
-                previousTriangleIntersects
-                  .or(previousFirstInside)
-                  .or(previousSecondInside)
-                  .or(previousThirdInside),
-                () => {
-                  previousTriangleSafe.assign(bool(false));
-                },
-              );
-              If(triangleIntersects, () => {
+              const triangleHasVertexContact = firstSurfaceDistance
+                .lessThanEqual(CLOTH_ROCK_CLEARANCE + 0.000_5)
+                .or(secondSurfaceDistance.lessThanEqual(CLOTH_ROCK_CLEARANCE + 0.000_5))
+                .or(thirdSurfaceDistance.lessThanEqual(CLOTH_ROCK_CLEARANCE + 0.000_5))
+                .toVar('rockTriangleHasVertexContact');
+              If(triangleIntersects.and(triangleHasVertexContact.not()), () => {
                 const centroid = first.add(second).add(third).div(3)
                   .toVar('rockFaceCentroid');
                 const resolvedNormal = centroid.sub(
@@ -2638,9 +2620,6 @@ export class GpuCapeSimulation {
           If(caveFaceCorrection.abs().greaterThan(0.000_001), () => {
             faceCorrection.x.addAssign(caveFaceCorrection.clamp(-0.015, 0.015));
             hadFaceContact.assign(bool(true));
-            // A previous cloth face can pierce the same curved wall, so cave
-            // recovery must use the sampled separating correction, not rollback.
-            previousTriangleSafe.assign(bool(false));
           });
         }
         const correctionLength = faceCorrection.length().toVar('rockFaceCorrectionLength');
@@ -2650,23 +2629,7 @@ export class GpuCapeSimulation {
         If(hadFaceContact, () => {
           atomicOr(this.materialContactFlagBuffer.element(uint(0)), uint(1));
         });
-        If(hadFaceContact.and(previousTriangleSafe), () => {
-          const restorePrevious = (
-            particleIndex: THREE.Node<'uint'>,
-            previousPosition: THREE.Node<'vec3'>,
-          ): void => {
-            If(particleIndex.greaterThanEqual(uint(CAPE.columns)), () => {
-              const state = buffer.element(particleIndex);
-              buffer.element(particleIndex).assign(vec4(
-                previousPosition,
-                state.w,
-              ));
-            });
-          };
-          restorePrevious(firstIndex, previousFirst);
-          restorePrevious(secondIndex, previousSecond);
-          restorePrevious(thirdIndex, previousThird);
-        }).ElseIf(hadFaceContact, () => {
+        If(hadFaceContact, () => {
           const applyCorrection = (particleIndex: THREE.Node<'uint'>): void => {
             If(particleIndex.greaterThanEqual(uint(CAPE.columns)), () => {
               const state = buffer.element(particleIndex);
@@ -2698,6 +2661,239 @@ export class GpuCapeSimulation {
       return float(0);
     }, 'float').setLayout({
       name: `capeRockFaceColorPass${passName}`,
+      type: 'float',
+      inputs: [{ name: 'color', type: 'uint' }],
+    });
+  }
+
+  /**
+   * Adds one fixed barycentric cloth sample at each triangle centroid. Unlike
+   * the removed inverse body-point sweep, this follows the same point-capsule
+   * query as real cloth particles and activates only when every real vertex is
+   * already clear. One deepest correction is redistributed to the triangle so
+   * overlapping character capsules cannot turn it into a rigid manifold.
+   */
+  private createVirtualBodyContactColorFunction(
+    buffer: typeof this.positionBuffer,
+    passName: string,
+  ) {
+    return Fn<readonly [THREE.Node<'uint'>], THREE.Node<'float'>>(([color]) => {
+      const orientation = color.mod(uint(2));
+      const columnParity = color.div(uint(2)).mod(uint(2));
+      const rowParity = color.div(uint(4));
+      const coloredColumns = uint(Math.ceil((CAPE.columns - 1) / 2));
+      const coloredRows = select(
+        rowParity.equal(uint(0)),
+        uint(Math.ceil((CAPE.rows - 1) / 2)),
+        uint(Math.floor((CAPE.rows - 1) / 2)),
+      );
+      const triangleSlot = instanceIndex;
+      If(triangleSlot.lessThan(coloredRows.mul(coloredColumns)), () => {
+        const localRow = triangleSlot.div(coloredColumns);
+        const localColumn = triangleSlot.mod(coloredColumns);
+        const cellRow = rowParity.add(localRow.mul(2));
+        const cellColumn = columnParity.add(localColumn.mul(2));
+        const topLeft = cellRow.mul(uint(CAPE.columns)).add(cellColumn);
+        const bottomLeft = topLeft.add(uint(CAPE.columns));
+        const firstIndex = select(orientation.equal(uint(0)), topLeft, bottomLeft);
+        const secondIndex = select(
+          orientation.equal(uint(0)),
+          bottomLeft,
+          bottomLeft.add(1),
+        );
+        const thirdIndex = topLeft.add(1);
+        const firstState = buffer.element(firstIndex);
+        const secondState = buffer.element(secondIndex);
+        const thirdState = buffer.element(thirdIndex);
+        const first = firstState.xyz;
+        const second = secondState.xyz;
+        const third = thirdState.xyz;
+        const firstMass = select(firstIndex.lessThan(uint(CAPE.columns)), 0, 1);
+        const secondMass = select(secondIndex.lessThan(uint(CAPE.columns)), 0, 1);
+        const thirdMass = select(thirdIndex.lessThan(uint(CAPE.columns)), 0, 1);
+        const virtualPoint = first.add(second).add(third)
+          .mul(VIRTUAL_BODY_BARYCENTRIC_WEIGHT)
+          .toVar('virtualBodyPoint');
+        const previousVirtualPoint = this.previousBuffer.element(firstIndex).xyz
+          .add(this.previousBuffer.element(secondIndex).xyz)
+          .add(this.previousBuffer.element(thirdIndex).xyz)
+          .mul(VIRTUAL_BODY_BARYCENTRIC_WEIGHT)
+          .toVar('previousVirtualBodyPoint');
+        const virtualColumn = float(firstIndex.mod(uint(CAPE.columns)))
+          .add(float(secondIndex.mod(uint(CAPE.columns))))
+          .add(float(thirdIndex.mod(uint(CAPE.columns))))
+          .mul(VIRTUAL_BODY_BARYCENTRIC_WEIGHT);
+        const topologySide = virtualColumn.div(CAPE.columns - 1).sub(0.5);
+        const bodyRight = vec3(
+          this.backUniform.z,
+          0,
+          this.backUniform.x.negate(),
+        ).normalize().toVar('virtualBodyRight');
+        const virtualCorrection = vec3(0).toVar('virtualBodyCorrection');
+        const virtualCorrectionLengthSquared = float(0)
+          .toVar('virtualBodyCorrectionLengthSquared');
+
+        Loop(
+          { start: uint(0), end: uint(this.bodyCountUniform), type: 'uint', condition: '<' },
+          ({ i }) => {
+            const bodyBase = i.mul(uint(BODY_BUFFER_STRIDE));
+            const startRadius = this.bodyBuffer.element(bodyBase);
+            const axisDepth = this.bodyBuffer.element(bodyBase.add(1));
+            const lateralAxis = this.bodyBuffer.element(bodyBase.add(2));
+            const verticalBounds = this.bodyBuffer.element(bodyBase.add(3));
+            const radiusSquared = startRadius.w.mul(startRadius.w);
+
+            const pointPenetrates = (sample: THREE.Node<'vec3'>): THREE.Node<'bool'> => {
+              const fromStart = sample.sub(startRadius.xyz);
+              const sampleDepth = fromStart.dot(this.backUniform);
+              const sampleLateral = fromStart.sub(this.backUniform.mul(sampleDepth));
+              const progress = select(
+                lateralAxis.w.greaterThan(0.000_001),
+                sampleLateral.dot(lateralAxis.xyz).div(lateralAxis.w).clamp(0, 1),
+                0,
+              );
+              const closest = startRadius.xyz.add(axisDepth.xyz.mul(progress));
+              const delta = sample.sub(closest);
+              const depth = delta.dot(this.backUniform);
+              const lateralSquared = delta.dot(delta).sub(depth.mul(depth)).max(0);
+              const surfaceDepth = axisDepth.w.mul(
+                float(1).sub(lateralSquared.div(radiusSquared).clamp(0, 1)).sqrt(),
+              );
+              return sample.y.greaterThanEqual(verticalBounds.x)
+                .and(sample.y.lessThanEqual(verticalBounds.y))
+                .and(lateralSquared.lessThan(radiusSquared))
+                .and(surfaceDepth.sub(depth).greaterThan(0))
+                .and(depth.greaterThan(axisDepth.w.negate()));
+            };
+
+            const triangleHasVertexContact = pointPenetrates(first)
+              .or(pointPenetrates(second))
+              .or(pointPenetrates(third))
+              .toVar('triangleHasVertexContact');
+            If(triangleHasVertexContact.not().and(pointPenetrates(virtualPoint)), () => {
+              const fromStart = virtualPoint.sub(startRadius.xyz)
+                .toVar('virtualBodyFromStart');
+              const pointDepth = fromStart.dot(this.backUniform)
+                .toVar('virtualBodyPointDepth');
+              const pointLateral = fromStart.sub(this.backUniform.mul(pointDepth))
+                .toVar('virtualBodyPointLateral');
+              const progress = select(
+                lateralAxis.w.greaterThan(0.000_001),
+                pointLateral.dot(lateralAxis.xyz).div(lateralAxis.w).clamp(0, 1),
+                0,
+              );
+              const closest = startRadius.xyz.add(axisDepth.xyz.mul(progress));
+              const delta = virtualPoint.sub(closest).toVar('virtualBodyDelta');
+              const depth = delta.dot(this.backUniform).toVar('virtualBodyDepth');
+              const lateralSquared = delta.dot(delta).sub(depth.mul(depth)).max(0)
+                .toVar('virtualBodyLateralSquared');
+              const surfaceDepth = axisDepth.w.mul(
+                float(1).sub(lateralSquared.div(radiusSquared).clamp(0, 1)).sqrt(),
+              );
+              const contactNormal = this.backUniform.toVar('virtualBodyContactNormal');
+              const penetration = surfaceDepth.sub(depth).max(0)
+                .toVar('virtualBodyPenetration');
+              If(depth.lessThan(0), () => {
+                const depthRatio = depth.div(axisDepth.w).clamp(-1, 0);
+                const lateralBoundary = startRadius.w.mul(
+                  float(1).sub(depthRatio.mul(depthRatio)).max(0).sqrt(),
+                );
+                const spatialSide = previousVirtualPoint
+                  .sub(this.anchorCenterUniform)
+                  .dot(bodyRight);
+                const preferredSide = select(
+                  topologySide.abs().greaterThan(0.000_001),
+                  topologySide,
+                  spatialSide,
+                ).toVar('virtualBodyPreferredSide');
+                If(preferredSide.abs().greaterThan(0.000_001), () => {
+                  contactNormal.assign(bodyRight.mul(
+                    select(preferredSide.greaterThan(0), 1, -1),
+                  ));
+                }).Else(() => {
+                  const preferredDelta = previousVirtualPoint.sub(closest);
+                  const preferredDepth = preferredDelta.dot(this.backUniform);
+                  const preferredLateral = preferredDelta
+                    .sub(this.backUniform.mul(preferredDepth))
+                    .mul(vec3(1, 0, 1));
+                  If(preferredLateral.length().greaterThan(0.000_001), () => {
+                    contactNormal.assign(preferredLateral.normalize());
+                  }).ElseIf(lateralSquared.greaterThan(0.000_001), () => {
+                    contactNormal.assign(
+                      delta.sub(this.backUniform.mul(depth)).normalize(),
+                    );
+                  }).Else(() => {
+                    contactNormal.assign(bodyRight);
+                  });
+                });
+                const lateralCorrection = lateralBoundary.sub(delta.dot(contactNormal));
+                penetration.assign(select(
+                  lateralCorrection.greaterThan(0),
+                  lateralCorrection,
+                  penetration,
+                ));
+              });
+              const candidate = contactNormal.mul(penetration)
+                .toVar('virtualBodyCandidate');
+              const candidateLengthSquared = candidate.dot(candidate);
+              If(candidateLengthSquared.greaterThan(virtualCorrectionLengthSquared), () => {
+                virtualCorrection.assign(candidate);
+                virtualCorrectionLengthSquared.assign(candidateLengthSquared);
+              });
+            });
+          },
+        );
+
+        const correctionLength = virtualCorrection.length()
+          .toVar('virtualBodyCorrectionLength');
+        If(correctionLength.greaterThan(MAXIMUM_VIRTUAL_BODY_CORRECTION_PER_STEP), () => {
+          virtualCorrection.mulAssign(
+            float(MAXIMUM_VIRTUAL_BODY_CORRECTION_PER_STEP)
+              .div(correctionLength.max(0.000_001)),
+          );
+        });
+        const denominator = firstMass.add(secondMass).add(thirdMass)
+          .mul(VIRTUAL_BODY_BARYCENTRIC_WEIGHT ** 2)
+          .toVar('virtualBodyMassDenominator');
+        If(
+          virtualCorrectionLengthSquared.greaterThan(0.000_000_1)
+            .and(denominator.greaterThan(0.000_001)),
+          () => {
+            atomicOr(this.materialContactFlagBuffer.element(uint(0)), uint(1));
+            const normal = virtualCorrection.normalize().toVar('virtualBodyMotionNormal');
+            const lambdaCorrection = virtualCorrection.div(denominator);
+            const applyCorrection = (
+              particleIndex: THREE.Node<'uint'>,
+              state: THREE.Node<'vec4'>,
+              inverseMass: THREE.Node<'float'>,
+            ): void => {
+              If(inverseMass.greaterThan(0), () => {
+                const particleCorrection = lambdaCorrection
+                  .mul(inverseMass.mul(VIRTUAL_BODY_BARYCENTRIC_WEIGHT));
+                const corrected = state.xyz.add(particleCorrection);
+                buffer.element(particleIndex).assign(vec4(corrected, state.w));
+                const previousState = this.previousBuffer.element(particleIndex);
+                const correctedPrevious = previousState.xyz.add(particleCorrection)
+                  .toVar('correctedPreviousVirtualBody');
+                const inwardMotion = corrected.sub(correctedPrevious)
+                  .dot(normal)
+                  .min(0);
+                correctedPrevious.addAssign(normal.mul(inwardMotion));
+                this.previousBuffer.element(particleIndex).assign(vec4(
+                  correctedPrevious,
+                  previousState.w,
+                ));
+              });
+            };
+            applyCorrection(firstIndex, firstState, firstMass);
+            applyCorrection(secondIndex, secondState, secondMass);
+            applyCorrection(thirdIndex, thirdState, thirdMass);
+          },
+        );
+      });
+      return float(0);
+    }, 'float').setLayout({
+      name: `capeVirtualBodyContactColorPass${passName}`,
       type: 'float',
       inputs: [{ name: 'color', type: 'uint' }],
     });

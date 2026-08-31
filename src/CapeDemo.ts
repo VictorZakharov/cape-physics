@@ -25,10 +25,19 @@ import { MobileControls } from './input/MobileControls';
 import { CinematicLighting } from './lighting/CinematicLighting';
 import type { WebGpuCinematicLighting } from './lighting/WebGpuCinematicLighting';
 import { CapeSimulation } from './physics/CapeSimulation';
-import { DEFAULT_CAPE_PHYSICS_SETTINGS } from './physics/CapeSettings';
+import {
+  BOT_CYAN_CAPE_PALETTE,
+  CRIMSON_CAPE_PALETTE,
+  type CapeFabricPalette,
+} from './physics/CapeAppearance';
+import {
+  DEFAULT_CAPE_PHYSICS_SETTINGS,
+  type CapePhysicsSettings,
+} from './physics/CapeSettings';
 import type { GpuCapeSimulation } from './physics/GpuCapeSimulation';
 import type { WorldCollider } from './physics/colliders';
-import { Character } from './player/Character';
+import { BotMovementInput, normalizeBotCount } from './player/BotMovementInput';
+import { Character, type CapeAnchors } from './player/Character';
 import { CharacterController } from './player/CharacterController';
 import { runDepthOcclusionProbe } from './testing/DepthOcclusionProbe';
 import { runShadowLayerProbe } from './testing/ShadowLayerProbe';
@@ -68,6 +77,21 @@ interface ScenePhaseTotals {
   veins: number;
   atmosphere: number;
   lighting: number;
+}
+
+type CapeInstance = CapeSimulation | GpuCapeSimulation;
+
+type CapeFactory = (
+  anchors: CapeAnchors,
+  settings: Partial<CapePhysicsSettings>,
+  appearance: CapeFabricPalette,
+) => CapeInstance;
+
+interface PerformanceBot {
+  readonly character: Character;
+  readonly cape: CapeInstance;
+  readonly input: BotMovementInput;
+  readonly controller: CharacterController;
 }
 
 type CapeTrajectoryScenario =
@@ -157,7 +181,9 @@ export class CapeDemo {
   private character!: Character;
   private characterController!: CharacterController;
   private thirdPersonCamera!: ThirdPersonCamera;
-  private cape!: CapeSimulation | GpuCapeSimulation;
+  private cape!: CapeInstance;
+  private capeFactory!: CapeFactory;
+  private readonly performanceBots: PerformanceBot[] = [];
   private cave!: CaveWorld;
   private water!: WaterSystem | WebGpuWaterSystem;
   private torches!: TorchSystem | WebGpuTorchSystem;
@@ -301,34 +327,23 @@ export class CapeDemo {
         'Linking WebGPU cloth compute passes',
         2_500,
       );
-      this.cape = new GpuCapeSimulation(
-        gpuRenderer,
-        this.character.getCapeAnchors(),
-        this.customizationSettings,
+      this.capeFactory = (anchors, settings, appearance) => (
+        new GpuCapeSimulation(gpuRenderer, anchors, settings, appearance)
       );
     } else {
       await this.loading.update(0.64, 'Weaving the cloth simulation');
-      this.cape = new CapeSimulation(
-        this.character.getCapeAnchors(),
-        this.customizationSettings,
+      this.capeFactory = (anchors, settings, appearance) => (
+        new CapeSimulation(anchors, settings, appearance)
       );
     }
+    this.cape = this.capeFactory(
+      this.character.getCapeAnchors(),
+      this.customizationSettings,
+      CRIMSON_CAPE_PALETTE,
+    );
     this.scene.add(this.cape.mesh);
     await this.loading.update(0.73, 'Rigging movement and camera');
-    this.character.root.traverse((object) => {
-      object.layers.set(CHARACTER_RENDER_LAYER);
-      if (object instanceof THREE.Mesh && object.castShadow) {
-        enableCameraIndependentShadowCaster(
-          object,
-          usesNodeRenderer ? 'webgpu' : 'webgl',
-        );
-      }
-    });
-    this.cape.mesh.layers.set(CHARACTER_RENDER_LAYER);
-    enableCameraIndependentShadowCaster(
-      this.cape.mesh,
-      usesNodeRenderer ? 'webgpu' : 'webgl',
-    );
+    this.configureCharacterRenderObjects(this.character, this.cape);
 
     this.input = new InputController(this.canvas, this.dismissOnboarding);
     this.mobileControls = new MobileControls(this.canvas, this.input);
@@ -361,6 +376,7 @@ export class CapeDemo {
     this.stabilizeCape();
     this.cape.syncGeometry();
     this.applySceneCustomization(this.customizationSettings);
+    this.reconcilePerformanceBots(this.customizationSettings.bots);
 
     await this.loading.beginLongStage(
       0.88,
@@ -397,7 +413,7 @@ export class CapeDemo {
     this.performance.recordFrame(timestamp);
     const physicsStart = performance.now();
     const timing = this.clock.advance(timestamp, this.simulateStep);
-    if (timing.physicsSteps > 0) this.cape.syncGeometry();
+    if (timing.physicsSteps > 0) this.syncCapeGeometries();
     const sceneStart = performance.now();
     this.updateScene(timing.delta);
     this.quality.observe(this.fixedTime, this.performance.getSnapshot());
@@ -428,6 +444,18 @@ export class CapeDemo {
       this.character.velocity,
       this.fixedTime,
     );
+    for (const bot of this.performanceBots) {
+      bot.input.update(this.fixedTime);
+      bot.controller.update(step, 0);
+      bot.cape.step(
+        step,
+        bot.character.getCapeAnchors(),
+        bot.character.getCapeColliders(),
+        this.worldColliders,
+        bot.character.velocity,
+        this.fixedTime,
+      );
+    }
   };
 
   private updateScene(delta: number): void {
@@ -498,7 +526,11 @@ export class CapeDemo {
     this.customizationSettings = settings;
     if (!this.cape || !this.character) return;
     this.cape.updateSettings(settings, this.character.getCapeAnchors());
-    if (settleDimensions) this.stabilizeCape();
+    this.reconcilePerformanceBots(settings.bots);
+    for (const bot of this.performanceBots) {
+      bot.cape.updateSettings(settings, bot.character.getCapeAnchors());
+    }
+    if (settleDimensions) this.stabilizeAllCapes();
     this.applySceneCustomization(settings);
     if (this.ready) this.pipeline.renderManual(0);
   };
@@ -511,11 +543,23 @@ export class CapeDemo {
   }
 
   private stabilizeCape(): void {
-    const anchors = this.character.getCapeAnchors();
-    const bodyColliders = this.character.getCapeColliders();
+    this.stabilizeCapeInstance(this.character, this.cape);
+  }
+
+  private stabilizeAllCapes(): void {
+    this.stabilizeCape();
+    this.performanceBots.forEach((bot) => {
+      this.stabilizeCapeInstance(bot.character, bot.cape);
+    });
+    this.syncCapeGeometries();
+  }
+
+  private stabilizeCapeInstance(character: Character, cape: CapeInstance): void {
+    const anchors = character.getCapeAnchors();
+    const bodyColliders = character.getCapeColliders();
     this.stabilizationVelocity.set(0, 0, 0);
     for (let step = 0; step < 12; step += 1) {
-      this.cape.step(
+      cape.step(
         PHYSICS_STEP,
         anchors,
         bodyColliders,
@@ -524,6 +568,77 @@ export class CapeDemo {
         this.fixedTime + step * PHYSICS_STEP,
       );
     }
+  }
+
+  private reconcilePerformanceBots(requestedCount: number): void {
+    const targetCount = normalizeBotCount(requestedCount);
+    while (this.performanceBots.length < targetCount) {
+      this.performanceBots.push(this.createPerformanceBot(this.performanceBots.length));
+    }
+    while (this.performanceBots.length > targetCount) {
+      const bot = this.performanceBots.pop();
+      if (bot) this.disposePerformanceBot(bot);
+    }
+  }
+
+  private createPerformanceBot(index: number): PerformanceBot {
+    const character = new Character(BOT_CYAN_CAPE_PALETTE);
+    const row = Math.floor(index / 2);
+    const side = index % 2 === 0 ? -1 : 1;
+    const z = this.character.root.position.z + (row - 2) * 1.55;
+    const x = caveCenterX(z) + side * 0.82;
+    character.root.position.set(
+      x,
+      this.worldCollision.getPlayerRootHeight(x, z),
+      z,
+    );
+    character.root.rotation.y = index * 0.73;
+    character.root.updateMatrixWorld(true);
+
+    const cape = this.capeFactory(
+      character.getCapeAnchors(),
+      this.customizationSettings,
+      BOT_CYAN_CAPE_PALETTE,
+    );
+    const input = new BotMovementInput(index);
+    input.update(this.fixedTime);
+    const bot: PerformanceBot = {
+      character,
+      cape,
+      input,
+      controller: new CharacterController(character, input, this.worldCollision),
+    };
+    this.scene.add(character.root, cape.mesh);
+    this.configureCharacterRenderObjects(character, cape);
+    this.stabilizeCapeInstance(character, cape);
+    cape.syncGeometry();
+    return bot;
+  }
+
+  private configureCharacterRenderObjects(
+    character: Character,
+    cape: CapeInstance,
+  ): void {
+    const backend = this.pipeline.usesNodeRenderer() ? 'webgpu' : 'webgl';
+    character.root.traverse((object) => {
+      object.layers.set(CHARACTER_RENDER_LAYER);
+      if (object instanceof THREE.Mesh && object.castShadow) {
+        enableCameraIndependentShadowCaster(object, backend);
+      }
+    });
+    cape.mesh.layers.set(CHARACTER_RENDER_LAYER);
+    enableCameraIndependentShadowCaster(cape.mesh, backend);
+  }
+
+  private syncCapeGeometries(): void {
+    this.cape.syncGeometry();
+    this.performanceBots.forEach((bot) => bot.cape.syncGeometry());
+  }
+
+  private disposePerformanceBot(bot: PerformanceBot): void {
+    this.scene.remove(bot.character.root, bot.cape.mesh);
+    bot.cape.dispose();
+    bot.character.dispose();
   }
 
   private setLightsEnabled(enabled: boolean): void {
@@ -932,7 +1047,7 @@ export class CapeDemo {
       this.harnessAccumulator -= PHYSICS_STEP;
       simulated = true;
     }
-    if (simulated) this.cape.syncGeometry();
+    if (simulated) this.syncCapeGeometries();
     const sceneStart = performance.now();
     if (scenePhaseTotals) {
       this.updateSceneProfiled(delta, scenePhaseTotals);
@@ -1137,6 +1252,8 @@ export class CapeDemo {
         capeSleeping: this.ready ? this.cape.isSleeping() : false,
         worldColliders: this.worldColliders.length,
         activeRipples: this.ready ? this.water.getDiagnostics().activeRipples : 0,
+        botCount: this.performanceBots.length,
+        simulatedCapes: 1 + this.performanceBots.length,
       },
       page: {
         visibility: document.visibilityState,
@@ -1175,6 +1292,12 @@ export class CapeDemo {
     this.customizationPanel.dispose();
     this.mobileControls?.dispose();
     this.input?.dispose();
+    while (this.performanceBots.length > 0) {
+      const bot = this.performanceBots.pop();
+      if (bot) this.disposePerformanceBot(bot);
+    }
+    this.cape?.dispose();
+    this.character?.dispose();
     this.lighting?.dispose();
     this.performance.dispose();
     this.pipeline.dispose();

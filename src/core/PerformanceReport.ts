@@ -36,6 +36,8 @@ export interface PerformanceReportDetails {
     readonly capeSleeping: boolean;
     readonly worldColliders: number;
     readonly activeRipples: number;
+    readonly botCount: number;
+    readonly simulatedCapes: number;
   };
   readonly page: {
     readonly visibility: DocumentVisibilityState;
@@ -101,7 +103,7 @@ export function formatPerformanceReport(input: PerformanceReportInput): string {
     `Quality: ${quality.label} | ${metric(quality.scale, 3)} resolution scale | ${quality.targetResizes} render-target resizes`,
     `Main thread: ${metric(workload.averageMainThreadMilliseconds)} ms average | p95 ${metric(workload.p95MainThreadMilliseconds)} ms | physics ${metric(workload.averagePhysicsMilliseconds)} ms | scene ${metric(workload.averageSceneMilliseconds)} ms | render submission ${metric(workload.averageRenderMilliseconds)} ms | ${metric(workload.averagePhysicsSteps)} physics steps/callback average, ${workload.maximumPhysicsSteps} maximum`,
     ...capeSolverLines,
-    `Scene: ${metric(scene.simulationSeconds, 2)} s simulated | ${renderer.drawCalls} draw calls | ${renderer.triangles} triangles | ${renderer.programs} programs | ${scene.worldColliders} cape colliders | ${scene.activeRipples} active ripples | cape ${scene.capeSleeping ? 'sleeping' : 'active'}`,
+    `Scene: ${metric(scene.simulationSeconds, 2)} s simulated | ${scene.botCount} performance bots | ${scene.simulatedCapes} simulated capes | ${renderer.drawCalls} draw calls | ${renderer.triangles} triangles | ${renderer.programs} programs | ${scene.worldColliders} cape colliders/cape | ${scene.activeRipples} active ripples | player cape ${scene.capeSleeping ? 'sleeping' : 'active'}`,
     `Page state: ${page.visibility} | ${page.focused ? 'focused' : 'not focused'} | DPR ${metric(page.devicePixelRatio)} | ${displayTopology}`,
     'Timing caveat: display FPS is refresh/vsync capped and therefore cannot compare backend headroom; main-thread render submission is not GPU completion',
     `Page: ${page.url}`,

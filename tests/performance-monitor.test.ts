@@ -55,6 +55,8 @@ const reportDetails: PerformanceReportDetails = {
     capeSleeping: false,
     worldColliders: 0,
     activeRipples: 0,
+    botCount: 0,
+    simulatedCapes: 1,
   },
   page: {
     visibility: 'visible',
