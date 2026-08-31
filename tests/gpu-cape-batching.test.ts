@@ -9,6 +9,11 @@ describe('WebGPU multi-cape submission architecture', () => {
     expect(gpuSource).toContain('public prepareBatchStep(');
     expect(gpuSource).toContain('this.activeCapeCountUniform.value = inputs.length;');
     expect(gpuSource).toContain('this.botMesh.count = inputs.length - 1;');
+    expect(gpuSource).toContain('const capeIndex = workgroupId.x;');
+    expect(gpuSource).toContain('const constraintIndex = localId.x;');
+    expect(gpuSource).not.toContain(
+      'const constraintIndex = instanceIndex.mod(uint(PARTICLE_COUNT));',
+    );
     expect(gpuSource).toContain('return this.computeSequence.slice();');
     expect(demoSource).toContain('const computeNodes = this.cape.prepareBatchStep(step, [');
     expect(demoSource).toContain('renderer.compute(computeNodes);');

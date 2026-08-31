@@ -13,6 +13,7 @@ import {
   float,
   instancedArray,
   instanceIndex,
+  localId,
   mix,
   negateOnBackSide,
   select,
@@ -25,6 +26,7 @@ import {
   vec3,
   vec4,
   vertexIndex,
+  workgroupId,
 } from 'three/tsl';
 import { CAPE, CAVE, PLAYER } from '../config';
 import { createCapeFabricTextures } from '../graphics/proceduralTextures';
@@ -1128,8 +1130,11 @@ export class GpuCapeSimulation {
     includeFoldGuard = true,
   ): THREE.ComputeNode {
     return Fn(() => {
-      const capeIndex = instanceIndex.div(uint(PARTICLE_COUNT));
-      const constraintIndex = instanceIndex.mod(uint(PARTICLE_COUNT));
+      // Use workgroup-uniform built-ins around barriers. Deriving the cape
+      // lane from global_invocation_id is mathematically uniform here, but the
+      // WGSL validator cannot prove that division is workgroup-uniform.
+      const capeIndex = workgroupId.x;
+      const constraintIndex = localId.x;
       const capeBase = capeIndex.mul(uint(PARTICLE_COUNT));
       If(capeIndex.greaterThanEqual(this.activeCapeCountUniform), () => Return());
       // This small fixed grid spends the overwhelming majority of its GPU
@@ -1518,7 +1523,7 @@ export class GpuCapeSimulation {
     name: string,
   ): THREE.ComputeNode {
     return Fn(() => {
-      const capeIndex = instanceIndex.div(uint(PARTICLE_COUNT));
+      const capeIndex = workgroupId.x;
       If(capeIndex.lessThan(this.activeCapeCountUniform), () => {
         const passResult = float(0).toVar('faceSweepResult');
         for (let color = 0; color < 8; color += 1) {
@@ -2576,7 +2581,7 @@ export class GpuCapeSimulation {
     }) : null;
 
     return Fn<readonly [THREE.Node<'uint'>], THREE.Node<'float'>>(([color]) => {
-      const capeIndex = instanceIndex.div(uint(PARTICLE_COUNT));
+      const capeIndex = workgroupId.x;
       const capeBase = capeIndex.mul(uint(PARTICLE_COUNT));
       const worldCounts = this.worldCountUniform.element(capeIndex);
       const orientation = color.mod(uint(2));
@@ -2588,7 +2593,7 @@ export class GpuCapeSimulation {
         uint(Math.ceil((CAPE.rows - 1) / 2)),
         uint(Math.floor((CAPE.rows - 1) / 2)),
       );
-      const triangleSlot = instanceIndex.mod(uint(PARTICLE_COUNT));
+      const triangleSlot = localId.x;
       If(triangleSlot.lessThan(coloredRows.mul(coloredColumns)), () => {
         const localRow = triangleSlot.div(coloredColumns);
         const localColumn = triangleSlot.mod(coloredColumns);
@@ -2913,7 +2918,7 @@ export class GpuCapeSimulation {
     passName: string,
   ) {
     return Fn<readonly [THREE.Node<'uint'>], THREE.Node<'float'>>(([color]) => {
-      const capeIndex = instanceIndex.div(uint(PARTICLE_COUNT));
+      const capeIndex = workgroupId.x;
       const capeBase = capeIndex.mul(uint(PARTICLE_COUNT));
       const anchorState = this.anchorStateUniform.element(capeIndex);
       const bodyState = this.bodyStateUniform.element(capeIndex);
@@ -2927,7 +2932,7 @@ export class GpuCapeSimulation {
         uint(Math.ceil((CAPE.rows - 1) / 2)),
         uint(Math.floor((CAPE.rows - 1) / 2)),
       );
-      const triangleSlot = instanceIndex.mod(uint(PARTICLE_COUNT));
+      const triangleSlot = localId.x;
       If(triangleSlot.lessThan(coloredRows.mul(coloredColumns)), () => {
         const localRow = triangleSlot.div(coloredColumns);
         const localColumn = triangleSlot.mod(coloredColumns);
