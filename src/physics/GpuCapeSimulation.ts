@@ -192,7 +192,6 @@ export class GpuCapeSimulation {
   private readonly previousBuffer;
   private readonly predictedVerticalBuffer;
   private readonly materialContactFlagBuffer;
-  private readonly anchorBuffer;
   private readonly topologyBuffer;
   private readonly constraintBuffer;
   private readonly constraintCount: number;
@@ -215,6 +214,10 @@ export class GpuCapeSimulation {
     { length: MAXIMUM_GPU_CAPES },
     () => new THREE.Vector4(),
   );
+  private readonly anchorValues = Array.from(
+    { length: CAPE.columns * MAXIMUM_GPU_CAPES },
+    () => new THREE.Vector4(),
+  );
   private readonly bodyStateValues = Array.from(
     { length: MAXIMUM_GPU_CAPES },
     () => new THREE.Vector4(0, 0, 1, 0),
@@ -225,6 +228,7 @@ export class GpuCapeSimulation {
   );
   private readonly dynamicsUniform = uniformArray(this.dynamicsValues, 'vec4' as const);
   private readonly anchorStateUniform = uniformArray(this.anchorStateValues, 'vec4' as const);
+  private readonly anchorUniform = uniformArray(this.anchorValues, 'vec4' as const);
   private readonly bodyStateUniform = uniformArray(this.bodyStateValues, 'vec4' as const);
   private readonly worldCountUniform = uniformArray(this.worldCountValues, 'vec4' as const);
   private readonly computeSequence: THREE.ComputeNode[] = [];
@@ -273,8 +277,6 @@ export class GpuCapeSimulation {
     this.previousBuffer = instancedArray(packedInitialState.slice(), 'vec4');
     this.predictedVerticalBuffer = instancedArray(PACKED_PARTICLE_COUNT, 'float');
     this.materialContactFlagBuffer = instancedArray(MAXIMUM_GPU_CAPES, 'uint').toAtomic();
-    this.anchorBuffer = instancedArray(CAPE.columns * MAXIMUM_GPU_CAPES, 'vec4');
-
     const topology = this.createTopology(initialState);
     this.topologyBuffer = instancedArray(topology.packed, 'vec4');
     this.constraintBuffer = instancedArray(topology.orderedConstraints, 'vec4');
@@ -298,7 +300,7 @@ export class GpuCapeSimulation {
       MAXIMUM_GPU_CAPES * MAX_WORLD_ROCKS * ROCK_BUFFER_STRIDE,
       'vec4',
     );
-    this.updateAnchorBuffer(0, initialAnchors);
+    this.updateAnchorValues(0, initialAnchors);
     this.lastAnchors.push(this.cloneAnchors(initialAnchors));
 
     this.computeSequence.push(
@@ -636,7 +638,7 @@ export class GpuCapeSimulation {
       dynamics.w = movementBlend;
       if (characterSpeed > WAKE_SPEED) this.idleDrapeRecoverySeconds[capeIndex] = 0;
       else this.idleDrapeRecoverySeconds[capeIndex]! += deltaTime;
-      this.updateAnchorBuffer(capeIndex, input.anchors);
+      this.updateAnchorValues(capeIndex, input.anchors);
       this.anchorStateValues[capeIndex]!.w = THREE.MathUtils.smoothstep(
         this.idleDrapeRecoverySeconds[capeIndex]!,
         IDLE_DRAPE_RECOVERY_DELAY_SECONDS,
@@ -1026,7 +1028,7 @@ export class GpuCapeSimulation {
       const previous = this.previousBuffer.element(index);
       const target = this.scratchBuffer.element(index);
       If(localIndex.lessThan(uint(CAPE.columns)), () => {
-        const anchor = this.anchorBuffer.element(
+        const anchor = this.anchorUniform.element(
           capeIndex.mul(uint(CAPE.columns)).add(localIndex),
         );
         target.assign(anchor);
@@ -1334,10 +1336,10 @@ export class GpuCapeSimulation {
         const left = leftState.xyz.toVar('spanLeft');
         const right = rightState.xyz.toVar('spanRight');
         const anchorBase = capeIndex.mul(uint(CAPE.columns));
-        const shoulderAxis = this.anchorBuffer.element(
+        const shoulderAxis = this.anchorUniform.element(
           anchorBase.add(uint(CAPE.columns - 1)),
         ).xyz
-          .sub(this.anchorBuffer.element(anchorBase).xyz)
+          .sub(this.anchorUniform.element(anchorBase).xyz)
           .normalize();
         const restSpan = this.topologyBuffer.element(
           leftIndex.mul(uint(TOPOLOGY_METADATA_STRIDE)),
@@ -3270,7 +3272,7 @@ export class GpuCapeSimulation {
     };
   }
 
-  private updateAnchorBuffer(capeIndex: number, anchors: CapeAnchors): void {
+  private updateAnchorValues(capeIndex: number, anchors: CapeAnchors): void {
     const center = this.anchorStateValues[capeIndex]!;
     center.set(
       (anchors.left.x + anchors.right.x) * 0.5,
@@ -3282,20 +3284,19 @@ export class GpuCapeSimulation {
       this.anchorCenter.set(center.x, center.y, center.z);
       this.diagnosticMirror.synchronizeAnchorDiagnostics(anchors);
     }
-    const array = this.anchorBuffer.value.array as Float32Array;
     for (let column = 0; column < CAPE.columns; column += 1) {
       const progress = column / (CAPE.columns - 1);
       const neckline = Math.sin(progress * Math.PI);
       this.anchorTarget.lerpVectors(anchors.left, anchors.right, progress);
       this.anchorTarget.y += neckline * CAPE.attachment.necklineRise;
       this.anchorTarget.addScaledVector(anchors.back, neckline * CAPE.attachment.necklineDepth);
-      const offset = (capeIndex * CAPE.columns + column) * 4;
-      array[offset] = this.anchorTarget.x;
-      array[offset + 1] = this.anchorTarget.y;
-      array[offset + 2] = this.anchorTarget.z;
-      array[offset + 3] = 0;
+      this.anchorValues[capeIndex * CAPE.columns + column]!.set(
+        this.anchorTarget.x,
+        this.anchorTarget.y,
+        this.anchorTarget.z,
+        0,
+      );
     }
-    this.anchorBuffer.value.needsUpdate = true;
   }
 
   private writeStorage(attribute: THREE.BufferAttribute, state: Float32Array): void {
@@ -3314,7 +3315,7 @@ export class GpuCapeSimulation {
       (attribute.array as Float32Array).set(state, offset);
       attribute.needsUpdate = true;
     }
-    this.updateAnchorBuffer(capeIndex, anchors);
+    this.updateAnchorValues(capeIndex, anchors);
     this.lastAnchors[capeIndex] = this.cloneAnchors(anchors);
     this.idleDrapeRecoverySeconds[capeIndex] = 0;
     this.anchorStateValues[capeIndex]!.w = 0;

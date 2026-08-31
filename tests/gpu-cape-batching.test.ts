@@ -11,6 +11,12 @@ describe('WebGPU multi-cape submission architecture', () => {
     expect(gpuSource).toContain('this.botMesh.count = inputs.length - 1;');
     expect(gpuSource).toContain('const capeIndex = workgroupId.x;');
     expect(gpuSource).toContain('const constraintIndex = localId.x;');
+    expect(gpuSource).toContain(
+      "private readonly anchorUniform = uniformArray(this.anchorValues, 'vec4' as const);",
+    );
+    expect(gpuSource).toContain('this.updateAnchorValues(capeIndex, input.anchors);');
+    expect(gpuSource).toContain('const anchor = this.anchorUniform.element(');
+    expect(gpuSource).not.toContain('anchorBuffer');
     expect(gpuSource).not.toContain(
       'const constraintIndex = instanceIndex.mod(uint(PARTICLE_COUNT));',
     );

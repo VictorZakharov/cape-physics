@@ -18,7 +18,7 @@ import {
   resolveRendererPreference,
   type RendererPreference,
 } from './core/RendererPreference';
-import { CHARACTER_RENDER_LAYER } from './core/renderLayers';
+import { CHARACTER_RENDER_LAYER, WORLD_RENDER_LAYER } from './core/renderLayers';
 import { configureTextureFiltering, createRockTextures } from './graphics/proceduralTextures';
 import { InputController } from './input/InputController';
 import { MobileControls } from './input/MobileControls';
@@ -346,8 +346,9 @@ export class CapeDemo {
     this.configureCharacterRenderObjects(this.character, this.cape);
     if (!(this.cape instanceof CapeSimulation)) {
       this.scene.add(this.cape.botMesh);
-      this.cape.botMesh.layers.set(CHARACTER_RENDER_LAYER);
-      enableCameraIndependentShadowCaster(this.cape.botMesh, 'webgpu');
+      // Only the player belongs to the near-camera fade composite. Packed bot
+      // capes stay opaque and cast shadows as ordinary world-layer geometry.
+      this.cape.botMesh.layers.set(WORLD_RENDER_LAYER);
     }
 
     this.input = new InputController(this.canvas, this.dismissOnboarding);
@@ -647,7 +648,7 @@ export class CapeDemo {
     };
     this.scene.add(character.root);
     if (cape) this.scene.add(cape.mesh);
-    this.configureCharacterRenderObjects(character, cape);
+    this.configureCharacterRenderObjects(character, cape, false);
     // A GPU cape starts from the authored drape already. Running twelve
     // immediate steps here synchronously compiled every new compute graph on
     // the range-input event and caused multi-second UI freezes.
@@ -659,17 +660,19 @@ export class CapeDemo {
   private configureCharacterRenderObjects(
     character: Character,
     cape: CapeInstance | null,
+    fadeWithCamera = true,
   ): void {
     const backend = this.pipeline.usesNodeRenderer() ? 'webgpu' : 'webgl';
+    const renderLayer = fadeWithCamera ? CHARACTER_RENDER_LAYER : WORLD_RENDER_LAYER;
     character.root.traverse((object) => {
-      object.layers.set(CHARACTER_RENDER_LAYER);
-      if (object instanceof THREE.Mesh && object.castShadow) {
+      object.layers.set(renderLayer);
+      if (fadeWithCamera && object instanceof THREE.Mesh && object.castShadow) {
         enableCameraIndependentShadowCaster(object, backend);
       }
     });
     if (cape) {
-      cape.mesh.layers.set(CHARACTER_RENDER_LAYER);
-      enableCameraIndependentShadowCaster(cape.mesh, backend);
+      cape.mesh.layers.set(renderLayer);
+      if (fadeWithCamera) enableCameraIndependentShadowCaster(cape.mesh, backend);
     }
   }
 
