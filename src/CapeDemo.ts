@@ -24,6 +24,7 @@ import {
   type RendererPreference,
 } from './core/RendererPreference';
 import { CHARACTER_RENDER_LAYER, WORLD_RENDER_LAYER } from './core/renderLayers';
+import { evaluateWebGpuStartupPolicy } from './core/WebGpuStartupPolicy';
 import { configureTextureFiltering, createRockTextures } from './graphics/proceduralTextures';
 import { InputController } from './input/InputController';
 import { MobileControls } from './input/MobileControls';
@@ -240,11 +241,16 @@ export class CapeDemo {
     this.canvas = invariant(document.querySelector<HTMLCanvasElement>('#scene-canvas'), 'Scene canvas is missing.');
     this.scene.background = new THREE.Color(0x050a0c);
     this.scene.fog = new THREE.FogExp2(0x071012, 0.034);
-    this.webGPUAvailable = browserSupportsWebGPU();
     this.rendererPreference = resolveRendererPreference({
       search: window.location.search,
     });
     this.startupRecovery = browserRendererStartupRecovery();
+    const webGpuPolicy = evaluateWebGpuStartupPolicy({
+      apiAvailable: browserSupportsWebGPU(),
+      userAgent: navigator.userAgent || '',
+      diagnostics: this.startupRecovery.getDiagnostics(),
+    });
+    this.webGPUAvailable = webGpuPolicy.allowed;
     this.startupRecovery.begin(
       this.rendererPreference,
       this.urlParameters.has('renderer'),
@@ -259,10 +265,12 @@ export class CapeDemo {
       this.camera,
       this.rendererPreference,
       this.gpuTimestampProfile,
+      webGpuPolicy.reason,
     );
     this.rendererSwitch = new RendererSwitch(
       this.rendererPreference,
       this.webGPUAvailable,
+      webGpuPolicy.reason,
     );
     this.customizationPanel = new CustomizationPanel(this.handleCustomizationChange);
     this.customizationSettings = this.customizationPanel.getSettings();
@@ -290,12 +298,17 @@ export class CapeDemo {
   }
 
   private async initializeSelectedRenderer(): Promise<void> {
-    if (this.rendererPreference === 'webgpu') {
+    if (this.rendererPreference === 'webgpu' && this.webGPUAvailable) {
       await this.loading.beginLongStage(
         0.03,
         0.075,
         'Requesting the WebGPU adapter and device',
         4_000,
+      );
+    } else if (this.rendererPreference === 'webgpu') {
+      await this.loading.update(
+        0.03,
+        'WebGPU disabled for this browser; protecting the WebGL fallback',
       );
     } else {
       await this.loading.update(0.03, 'Selecting the graphics backend');

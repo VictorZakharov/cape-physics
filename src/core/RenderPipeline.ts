@@ -22,6 +22,7 @@ const WEBGPU_REQUIRED_LIMITS = {
 } as const;
 
 export type RendererInitializationStage = WebGpuBootstrapStage
+  | 'webgpu-safety-check'
   | 'construct-webgpu-renderer'
   | 'initialize-webgpu-renderer'
   | 'recover-webgl'
@@ -52,6 +53,7 @@ export class RenderPipeline {
     private readonly camera: THREE.Camera,
     preference: RendererPreference,
     private readonly trackTimestamps = false,
+    private readonly webGpuBlockReason: string | null = null,
   ) {
     this.preference = preference;
     // Renderer construction is deliberately deferred into async init(). A
@@ -94,10 +96,12 @@ export class RenderPipeline {
       return;
     }
 
-    let failedStage: RendererInitializationStage = 'request-webgpu-adapter';
+    let failedStage: RendererInitializationStage = 'webgpu-safety-check';
     let deviceOwnedByRenderer = false;
     let device: GPUDevice | null = null;
     try {
+      observer.onStage?.(failedStage);
+      if (this.webGpuBlockReason) throw new Error(this.webGpuBlockReason);
       device = await requestWebGpuDevice(navigator.gpu, {
         requiredLimits: WEBGPU_REQUIRED_LIMITS,
         onStage: (stage) => {
