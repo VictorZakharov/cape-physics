@@ -163,6 +163,28 @@ try {
     lastReport.deviceLost === null || lastReport.deviceLost.reason === 'destroyed',
     `unexpected device loss: ${JSON.stringify(lastReport.deviceLost)}`,
   );
+  const scrollLayout = await evaluate(command, `(() => {
+    const root = document.documentElement;
+    const before = window.scrollY;
+    window.scrollTo(0, root.scrollHeight);
+    const after = window.scrollY;
+    return {
+      before,
+      after,
+      scrollHeight: root.scrollHeight,
+      viewportHeight: window.innerHeight,
+      htmlOverflowY: getComputedStyle(root).overflowY,
+      bodyOverflowY: getComputedStyle(document.body).overflowY,
+      appOverflow: getComputedStyle(document.querySelector('[data-app]')).overflow,
+    };
+  })()`);
+  assert(
+    scrollLayout.scrollHeight <= scrollLayout.viewportHeight || scrollLayout.after > 0,
+    `overflowing probe page cannot scroll: ${JSON.stringify(scrollLayout)}`,
+  );
+  assert(scrollLayout.htmlOverflowY === 'auto', 'document root does not permit vertical scrolling');
+  assert(scrollLayout.bodyOverflowY === 'auto', 'document body does not permit vertical scrolling');
+  assert(scrollLayout.appOverflow === 'visible', 'shared app shell still clips the probe');
   assert(relevantEvents(debuggerEvents).length === 0, 'browser logged an exception or error');
 
   console.log('WebGPU isolated lifecycle probe: PASS');

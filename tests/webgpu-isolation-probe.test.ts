@@ -11,6 +11,7 @@ describe('isolated WebGPU diagnostic probe', () => {
   test('never loads the full demo or performs backend recovery', async () => {
     const source = await Bun.file('src/testing/WebGpuIsolationProbe.ts').text();
     const entrySource = await Bun.file('src/main.ts').text();
+    const styles = await Bun.file('src/styles/webgpu-probe.css').text();
     expect(source).not.toContain('CapeDemo');
     expect(source).not.toContain('location.reload');
     expect(source).not.toContain('location.replace');
@@ -22,5 +23,9 @@ describe('isolated WebGPU diagnostic probe', () => {
     expect(entrySource).toContain("await import('./testing/WebGpuIsolationProbe')");
     expect(entrySource).toContain("await import('./CapeDemo')");
     expect(entrySource).not.toContain("from './CapeDemo'");
+    expect(source).toContain("document.documentElement.classList.add('is-webgpu-probe')");
+    expect(styles).toContain('html.is-webgpu-probe');
+    expect(styles).toContain('body.is-webgpu-probe .app');
+    expect(styles).toContain('overflow: visible');
   });
 });

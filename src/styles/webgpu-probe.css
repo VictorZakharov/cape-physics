@@ -1,12 +1,22 @@
-.is-webgpu-probe {
-  overflow: auto;
+html.is-webgpu-probe,
+body.is-webgpu-probe {
+  height: auto;
+  min-height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+body.is-webgpu-probe {
+  overscroll-behavior: auto;
   background: #05090a;
 }
 
-.is-webgpu-probe .app {
+body.is-webgpu-probe .app {
+  height: auto;
   min-height: 100vh;
+  overflow: visible;
   display: grid;
-  place-items: center;
+  place-items: start center;
   padding: 32px;
 }
 
@@ -60,4 +70,9 @@
   background: #020607;
   border-radius: 4px;
   white-space: pre-wrap;
+}
+
+@media (max-width: 640px) {
+  body.is-webgpu-probe .app { padding: 16px; }
+  .webgpu-probe { padding: 20px; }
 }

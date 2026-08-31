@@ -60,6 +60,7 @@ async function withDeadline<T>(label: string, operation: Promise<T>): Promise<T>
 export function runWebGpuIsolationProbe(): void {
   const app = document.querySelector<HTMLElement>('[data-app]');
   if (!app) throw new Error('Probe host is missing.');
+  document.documentElement.classList.add('is-webgpu-probe');
   document.body.classList.add('is-webgpu-probe');
 
   const panel = document.createElement('section');
