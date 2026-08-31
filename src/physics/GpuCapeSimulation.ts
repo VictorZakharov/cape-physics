@@ -2868,19 +2868,6 @@ export class GpuCapeSimulation {
                       closest.assign(first.add(ab.mul(secondWeight)).add(ac.mul(thirdWeight)));
                     });
 
-                    const previousClosest = this.previousBuffer.element(firstIndex).xyz
-                      .mul(barycentric.x)
-                      .add(this.previousBuffer.element(secondIndex).xyz.mul(barycentric.y))
-                      .add(this.previousBuffer.element(thirdIndex).xyz.mul(barycentric.z))
-                      .toVar('coloredBodyFacePreviousClosest');
-                    const topologyColumn = float(firstIndex.mod(uint(CAPE.columns)))
-                      .mul(barycentric.x)
-                      .add(float(secondIndex.mod(uint(CAPE.columns))).mul(barycentric.y))
-                      .add(float(thirdIndex.mod(uint(CAPE.columns))).mul(barycentric.z));
-                    const topologySide = topologyColumn
-                      .div(CAPE.columns - 1)
-                      .sub(0.5)
-                      .toVar('coloredBodyFaceTopologySide');
                     const delta = closest.sub(center).toVar('coloredBodyFaceDelta');
                     const depth = delta.dot(this.backUniform).toVar('coloredBodyFaceDepth');
                     const lateralSquared = delta.dot(delta)
@@ -2893,67 +2880,7 @@ export class GpuCapeSimulation {
                           lateralSquared.div(lateralRadius.mul(lateralRadius)),
                         ).max(0).sqrt(),
                       );
-                      const backCorrection = surfaceDepth.sub(depth).max(0)
-                        .toVar('coloredBodyFaceBackCorrection');
-                      const penetration = backCorrection.toVar('coloredBodyFacePenetration');
-                      const contactNormal = this.backUniform
-                        .toVar('coloredBodyFaceContactNormal');
-                      If(backCorrection.greaterThan(0).and(depth.lessThan(0)), () => {
-                        If(depth.lessThanEqual(depthRadius.negate()), () => {
-                          // Match WebGL: cloth wholly in front of the capsule
-                          // is not teleported through the body to its back.
-                          penetration.assign(0);
-                        }).Else(() => {
-                          const depthRatio = depth.div(depthRadius).clamp(-1, 0);
-                          const lateralBoundary = lateralRadius.mul(
-                            float(1).sub(depthRatio.mul(depthRatio)).max(0).sqrt(),
-                          );
-                          const bodyRight = vec3(
-                            this.backUniform.z,
-                            0,
-                            this.backUniform.x.negate(),
-                          ).normalize().toVar('coloredBodyFaceRight');
-                          const spatialSide = previousClosest
-                            .sub(this.anchorCenterUniform)
-                            .dot(bodyRight);
-                          const preferredSide = select(
-                            topologySide.abs().greaterThan(0.000_001),
-                            topologySide,
-                            spatialSide,
-                          ).toVar('coloredBodyFacePreferredSide');
-                          If(preferredSide.abs().greaterThan(0.000_001), () => {
-                            contactNormal.assign(bodyRight.mul(
-                              select(preferredSide.greaterThan(0), 1, -1),
-                            ));
-                          }).Else(() => {
-                            const preferredDelta = previousClosest.sub(center)
-                              .toVar('coloredBodyFacePreferredDelta');
-                            const preferredDepth = preferredDelta.dot(this.backUniform);
-                            const preferredLateral = preferredDelta
-                              .sub(this.backUniform.mul(preferredDepth))
-                              .mul(vec3(1, 0, 1))
-                              .toVar('coloredBodyFacePreferredLateral');
-                            If(preferredLateral.length().greaterThan(0.000_001), () => {
-                              contactNormal.assign(preferredLateral.normalize());
-                            }).ElseIf(lateralSquared.greaterThan(0.000_001), () => {
-                              contactNormal.assign(
-                                delta.sub(this.backUniform.mul(depth))
-                                  .mul(vec3(1, 0, 1))
-                                  .normalize(),
-                              );
-                            }).Else(() => {
-                              contactNormal.assign(bodyRight);
-                            });
-                          });
-                          const lateralCorrection = lateralBoundary
-                            .sub(delta.dot(contactNormal));
-                          penetration.assign(select(
-                            lateralCorrection.greaterThan(0),
-                            lateralCorrection,
-                            backCorrection,
-                          ));
-                        });
-                      });
+                      const penetration = surfaceDepth.sub(depth).max(0);
                       const denominator = firstMass.mul(barycentric.x.mul(barycentric.x))
                         .add(secondMass.mul(barycentric.y.mul(barycentric.y)))
                         .add(thirdMass.mul(barycentric.z.mul(barycentric.z)));
@@ -2962,13 +2889,13 @@ export class GpuCapeSimulation {
                           .and(denominator.greaterThan(0.000_001)),
                         () => {
                           const lambda = penetration.div(denominator);
-                          first.addAssign(contactNormal.mul(
+                          first.addAssign(this.backUniform.mul(
                             firstMass.mul(barycentric.x).mul(lambda),
                           ));
-                          second.addAssign(contactNormal.mul(
+                          second.addAssign(this.backUniform.mul(
                             secondMass.mul(barycentric.y).mul(lambda),
                           ));
-                          third.addAssign(contactNormal.mul(
+                          third.addAssign(this.backUniform.mul(
                             thirdMass.mul(barycentric.z).mul(lambda),
                           ));
                         },
@@ -3013,15 +2940,10 @@ export class GpuCapeSimulation {
           const correctedPrevious = previousState.xyz
             .add(faceCorrection)
             .toVar('correctedPreviousBodyFace');
-          const correctionNormal = this.backUniform
-            .toVar('boundedBodyFaceCorrectionNormal');
-          If(faceCorrection.dot(faceCorrection).greaterThan(0.000_000_1), () => {
-            correctionNormal.assign(faceCorrection.normalize());
-          });
           const inwardMotion = boundedCorrected.sub(correctedPrevious)
-            .dot(correctionNormal)
+            .dot(this.backUniform)
             .min(0);
-          correctedPrevious.addAssign(correctionNormal.mul(inwardMotion));
+          correctedPrevious.addAssign(this.backUniform.mul(inwardMotion));
           this.previousBuffer.element(particleIndex).assign(vec4(
             correctedPrevious,
             previousState.w,
