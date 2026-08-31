@@ -154,8 +154,9 @@ const CAVE_LOWER_RADIAL_START = Math.floor(CAVE.radialSegments / 2);
  * Distance constraints use WebGL's exact shared row-major Gauss-Seidel stream
  * so projection order and Verlet velocity agree between backends. Expensive
  * self, body, cave, and formation collision work remains parallel on the GPU.
- * Character translation is integrated as a moving reference frame; projection
- * never selects or steers toward a locomotion-specific shape.
+ * Only the pinned neckline follows character translation. Free particles stay
+ * in world-space Verlet motion so the ordered constraints transmit that pull
+ * through the cloth exactly like the CPU/WebGL solver.
  */
 export class GpuCapeSimulation {
   public readonly mesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshPhysicalNodeMaterial>;
@@ -181,8 +182,6 @@ export class GpuCapeSimulation {
   private readonly dragPerSecondUniform = uniform(CAPE_DRAG_PER_SECOND);
   private readonly airflowUniform = uniform(new THREE.Vector3());
   private readonly anchorCenterUniform = uniform(new THREE.Vector3());
-  private readonly anchorDisplacementUniform = uniform(new THREE.Vector3());
-  private readonly anchorAccelerationDisplacementUniform = uniform(new THREE.Vector3());
   private readonly stiffnessUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.stiffness);
   private readonly dampingUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.damping);
   private readonly weightUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.weight);
@@ -194,10 +193,6 @@ export class GpuCapeSimulation {
   private readonly profileNoOpKernel: THREE.ComputeNode;
   private readonly profileProjectionKernels: readonly THREE.ComputeNode[];
   private readonly anchorCenter = new THREE.Vector3();
-  private readonly nextAnchorCenter = new THREE.Vector3();
-  private readonly anchorDisplacement = new THREE.Vector3();
-  private readonly previousAnchorDisplacement = new THREE.Vector3();
-  private readonly anchorAccelerationDisplacement = new THREE.Vector3();
   private readonly anchorTarget = new THREE.Vector3();
   private readonly worldCandidateCenter = new THREE.Vector3(
     Number.POSITIVE_INFINITY,
@@ -491,19 +486,10 @@ export class GpuCapeSimulation {
       IDLE_DRAPE_RECOVERY_DELAY_SECONDS + IDLE_DRAPE_RECOVERY_RAMP_SECONDS,
     );
     this.dragPerSecondUniform.value = CAPE_DRAG_PER_SECOND;
-    this.nextAnchorCenter.copy(anchors.left).add(anchors.right).multiplyScalar(0.5);
-    this.anchorDisplacement.copy(this.nextAnchorCenter).sub(this.anchorCenter);
-    this.anchorAccelerationDisplacement.copy(this.anchorDisplacement)
-      .sub(this.previousAnchorDisplacement);
-    this.anchorDisplacementUniform.value.copy(this.anchorDisplacement);
-    this.anchorAccelerationDisplacementUniform.value.copy(
-      this.anchorAccelerationDisplacement,
-    );
     this.updateAnchorBuffer(anchors);
     this.updateBodyBuffers(bodyColliders, anchors.back);
     this.updateWorldBuffers(worldColliders);
     this.renderer.compute(this.computeSequence);
-    this.previousAnchorDisplacement.copy(this.anchorDisplacement);
     this.submittedSteps += 1;
   }
 
@@ -517,7 +503,6 @@ export class GpuCapeSimulation {
     this.writeStorage(this.scratchBuffer.value, state);
     this.writeStorage(this.previousBuffer.value, state);
     this.updateAnchorBuffer(anchors);
-    this.previousAnchorDisplacement.set(0, 0, 0);
     this.submittedSteps = 0;
     this.idleDrapeRecoverySeconds = 0;
     this.idleDrapeRecoveryUniform.value = 0;
@@ -544,7 +529,6 @@ export class GpuCapeSimulation {
     this.writeStorage(this.topologyBuffer.value, topology.packed);
     this.writeStorage(this.constraintBuffer.value, topology.orderedConstraints);
     this.updateAnchorBuffer(anchors);
-    this.previousAnchorDisplacement.set(0, 0, 0);
     this.submittedSteps = 0;
     this.idleDrapeRecoverySeconds = 0;
     this.idleDrapeRecoveryUniform.value = 0;
@@ -584,7 +568,6 @@ export class GpuCapeSimulation {
     this.writeStorage(this.scratchBuffer.value, positionData);
     this.writeStorage(this.previousBuffer.value, previousData);
     this.diagnosticMirror.overwriteStateForHarness(positionData, previousData);
-    this.previousAnchorDisplacement.set(0, 0, 0);
     this.submittedSteps = 0;
     this.idleDrapeRecoverySeconds = 0;
     this.idleDrapeRecoveryUniform.value = 0;
@@ -869,12 +852,11 @@ export class GpuCapeSimulation {
         Return();
       });
 
-      // Work in the character's translating reference frame. Advecting both
-      // Verlet states preserves cloth velocity, while subtracting the change
-      // in frame displacement retains inertia on start, stop, and reversal.
-      const currentPosition = current.xyz.add(this.anchorDisplacementUniform)
-        .toVar('currentPosition');
-      const previousPosition = previous.xyz.add(this.anchorDisplacementUniform);
+      // Match WebGL's world-space Verlet predictor. Only the pinned row above
+      // receives the new anchors; translating every free particle here would
+      // bypass the cloth constraints and preserve a rigid sheet while walking.
+      const currentPosition = current.xyz.toVar('currentPosition');
+      const previousPosition = previous.xyz;
       const velocity = currentPosition.sub(previousPosition).toVar('velocity');
       const drag = this.dragPerSecondUniform.mul(this.dampingUniform);
       velocity.mulAssign(drag.mul(this.deltaTimeUniform).negate().exp());
@@ -931,7 +913,6 @@ export class GpuCapeSimulation {
         .mul(flutterEnvelope);
       const deltaSquared = this.deltaTimeUniform.mul(this.deltaTimeUniform);
       const predicted = currentPosition.add(velocity).toVar('predicted');
-      predicted.subAssign(this.anchorAccelerationDisplacementUniform);
       predicted.y.subAssign(
         deltaSquared.mul(9.81).mul(this.weightUniform),
       );
