@@ -53,6 +53,10 @@ const durationSeconds = numericSetting('CAPE_PROFILE_DURATION_SECONDS', 12, 1 / 
 const settleSeconds = numericSetting('CAPE_PROFILE_SETTLE_SECONDS', 0.45, 0, 2);
 const runningWarmupSeconds = numericSetting('CAPE_PROFILE_RUNNING_WARMUP_SECONDS', 0.85, 0, 2);
 const kernelProfileSamples = numericSetting('CAPE_PROFILE_KERNEL_SAMPLES', 0, 0, 16);
+const botCount = numericSetting('CAPE_PROFILE_BOTS', 0, 0, 10);
+if (!Number.isInteger(botCount)) {
+  throw new Error('CAPE_PROFILE_BOTS must be an integer from 0 to 10.');
+}
 if (kernelProfileSamples > 0 && (!gpuTimestamps || rendererPreference !== 'webgpu')) {
   throw new Error('CAPE_PROFILE_KERNEL_SAMPLES requires WebGPU and GPU timestamps.');
 }
@@ -98,9 +102,10 @@ function summarizeCpuProfile(profile) {
 const programFilesX86 = process.env['ProgramFiles(x86)'];
 const browserCandidates = [
   process.env.CAPE_EDGE_PATH,
+  process.env.ProgramFiles && join(process.env.ProgramFiles, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+  programFilesX86 && join(programFilesX86, 'Google', 'Chrome', 'Application', 'chrome.exe'),
   process.env.ProgramFiles && join(process.env.ProgramFiles, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
   programFilesX86 && join(programFilesX86, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
-  process.env.ProgramFiles && join(process.env.ProgramFiles, 'Google', 'Chrome', 'Application', 'chrome.exe'),
 ].filter(Boolean);
 const browserExecutable = browserCandidates.find(existsSync);
 if (!browserExecutable) throw new Error('Edge or Chrome was not found; set CAPE_EDGE_PATH.');
@@ -195,6 +200,14 @@ try {
     );
   }
 
+  const botSetup = await evaluate(command, `(async () => {
+    const start = performance.now();
+    await window.__CAPE_DEMO__.setBotCount(${botCount});
+    return {
+      mainThreadMilliseconds: performance.now() - start,
+    };
+  })()`);
+
   await evaluate(command, `window.__CAPE_DEMO__.setPlayerPose(${JSON.stringify({
     position: [-2.38, 0, -15],
     yaw: 0,
@@ -281,6 +294,8 @@ try {
       devicePixelRatio: 1,
       quality: initial.quality.label,
       resolutionScale: initial.quality.scale,
+      botCount,
+      botSetupMainThreadMilliseconds: botSetup.mainThreadMilliseconds,
       simulatedSeconds: durationSeconds,
       frames: profile.frames,
       frameStepSeconds: frameStep,
@@ -316,6 +331,7 @@ try {
       programsBefore: profile.programsBefore,
       programsAfter: profile.programsAfter,
     },
+    capeWorkers: profile.diagnostics.cape.workers,
     gpuKernelBreakdown,
     cpuProfile,
   };

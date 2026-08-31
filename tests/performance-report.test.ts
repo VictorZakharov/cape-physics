@@ -104,6 +104,99 @@ describe('performance report', () => {
     expect(report).not.toContain('undefined');
   });
 
+  test('reports WebGL bot worker utilization separately from player physics', () => {
+    const report = formatPerformanceReport({
+      capturedAt: '2026-08-31T18:00:00.000Z',
+      performance: {
+        averageFps: 120,
+        onePercentLow: 100,
+        averageFrameTime: 8.33,
+        medianFrameTime: 8.2,
+        p95FrameTime: 9,
+        p99FrameTime: 10,
+        refreshEstimate: 144,
+        longFrameCount: 0,
+        longestFrameTime: 12,
+        sampleCount: 1_800,
+        windowElapsedMilliseconds: 15_000,
+      },
+      renderer: {
+        backend: 'WebGL 2.0',
+        vendor: 'Vendor',
+        device: 'GPU',
+        preference: 'webgl',
+        actual: 'webgl',
+        fallback: false,
+        drawCalls: 200,
+        triangles: 300_000,
+        programs: 41,
+      },
+      canvas: {
+        drawingBufferWidth: 1920,
+        drawingBufferHeight: 1080,
+        cssWidth: 1920,
+        cssHeight: 1080,
+      },
+      quality: { label: 'ADAPTIVE HIGH', scale: 0.9, targetResizes: 1 },
+      workload: {
+        averageMainThreadMilliseconds: 3,
+        p95MainThreadMilliseconds: 4,
+        averagePhysicsMilliseconds: 1.2,
+        averageSceneMilliseconds: 0.3,
+        averageRenderMilliseconds: 1.5,
+        averagePhysicsSteps: 1,
+        maximumPhysicsSteps: 2,
+        sampleCount: 1_800,
+      },
+      capeSolver: {
+        implementation: 'cpu-pbd',
+        sampleIntervalSteps: 32,
+        totalSteps: 1_800,
+        activeSteps: 1_800,
+        sampledActiveSteps: 56,
+        averageStepMilliseconds: 2.8,
+        phases: {
+          prediction: 0.1,
+          constraints: 0.3,
+          selfCollision: 0.7,
+          foldGuard: 0.1,
+          bodyCollision: 0.8,
+          worldCollision: 0.2,
+          caveCollision: 0.4,
+          reconciliation: 0.2,
+          anchors: 0,
+          finalization: 0,
+        },
+      },
+      capeWorkers: {
+        active: true,
+        workers: 8,
+        busyWorkers: 6,
+        queuedSteps: 2,
+        failure: null,
+      },
+      scene: {
+        simulationSeconds: 15,
+        capeSleeping: false,
+        worldColliders: 2_062,
+        activeRipples: 0,
+        botCount: 10,
+        simulatedCapes: 11,
+      },
+      page: {
+        visibility: 'visible',
+        focused: true,
+        devicePixelRatio: 1,
+        multipleScreens: false,
+        url: 'https://example.test/',
+      },
+      runtime: { platform: 'Test', userAgent: 'Test' },
+    });
+
+    expect(report).toContain('player on main thread, bots across 8 workers');
+    expect(report).toContain('Cape workers: 8 active | 6 busy | 2 queued fixed steps | healthy');
+  });
+
   test('writes the report through the asynchronous Clipboard API', async () => {
     let copied = '';
     await copyText('diagnostic payload', {

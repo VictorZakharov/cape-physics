@@ -29,8 +29,9 @@ describe('WebGPU multi-cape submission architecture', () => {
     expect(demoSource).not.toContain('computeNodes.push(...bot.cape.prepareStep(');
     expect(demoSource).toContain('const cape = this.cape instanceof CapeSimulation');
     expect(demoSource).toContain(': null;');
+    expect(demoSource).toContain('if (cape instanceof CapeSimulation) {');
     expect(demoSource).toContain(
-      'if (cape instanceof CapeSimulation) this.stabilizeCapeInstance(character, cape);',
+      'this.webGlCapeWorkers.registerCape(',
     );
   });
 });
