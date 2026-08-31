@@ -26,6 +26,7 @@ import { CinematicLighting } from './lighting/CinematicLighting';
 import type { WebGpuCinematicLighting } from './lighting/WebGpuCinematicLighting';
 import { CapeSimulation } from './physics/CapeSimulation';
 import { DEFAULT_CAPE_PHYSICS_SETTINGS } from './physics/CapeSettings';
+import { resolveGpuCapeDiagnosticOptions } from './physics/GpuCapeDiagnosticOptions';
 import type { GpuCapeSimulation } from './physics/GpuCapeSimulation';
 import type { WorldCollider } from './physics/colliders';
 import { Character } from './player/Character';
@@ -305,6 +306,7 @@ export class CapeDemo {
         gpuRenderer,
         this.character.getCapeAnchors(),
         this.customizationSettings,
+        resolveGpuCapeDiagnosticOptions(window.location.search),
       );
     } else {
       await this.loading.update(0.64, 'Weaving the cloth simulation');

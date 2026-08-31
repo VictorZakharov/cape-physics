@@ -38,6 +38,10 @@ import {
   CAPE_FLUTTER_ACCELERATION,
 } from './CapeAerodynamics';
 import { CAPE_DISTANCE_CONSTRAINTS } from './CapeConstraintTopology';
+import {
+  DEFAULT_GPU_CAPE_DIAGNOSTIC_OPTIONS,
+  type GpuCapeDiagnosticOptions,
+} from './GpuCapeDiagnosticOptions';
 import { CapeSimulation } from './CapeSimulation';
 import {
   CAPE_ROW_CURL_RELAXATION,
@@ -210,6 +214,7 @@ export class GpuCapeSimulation {
     renderer: THREE.WebGPURenderer,
     initialAnchors: CapeAnchors,
     settings: Partial<CapePhysicsSettings> = {},
+    diagnostics: GpuCapeDiagnosticOptions = DEFAULT_GPU_CAPE_DIAGNOSTIC_OPTIONS,
   ) {
     this.renderer = renderer;
     this.settings = normalizeCapePhysicsSettings(settings);
@@ -340,7 +345,10 @@ export class GpuCapeSimulation {
         currentBufferIsPosition ? positionToScratch : scratchToPosition,
       );
       currentBufferIsPosition = !currentBufferIsPosition;
-      if (iteration >= CAPE.solverIterations - 3) {
+      if (
+        diagnostics.bodyFaceContactsEnabled
+        && iteration >= CAPE.solverIterations - 3
+      ) {
         this.computeSequence.push(
           currentBufferIsPosition ? positionBodyFaces : scratchBodyFaces,
         );
@@ -351,7 +359,7 @@ export class GpuCapeSimulation {
         currentBufferIsPosition ? hardPositionToScratch : hardScratchToPosition,
       );
       currentBufferIsPosition = !currentBufferIsPosition;
-      if (reconciliation > 0) {
+      if (diagnostics.bodyFaceContactsEnabled && reconciliation > 0) {
         this.computeSequence.push(
           currentBufferIsPosition ? positionBodyFaces : scratchBodyFaces,
         );
@@ -377,7 +385,15 @@ export class GpuCapeSimulation {
       positionRockFaces,
       finalSelfPositionToScratch,
       finalContactScratchToPosition,
-      positionBodyFaces,
+    );
+    if (diagnostics.bodyFaceContactsEnabled) {
+      this.computeSequence.push(positionBodyFaces);
+    } else {
+      console.warn(
+        'WebGPU cape diagnostic active: cloth-triangle/body-face sweeps are disabled.',
+      );
+    }
+    this.computeSequence.push(
       positionRockFaces,
       reconcileBodyContactVelocity,
       reconcileProjectionVerticalVelocity,
