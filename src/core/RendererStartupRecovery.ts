@@ -227,6 +227,7 @@ export class RendererStartupRecovery {
     renderer: RendererPreference,
     stage: string,
     error: unknown,
+    allowReload = true,
   ): RendererRecoveryDecision {
     const timestamp = this.now();
     this.state = {
@@ -239,6 +240,17 @@ export class RendererStartupRecovery {
         updatedAt: timestamp,
       },
     };
+    if (!allowReload) {
+      const current = this.state.current;
+      if (current) this.appendFailure(current, error);
+      this.state = {
+        ...this.state,
+        current: null,
+        recoveryPending: false,
+      };
+      this.persist();
+      return { action: 'show-error', delayMilliseconds: 0 };
+    }
     return this.fail(error);
   }
 

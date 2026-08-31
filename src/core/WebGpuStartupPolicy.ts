@@ -10,8 +10,14 @@ export interface WebGpuStartupPolicy {
   readonly allowed: boolean;
   readonly code: 'allowed'
     | 'api-unavailable'
-    | 'session-device-loss';
+    | 'session-device-loss'
+    | 'chromium-151-macos-runaway-process';
   readonly reason: string | null;
+}
+
+function chromiumMajorVersion(userAgent: string): number | null {
+  const match = /\b(?:Chrome|Chromium)\/(\d+)/.exec(userAgent);
+  return match ? Number(match[1]) : null;
 }
 
 /**
@@ -43,6 +49,15 @@ export function evaluateWebGpuStartupPolicy(
       allowed: false,
       code: 'session-device-loss',
       reason: 'WebGPU is disabled for this tab after a GPU device loss. Restart Chrome before trying WebGPU again.',
+    };
+  }
+
+  const isMacOs = /\bMacintosh\b|\bMac OS X\b/.test(input.userAgent);
+  if (isMacOs && chromiumMajorVersion(input.userAgent) === 151) {
+    return {
+      allowed: false,
+      code: 'chromium-151-macos-runaway-process',
+      reason: 'WebGPU is temporarily disabled on Chromium 151 for macOS after a device loss left a runaway GPU helper consuming CPU. This is a safety containment, not a fix.',
     };
   }
 

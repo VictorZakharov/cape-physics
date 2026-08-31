@@ -5,14 +5,26 @@ const macChrome151 = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
   + 'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36';
 
 describe('WebGPU startup safety policy', () => {
-  test('does not substitute a platform blocklist for a WebGPU fix', () => {
+  test('contains the confirmed runaway GPU helper on Chromium 151 macOS', () => {
     expect(evaluateWebGpuStartupPolicy({
       apiAvailable: true,
       userAgent: macChrome151,
-    })).toMatchObject({
-      allowed: true,
-      code: 'allowed',
+    })).toEqual({
+      allowed: false,
+      code: 'chromium-151-macos-runaway-process',
+      reason: 'WebGPU is temporarily disabled on Chromium 151 for macOS after a device loss left a runaway GPU helper consuming CPU. This is a safety containment, not a fix.',
     });
+  });
+
+  test('does not extend the containment to other versions or platforms', () => {
+    expect(evaluateWebGpuStartupPolicy({
+      apiAvailable: true,
+      userAgent: macChrome151.replace('Chrome/151', 'Chrome/152'),
+    })).toMatchObject({ allowed: true, code: 'allowed' });
+    expect(evaluateWebGpuStartupPolicy({
+      apiAvailable: true,
+      userAgent: macChrome151.replace('Macintosh; Intel Mac OS X 10_15_7', 'Windows NT 10.0'),
+    })).toMatchObject({ allowed: true, code: 'allowed' });
   });
 
   test('quarantines WebGPU for the session after any device-loss shutdown', () => {

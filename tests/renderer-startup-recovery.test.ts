@@ -161,4 +161,27 @@ describe('renderer startup recovery', () => {
     expect(state.getDiagnostics().current).toBeNull();
     expect(state.getLastStage()).toBe('submit-first-frame');
   });
+
+  test('records a device loss without scheduling another graphics backend', () => {
+    const state = recovery(new MemoryStorage(), { value: 10 }, ['gpu', 'lost']);
+    state.begin('webgpu');
+    state.stage('submit-first-frame');
+    state.complete('webgpu');
+
+    expect(state.failActiveRenderer(
+      'webgpu',
+      'webgpu-device-lost-after-submit-first-frame',
+      new Error('external instance lost'),
+      false,
+    )).toEqual({ action: 'show-error', delayMilliseconds: 0 });
+    expect(state.getDiagnostics()).toMatchObject({
+      current: null,
+      automaticReloads: 0,
+      recoveryPending: false,
+    });
+    expect(state.getDiagnostics().failures.at(-1)).toMatchObject({
+      stage: 'webgpu-device-lost-after-submit-first-frame',
+      message: 'external instance lost',
+    });
+  });
 });

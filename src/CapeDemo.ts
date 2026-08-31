@@ -326,9 +326,10 @@ export class CapeDemo {
         const lastStage = this.startupRecovery.getLastStage() ?? 'unknown-stage';
         console.warn(`WebGPU device lost: ${detail}`);
         this.recoverWithWebGL(
-          'WebGPU stopped responding; restarting once with WebGL',
+          'WebGPU lost its device. Fully quit Chrome before trying graphics again.',
           new Error(detail),
           `webgpu-device-lost-after-${lastStage}`,
+          false,
         );
       });
     } else if (this.rendererPreference === 'webgpu') {
@@ -658,9 +659,19 @@ export class CapeDemo {
     document.querySelector<HTMLElement>('[data-onboarding]')?.classList.add('is-dismissed');
   };
 
-  private recoverWithWebGL(message: string, error: unknown, stage: string): void {
+  private recoverWithWebGL(
+    message: string,
+    error: unknown,
+    stage: string,
+    allowReload = true,
+  ): void {
     if (this.webGpuRecoveryStarted) return;
-    const decision = this.startupRecovery.failActiveRenderer('webgpu', stage, error);
+    const decision = this.startupRecovery.failActiveRenderer(
+      'webgpu',
+      stage,
+      error,
+      allowReload,
+    );
     this.beginWebGlReload(message, decision);
   }
 
