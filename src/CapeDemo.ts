@@ -24,7 +24,14 @@ import { InputController } from './input/InputController';
 import { MobileControls } from './input/MobileControls';
 import { CinematicLighting } from './lighting/CinematicLighting';
 import type { WebGpuCinematicLighting } from './lighting/WebGpuCinematicLighting';
-import { CapeSimulation } from './physics/CapeSimulation';
+import {
+  CapeSimulation,
+  createCapeFabricMaterial,
+} from './physics/CapeSimulation';
+import {
+  WebGlCapeWorkerPool,
+  type WebGlCapeStepInput,
+} from './physics/WebGlCapeWorkerPool';
 import {
   BOT_CYAN_CAPE_PALETTE,
   CRIMSON_CAPE_PALETTE,
@@ -88,10 +95,12 @@ type CapeFactory = (
 ) => CapeInstance;
 
 interface PerformanceBot {
+  readonly id: number;
   readonly character: Character;
   readonly cape: CapeInstance | null;
   readonly input: BotMovementInput;
   readonly controller: CharacterController;
+  geometryDirty: boolean;
 }
 
 type CapeTrajectoryScenario =
@@ -196,6 +205,9 @@ export class CapeDemo {
   private cape!: CapeInstance;
   private capeFactory!: CapeFactory;
   private readonly performanceBots: PerformanceBot[] = [];
+  private webGlCapeWorkers: WebGlCapeWorkerPool | null = null;
+  private botCapeMaterial: THREE.MeshPhysicalMaterial | null = null;
+  private nextPerformanceBotId = 1;
   private cave!: CaveWorld;
   private water!: WaterSystem | WebGpuWaterSystem;
   private torches!: TorchSystem | WebGpuTorchSystem;
@@ -434,7 +446,11 @@ export class CapeDemo {
     this.performance.recordFrame(timestamp);
     const physicsStart = performance.now();
     const timing = this.clock.advance(timestamp, this.simulateStep);
-    if (timing.physicsSteps > 0) this.syncCapeGeometries();
+    this.webGlCapeWorkers?.flush();
+    const workerCapeUpdated = this.applyWorkerCapeResults();
+    if (timing.physicsSteps > 0 || workerCapeUpdated) {
+      this.syncCapeGeometries(timing.physicsSteps > 0);
+    }
     const sceneStart = performance.now();
     this.updateScene(timing.delta);
     this.quality.observe(this.fixedTime, this.performance.getSnapshot());
@@ -470,9 +486,19 @@ export class CapeDemo {
         this.character.velocity,
         this.fixedTime,
       );
+      const workerInputs: WebGlCapeStepInput[] = [];
       for (const bot of this.performanceBots) {
         if (!bot.cape || !(bot.cape instanceof CapeSimulation)) {
           throw new Error('Mixed CPU and GPU cape simulations are unsupported.');
+        }
+        if (this.webGlCapeWorkers?.isDrivingCape(bot.id)) {
+          workerInputs.push({
+            capeId: bot.id,
+            anchors: bot.character.getCapeAnchors(),
+            bodyColliders: bot.character.getCapeColliders(),
+            characterVelocity: bot.character.velocity,
+          });
+          continue;
         }
         bot.cape.step(
           step,
@@ -482,7 +508,9 @@ export class CapeDemo {
           bot.character.velocity,
           this.fixedTime,
         );
+        bot.geometryDirty = true;
       }
+      this.webGlCapeWorkers?.enqueueStep(step, this.fixedTime, workerInputs);
       return;
     }
 
@@ -614,8 +642,13 @@ export class CapeDemo {
     this.reconcilePerformanceBots(settings.bots);
     for (const bot of this.performanceBots) {
       bot.cape?.updateSettings(settings, bot.character.getCapeAnchors());
+      bot.geometryDirty = true;
     }
-    if (settleDimensions) this.stabilizeAllCapes();
+    if (settleDimensions) {
+      this.stabilizeAllCapes();
+    } else {
+      this.synchronizeWorkerCapeStates();
+    }
     this.applySceneCustomization(settings);
     if (this.ready) this.pipeline.renderManual(0);
   };
@@ -638,8 +671,16 @@ export class CapeDemo {
     }
     this.stabilizeCape();
     this.performanceBots.forEach((bot) => {
-      if (bot.cape) this.stabilizeCapeInstance(bot.character, bot.cape);
+      if (bot.cape) {
+        if (this.webGlCapeWorkers?.isDrivingCape(bot.id)) {
+          bot.geometryDirty = true;
+          return;
+        }
+        this.stabilizeCapeInstance(bot.character, bot.cape);
+        bot.geometryDirty = true;
+      }
     });
+    this.synchronizeWorkerCapeStates();
     this.syncCapeGeometries();
   }
 
@@ -685,27 +726,44 @@ export class CapeDemo {
     character.root.updateMatrixWorld(true);
 
     const cape = this.cape instanceof CapeSimulation
-      ? this.capeFactory(
+      ? new CapeSimulation(
         character.getCapeAnchors(),
         this.customizationSettings,
         BOT_CYAN_CAPE_PALETTE,
+        {
+          material: this.botCapeMaterial ??= createCapeFabricMaterial(
+            BOT_CYAN_CAPE_PALETTE,
+          ),
+        },
       )
       : null;
     const input = new BotMovementInput(index);
     input.update(this.fixedTime);
+    const id = this.nextPerformanceBotId;
+    this.nextPerformanceBotId += 1;
     const bot: PerformanceBot = {
+      id,
       character,
       cape,
       input,
       controller: new CharacterController(character, input, this.worldCollision),
+      geometryDirty: false,
     };
     this.scene.add(character.root);
     if (cape) this.scene.add(cape.mesh);
     this.configureCharacterRenderObjects(character, cape, false);
-    // A GPU cape starts from the authored drape already. Running twelve
-    // immediate steps here synchronously compiled every new compute graph on
-    // the range-input event and caused multi-second UI freezes.
-    if (cape instanceof CapeSimulation) this.stabilizeCapeInstance(character, cape);
+    // Every bot starts from the authored drape. Its first fixed steps belong
+    // to the normal solver path; never block a range-input event on twelve
+    // synchronous warm-up solves.
+    if (cape instanceof CapeSimulation) {
+      this.webGlCapeWorkers ??= new WebGlCapeWorkerPool(this.worldColliders);
+      this.webGlCapeWorkers.registerCape(
+        id,
+        cape,
+        character.getCapeAnchors(),
+        character.getCapeColliders(),
+      );
+    }
     cape?.syncGeometry();
     return bot;
   }
@@ -729,12 +787,44 @@ export class CapeDemo {
     }
   }
 
-  private syncCapeGeometries(): void {
-    this.cape.syncGeometry();
-    this.performanceBots.forEach((bot) => bot.cape?.syncGeometry());
+  private syncCapeGeometries(syncPlayer = true): void {
+    if (syncPlayer) this.cape.syncGeometry();
+    this.performanceBots.forEach((bot) => {
+      if (!bot.cape || !bot.geometryDirty) return;
+      bot.cape.syncGeometry();
+      bot.geometryDirty = false;
+    });
+  }
+
+  private applyWorkerCapeResults(): boolean {
+    if (!this.webGlCapeWorkers) return false;
+    let updated = false;
+    for (const bot of this.performanceBots) {
+      if (!(bot.cape instanceof CapeSimulation)) continue;
+      const state = this.webGlCapeWorkers.consumeLatestState(bot.id);
+      if (!state) continue;
+      bot.cape.overwriteStateForHarness(state.positions, state.previous);
+      bot.cape.synchronizeAnchorDiagnostics(bot.character.getCapeAnchors());
+      bot.geometryDirty = true;
+      updated = true;
+    }
+    return updated;
+  }
+
+  private synchronizeWorkerCapeStates(): void {
+    if (!this.webGlCapeWorkers) return;
+    for (const bot of this.performanceBots) {
+      if (!(bot.cape instanceof CapeSimulation)) continue;
+      this.webGlCapeWorkers.updateCape(
+        bot.id,
+        bot.cape,
+        bot.character.getCapeAnchors(),
+      );
+    }
   }
 
   private disposePerformanceBot(bot: PerformanceBot): void {
+    this.webGlCapeWorkers?.unregisterCape(bot.id);
     this.scene.remove(bot.character.root);
     if (bot.cape) {
       this.scene.remove(bot.cape.mesh);
@@ -826,6 +916,9 @@ export class CapeDemo {
       jump: () => {
         this.input.queueVirtualJump();
       },
+      setBotCount: async (count) => {
+        this.reconcilePerformanceBots(count);
+      },
       advance: ({ duration, frameStep = 1 / 60 }) => this.advanceHarness(duration, frameStep),
       traceCapeScenario: (options) => this.traceCapeScenario(options),
       tracePackedCapeBatch: (options) => this.tracePackedCapeBatch(options),
@@ -865,6 +958,7 @@ export class CapeDemo {
       remaining -= delta;
       this.advanceHarnessFrame(delta);
     }
+    await this.synchronizeWebGlCapeWorkers();
     this.pipeline.renderManual(lastDelta);
     return this.getDiagnosticsAfterReadback();
   }
@@ -1134,6 +1228,7 @@ export class CapeDemo {
       batchFrames += 1;
 
       if (batchFrames >= synchronizationInterval || remaining <= 0.000_001) {
+        await this.synchronizeWebGlCapeWorkers();
         const gpuFrameTime = await this.pipeline.resolveGpuFrameTimeForLocalProfile();
         if (gpuFrameTime === null) {
           await this.pipeline.synchronizeForLocalProfile();
@@ -1214,7 +1309,9 @@ export class CapeDemo {
       this.harnessAccumulator -= PHYSICS_STEP;
       simulated = true;
     }
-    if (simulated) this.syncCapeGeometries();
+    this.webGlCapeWorkers?.flush();
+    const workerCapeUpdated = this.applyWorkerCapeResults();
+    if (simulated || workerCapeUpdated) this.syncCapeGeometries(simulated);
     const sceneStart = performance.now();
     if (scenePhaseTotals) {
       this.updateSceneProfiled(delta, scenePhaseTotals);
@@ -1225,6 +1322,12 @@ export class CapeDemo {
       physicsMilliseconds: sceneStart - physicsStart,
       sceneMilliseconds: performance.now() - sceneStart,
     };
+  }
+
+  private async synchronizeWebGlCapeWorkers(): Promise<void> {
+    if (!this.webGlCapeWorkers) return;
+    await this.webGlCapeWorkers.synchronize();
+    if (this.applyWorkerCapeResults()) this.syncCapeGeometries(false);
   }
 
   private updateSceneProfiled(delta: number, totals: ScenePhaseTotals): void {
@@ -1358,6 +1461,7 @@ export class CapeDemo {
         worldColliders: this.worldColliders.length,
         worldContacts: this.cape.getWorldContactDiagnostics(),
         performance: this.cape.getPerformanceDiagnostics(),
+        workers: this.webGlCapeWorkers?.getDiagnostics() ?? null,
       },
       water: this.water.getDiagnostics(),
       minerals: {
@@ -1414,6 +1518,7 @@ export class CapeDemo {
       },
       workload: this.performance.getWorkloadSnapshot(),
       capeSolver: this.ready ? this.cape.getPerformanceDiagnostics() : null,
+      capeWorkers: this.webGlCapeWorkers?.getDiagnostics() ?? null,
       scene: {
         simulationSeconds: this.fixedTime,
         capeSleeping: this.ready ? this.cape.isSleeping() : false,
@@ -1463,6 +1568,13 @@ export class CapeDemo {
       const bot = this.performanceBots.pop();
       if (bot) this.disposePerformanceBot(bot);
     }
+    this.webGlCapeWorkers?.dispose();
+    this.webGlCapeWorkers = null;
+    this.botCapeMaterial?.map?.dispose();
+    this.botCapeMaterial?.normalMap?.dispose();
+    this.botCapeMaterial?.roughnessMap?.dispose();
+    this.botCapeMaterial?.dispose();
+    this.botCapeMaterial = null;
     this.cape?.dispose();
     this.character?.dispose();
     this.lighting?.dispose();

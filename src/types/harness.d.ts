@@ -190,6 +190,7 @@ declare global {
       clearMovement: () => void;
       setRunning: (running: boolean) => void;
       jump: () => void;
+      setBotCount: (count: number) => Promise<void>;
       advance: (options: { duration: number; frameStep?: number }) => Promise<CapeDemoDiagnostics>;
       traceCapeScenario: (options: {
         scenario:

@@ -49,6 +49,22 @@ interface DistanceConstraint {
   readonly structural: boolean;
 }
 
+export interface CapeSimulationOptions {
+  /**
+   * Worker-owned simulations never render. Skipping their geometry, textures,
+   * and material prevents every worker from generating a duplicate fabric
+   * atlas and keeps the worker bundle independent from a canvas.
+   */
+  readonly renderResources?: boolean;
+  /** Immutable fabric material shared by same-palette performance bots. */
+  readonly material?: THREE.MeshPhysicalMaterial;
+}
+
+export interface PackedCapeState {
+  readonly positions: Float32Array;
+  readonly previous: Float32Array;
+}
+
 const MAXIMUM_PLANAR_CAPE_PARTICLE_SPEED = 9.6;
 const SLEEP_AFTER_SETTLED_SECONDS = 0.55;
 const SETTLED_MOTION_THRESHOLD = 0.0025;
@@ -64,6 +80,32 @@ const BODY_CONTACT_RECONCILIATION_START = 0.000_5;
 const BODY_CONTACT_RECONCILIATION_FULL = 0.025;
 const WAKE_SPEED = 0.08;
 
+export function createCapeFabricMaterial(
+  appearance: CapeFabricPalette,
+): THREE.MeshPhysicalMaterial {
+  const textures = createCapeFabricTextures(256, appearance);
+  textures.color.repeat.set(1, 1);
+  textures.normal.repeat.set(1, 1);
+  textures.roughness.repeat.set(1, 1);
+  const material = new THREE.MeshPhysicalMaterial({
+    map: textures.color,
+    normalMap: textures.normal,
+    normalScale: new THREE.Vector2(0.48, 0.48),
+    roughnessMap: textures.roughness,
+    roughness: 0.78,
+    metalness: 0.01,
+    sheen: 0.92,
+    sheenColor: new THREE.Color(appearance.sheenColor),
+    sheenRoughness: 0.72,
+    clearcoat: 0.04,
+    side: THREE.DoubleSide,
+    transparent: false,
+    depthWrite: true,
+  });
+  material.name = appearance.materialName;
+  return material;
+}
+
 export class CapeSimulation {
   public readonly mesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshPhysicalMaterial>;
   private readonly positions: THREE.Vector3[] = [];
@@ -71,7 +113,7 @@ export class CapeSimulation {
   private readonly inverseMass: Float32Array;
   private readonly predictedVerticalDisplacement: Float32Array;
   private readonly constraints: DistanceConstraint[] = [];
-  private readonly positionAttribute: THREE.BufferAttribute;
+  private readonly positionAttribute: THREE.BufferAttribute | null;
   private readonly selfCollision: ClothSelfCollision;
   private readonly foldGuard: ClothFoldGuard;
   private readonly contactSolver: CapeContactSolver;
@@ -108,12 +150,14 @@ export class CapeSimulation {
   private maximumParticleMotionZ = 0;
   private maximumParticleVerticalMotionIndex = -1;
   private maximumParticleVerticalDelta = 0;
+  private readonly ownsMaterial: boolean;
   private settings: CapePhysicsSettings;
 
   public constructor(
     initialAnchors: CapeAnchors,
     settings: Partial<CapePhysicsSettings> = {},
     appearance: CapeFabricPalette = CRIMSON_CAPE_PALETTE,
+    options: CapeSimulationOptions = {},
   ) {
     this.settings = normalizeCapePhysicsSettings(settings);
     const particleCount = CAPE.columns * CAPE.rows;
@@ -125,29 +169,17 @@ export class CapeSimulation {
     this.initializeParticles(initialAnchors);
     this.positions.forEach((position) => this.stepStart.push(position.clone()));
     this.createConstraints();
-    const geometry = this.createGeometry();
-    this.positionAttribute = geometry.getAttribute('position') as THREE.BufferAttribute;
+    const renderResources = options.renderResources !== false;
+    const geometry = renderResources ? this.createGeometry() : new THREE.BufferGeometry();
+    this.positionAttribute = renderResources
+      ? geometry.getAttribute('position') as THREE.BufferAttribute
+      : null;
 
-    const textures = createCapeFabricTextures(256, appearance);
-    textures.color.repeat.set(1, 1);
-    textures.normal.repeat.set(1, 1);
-    textures.roughness.repeat.set(1, 1);
-    const material = new THREE.MeshPhysicalMaterial({
-      map: textures.color,
-      normalMap: textures.normal,
-      normalScale: new THREE.Vector2(0.48, 0.48),
-      roughnessMap: textures.roughness,
-      roughness: 0.78,
-      metalness: 0.01,
-      sheen: 0.92,
-      sheenColor: new THREE.Color(appearance.sheenColor),
-      sheenRoughness: 0.72,
-      clearcoat: 0.04,
-      side: THREE.DoubleSide,
-      transparent: false,
-      depthWrite: true,
-    });
-    material.name = appearance.materialName;
+    const material = options.material
+      ?? (renderResources
+        ? createCapeFabricMaterial(appearance)
+        : new THREE.MeshPhysicalMaterial());
+    this.ownsMaterial = !options.material;
     this.mesh = new THREE.Mesh(geometry, material);
     this.mesh.name = 'PBD cape';
     this.mesh.castShadow = true;
@@ -396,6 +428,7 @@ export class CapeSimulation {
   }
 
   public syncGeometry(): void {
+    if (!this.positionAttribute) return;
     const array = this.positionAttribute.array as Float32Array;
     this.positions.forEach((position, index) => {
       array[index * 3] = position.x;
@@ -437,6 +470,25 @@ export class CapeSimulation {
         previousData[offset + 2] ?? 0,
       );
     });
+  }
+
+  /** Returns a transferable vec4 snapshot used by the WebGL worker pool. */
+  public copyPackedState(): PackedCapeState {
+    const positions = new Float32Array(this.positions.length * 4);
+    const previous = new Float32Array(this.previous.length * 4);
+    this.positions.forEach((position, index) => {
+      const offset = index * 4;
+      positions[offset] = position.x;
+      positions[offset + 1] = position.y;
+      positions[offset + 2] = position.z;
+      positions[offset + 3] = this.inverseMass[index] ?? 0;
+      const prior = this.previous[index];
+      previous[offset] = prior?.x ?? position.x;
+      previous[offset + 1] = prior?.y ?? position.y;
+      previous[offset + 2] = prior?.z ?? position.z;
+      previous[offset + 3] = this.inverseMass[index] ?? 0;
+    });
+    return { positions, previous };
   }
 
   /** Harness-only state injection shared with the WebGPU implementation. */
@@ -506,7 +558,7 @@ export class CapeSimulation {
 
   public dispose(): void {
     this.mesh.geometry.dispose();
-    this.disposeMaterial();
+    if (this.ownsMaterial) this.disposeMaterial();
   }
 
   public disposeMaterial(): void {

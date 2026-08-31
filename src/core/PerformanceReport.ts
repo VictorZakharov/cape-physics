@@ -31,6 +31,13 @@ export interface PerformanceReportDetails {
   };
   readonly workload: WorkloadSnapshot;
   readonly capeSolver: CapePerformanceDiagnostics | null;
+  readonly capeWorkers?: {
+    readonly active: boolean;
+    readonly workers: number;
+    readonly busyWorkers: number;
+    readonly queuedSteps: number;
+    readonly failure: string | null;
+  } | null;
   readonly scene: {
     readonly simulationSeconds: number;
     readonly capeSleeping: boolean;
@@ -69,6 +76,7 @@ export function formatPerformanceReport(input: PerformanceReportInput): string {
     quality,
     workload,
     capeSolver,
+    capeWorkers,
     scene,
     page,
     runtime,
@@ -85,8 +93,13 @@ export function formatPerformanceReport(input: PerformanceReportInput): string {
         'Cape timing: no animation-loop particle readback or GPU fence; main-thread physics above measures command preparation/submission, not GPU completion',
       ]
       : [
-        `Cape solver: sequential CPU PBD Gauss-Seidel at ${Math.round(1 / PHYSICS_STEP)} Hz | ${CAPE.solverIterations} projection passes | sampled 1/${capeSolver.sampleIntervalSteps} active steps (${capeSolver.sampledActiveSteps} samples)`,
+        capeWorkers?.active
+          ? `Cape solver: CPU PBD Gauss-Seidel at ${Math.round(1 / PHYSICS_STEP)} Hz | ${CAPE.solverIterations} projection passes | player on main thread, bots across ${capeWorkers.workers} workers | sampled 1/${capeSolver.sampleIntervalSteps} player steps (${capeSolver.sampledActiveSteps} samples)`
+          : `Cape solver: sequential CPU PBD Gauss-Seidel at ${Math.round(1 / PHYSICS_STEP)} Hz | ${CAPE.solverIterations} projection passes | sampled 1/${capeSolver.sampleIntervalSteps} active steps (${capeSolver.sampledActiveSteps} samples)`,
         `Cape step sampled average: ${metric(capeSolver.averageStepMilliseconds)} ms | prediction ${metric(capeSolver.phases.prediction)} | constraints ${metric(capeSolver.phases.constraints)} | self ${metric(capeSolver.phases.selfCollision)} | fold ${metric(capeSolver.phases.foldGuard)} | body ${metric(capeSolver.phases.bodyCollision)} | world ${metric(capeSolver.phases.worldCollision)} | cave ${metric(capeSolver.phases.caveCollision)} | reconcile ${metric(capeSolver.phases.reconciliation)}`,
+        ...(capeWorkers?.active ? [
+          `Cape workers: ${capeWorkers.workers} active | ${capeWorkers.busyWorkers} busy | ${capeWorkers.queuedSteps} queued fixed steps | ${capeWorkers.failure ?? 'healthy'}`,
+        ] : []),
       ]
     : [];
 
