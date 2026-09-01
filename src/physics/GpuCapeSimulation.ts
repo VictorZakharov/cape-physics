@@ -3,7 +3,6 @@ import {
   Fn,
   If,
   Loop,
-  Return,
   attribute,
   atomicLoad,
   atomicOr,
@@ -159,6 +158,7 @@ const ROCK_FACES_PER_COLLIDER = 60;
 const MAXIMUM_CONTINUOUS_ROCK_SWEEP = 0.08;
 const ROCK_SWEEP_SURFACE_OFFSET = 0.001;
 const ROCK_SWEEP_TANGENTIAL_DAMPING = 0.76;
+const SWEPT_FACE_SAMPLE_COUNT = 4;
 const BODY_BUFFER_STRIDE = 4;
 const ROCK_BUFFER_STRIDE = 4 + ROCK_FACES_PER_COLLIDER * 4;
 const TOPOLOGY_METADATA_STRIDE = 2;
@@ -595,6 +595,11 @@ export class GpuCapeSimulation {
       bodyColliders,
       characterVelocity,
     }], worldColliders, time);
+  }
+
+  /** Unique production kernels for asynchronous startup compilation. */
+  public getComputePipelineNodes(): THREE.ComputeNode[] {
+    return [...new Set(this.computeSequence)];
   }
 
   /**
@@ -1073,7 +1078,7 @@ export class GpuCapeSimulation {
       const index = instanceIndex;
       const capeIndex = index.div(uint(PARTICLE_COUNT));
       const localIndex = index.mod(uint(PARTICLE_COUNT));
-      If(capeIndex.greaterThanEqual(this.activeCapeCountUniform), () => Return());
+      If(capeIndex.lessThan(this.activeCapeCountUniform), () => {
       const capeBase = capeIndex.mul(uint(PARTICLE_COUNT));
       const dynamics = this.dynamicsUniform.element(capeIndex);
       const current = this.positionBuffer.element(index);
@@ -1086,8 +1091,7 @@ export class GpuCapeSimulation {
         target.assign(anchor);
         previous.assign(anchor);
         this.predictedVerticalBuffer.element(index).assign(float(0));
-        Return();
-      });
+      }).Else(() => {
 
       // Match WebGL's world-space Verlet predictor. Only the pinned row above
       // receives the new anchors; translating every free particle here would
@@ -1174,6 +1178,8 @@ export class GpuCapeSimulation {
       );
       // The state lane accumulates body-contact work for final reconciliation.
       target.assign(vec4(predicted, 0));
+      });
+      });
     })().compute(PACKED_PARTICLE_COUNT).setName('Cape predict');
   }
 
@@ -1190,7 +1196,7 @@ export class GpuCapeSimulation {
       const capeIndex = workgroupId.x;
       const constraintIndex = localId.x;
       const capeBase = capeIndex.mul(uint(PARTICLE_COUNT));
-      If(capeIndex.greaterThanEqual(this.activeCapeCountUniform), () => Return());
+      If(capeIndex.lessThan(this.activeCapeCountUniform), () => {
       // This small fixed grid spends the overwhelming majority of its GPU
       // time in collision work, not 1,626 distance links. One invocation can
       // therefore reproduce WebGL's exact row-major Gauss-Seidel stream while
@@ -1449,6 +1455,7 @@ export class GpuCapeSimulation {
         }
       });
       storageBarrier();
+      });
     })().compute(PACKED_PARTICLE_COUNT, [PARTICLE_COUNT]).setName(name);
   }
 
@@ -1466,7 +1473,7 @@ export class GpuCapeSimulation {
       const index = instanceIndex;
       const capeIndex = index.div(uint(PARTICLE_COUNT));
       const localIndex = index.mod(uint(PARTICLE_COUNT));
-      If(capeIndex.greaterThanEqual(this.activeCapeCountUniform), () => Return());
+      If(capeIndex.lessThan(this.activeCapeCountUniform), () => {
       If(localIndex.greaterThanEqual(uint(CAPE.columns)), () => {
         const position = this.positionBuffer.element(index);
         const correction = position.w;
@@ -1484,6 +1491,7 @@ export class GpuCapeSimulation {
         });
         this.positionBuffer.element(index).assign(vec4(position.xyz, 0));
       });
+      });
     })().compute(PACKED_PARTICLE_COUNT).setName('Cape reconcile body contact velocity');
   }
 
@@ -1498,7 +1506,7 @@ export class GpuCapeSimulation {
       const index = instanceIndex;
       const capeIndex = index.div(uint(PARTICLE_COUNT));
       const localIndex = index.mod(uint(PARTICLE_COUNT));
-      If(capeIndex.greaterThanEqual(this.activeCapeCountUniform), () => Return());
+      If(capeIndex.lessThan(this.activeCapeCountUniform), () => {
       const hasMaterialContact = atomicLoad(
         this.materialContactFlagBuffer.element(capeIndex),
       ).greaterThan(uint(0));
@@ -1519,6 +1527,7 @@ export class GpuCapeSimulation {
           });
         },
       );
+      });
     })().compute(PACKED_PARTICLE_COUNT).setName('Cape reconcile projection vertical velocity');
   }
   private createProjectionKernel(
@@ -2418,14 +2427,24 @@ export class GpuCapeSimulation {
         { name: 'third', type: 'vec3' },
       ],
     });
-    const trianglesIntersect = (
-      clothFirst: THREE.Node<'vec3'>,
-      clothSecond: THREE.Node<'vec3'>,
-      clothThird: THREE.Node<'vec3'>,
-      rockFirst: THREE.Node<'vec3'>,
-      rockSecond: THREE.Node<'vec3'>,
-      rockThird: THREE.Node<'vec3'>,
-    ): THREE.Node<'bool'> => intersectsSegmentTriangle(
+    const trianglesIntersect = Fn<
+      readonly [
+        THREE.Node<'vec3'>,
+        THREE.Node<'vec3'>,
+        THREE.Node<'vec3'>,
+        THREE.Node<'vec3'>,
+        THREE.Node<'vec3'>,
+        THREE.Node<'vec3'>,
+      ],
+      THREE.Node<'bool'>
+    >(([
+      clothFirst,
+      clothSecond,
+      clothThird,
+      rockFirst,
+      rockSecond,
+      rockThird,
+    ]) => intersectsSegmentTriangle(
       clothFirst,
       clothSecond,
       rockFirst,
@@ -2461,7 +2480,18 @@ export class GpuCapeSimulation {
       clothFirst,
       clothSecond,
       clothThird,
-    ));
+    )), 'bool').setLayout({
+      name: `capeRockFaceTrianglesIntersect${passName}`,
+      type: 'bool',
+      inputs: [
+        { name: 'clothFirst', type: 'vec3' },
+        { name: 'clothSecond', type: 'vec3' },
+        { name: 'clothThird', type: 'vec3' },
+        { name: 'rockFirst', type: 'vec3' },
+        { name: 'rockSecond', type: 'vec3' },
+        { name: 'rockThird', type: 'vec3' },
+      ],
+    });
     const sphereIntersectsTriangle = Fn<
       readonly [
         THREE.Node<'vec4'>,
@@ -2676,15 +2706,6 @@ export class GpuCapeSimulation {
         const previousFirst = this.previousBuffer.element(firstIndex).xyz;
         const previousSecond = this.previousBuffer.element(secondIndex).xyz;
         const previousThird = this.previousBuffer.element(thirdIndex).xyz;
-        const sweptFirstQuarter = mix(previousFirst, first, 0.25);
-        const sweptSecondQuarter = mix(previousSecond, second, 0.25);
-        const sweptThirdQuarter = mix(previousThird, third, 0.25);
-        const sweptFirstHalf = mix(previousFirst, first, 0.5);
-        const sweptSecondHalf = mix(previousSecond, second, 0.5);
-        const sweptThirdHalf = mix(previousThird, third, 0.5);
-        const sweptFirstThreeQuarter = mix(previousFirst, first, 0.75);
-        const sweptSecondThreeQuarter = mix(previousSecond, second, 0.75);
-        const sweptThirdThreeQuarter = mix(previousThird, third, 0.75);
         const triangleMinimum = first.min(second).min(third)
           .sub(CLOTH_ROCK_CLEARANCE);
         const triangleMaximum = first.max(second).max(third)
@@ -2725,30 +2746,36 @@ export class GpuCapeSimulation {
               .and(faceTriangleMaximum.z.greaterThanEqual(sphere.z.sub(sphere.w)))
               .and(faceTriangleMinimum.z.lessThanEqual(sphere.z.add(sphere.w)));
             If(overlapsSphere, () => {
-              const currentIntersects = sphereIntersectsTriangle(
-                sphere,
-                first,
-                second,
-                third,
-              );
-              const intersects = allowSweptFaceRecovery
-                ? currentIntersects.or(sphereIntersectsTriangle(
-                  sphere,
-                  sweptFirstQuarter,
-                  sweptSecondQuarter,
-                  sweptThirdQuarter,
-                )).or(sphereIntersectsTriangle(
-                  sphere,
-                  sweptFirstHalf,
-                  sweptSecondHalf,
-                  sweptThirdHalf,
-                )).or(sphereIntersectsTriangle(
-                  sphere,
-                  sweptFirstThreeQuarter,
-                  sweptSecondThreeQuarter,
-                  sweptThirdThreeQuarter,
-                ))
-                : currentIntersects;
+              const intersects = bool(false).toVar('sphereFaceIntersects');
+              if (allowSweptFaceRecovery) {
+                // Keep the four established quarter-step samples, but express
+                // them as one runtime loop. Emitting four copies of the contact
+                // query made Dawn/Metal spend unbounded time compiling this
+                // otherwise bounded kernel on Apple Silicon.
+                Loop(
+                  {
+                    start: uint(1),
+                    end: uint(SWEPT_FACE_SAMPLE_COUNT + 1),
+                    type: 'uint',
+                    condition: '<',
+                  },
+                  ({ i: sampleIndex }) => {
+                    const progress = float(sampleIndex)
+                      .div(SWEPT_FACE_SAMPLE_COUNT)
+                      .toVar('sphereFaceSweepProgress');
+                    If(sphereIntersectsTriangle(
+                      sphere,
+                      mix(previousFirst, first, progress),
+                      mix(previousSecond, second, progress),
+                      mix(previousThird, third, progress),
+                    ), () => {
+                      intersects.assign(bool(true));
+                    });
+                  },
+                );
+              } else {
+                intersects.assign(sphereIntersectsTriangle(sphere, first, second, third));
+              }
               const triangleHasVertexContact = first.sub(sphere.xyz).dot(first.sub(sphere.xyz))
                 .lessThanEqual(sphereRadiusSquared.add(0.000_001))
                 .or(second.sub(sphere.xyz).dot(second.sub(sphere.xyz))
@@ -2827,38 +2854,41 @@ export class GpuCapeSimulation {
                     .and(faceTriangleMaximum.z.greaterThanEqual(rockFaceMinimum.z))
                     .and(faceTriangleMinimum.z.lessThanEqual(rockFaceMaximum.z));
                   If(overlapsRockFace, () => {
-                    const currentIntersects = trianglesIntersect(
-                      first,
-                      second,
-                      third,
-                      rockFirst,
-                      rockSecond,
-                      rockThird,
-                    );
-                    const intersects = allowSweptFaceRecovery
-                      ? currentIntersects.or(trianglesIntersect(
-                        sweptFirstQuarter,
-                        sweptSecondQuarter,
-                        sweptThirdQuarter,
+                    const intersects = bool(false).toVar('rockFaceIntersects');
+                    if (allowSweptFaceRecovery) {
+                      Loop(
+                        {
+                          start: uint(1),
+                          end: uint(SWEPT_FACE_SAMPLE_COUNT + 1),
+                          type: 'uint',
+                          condition: '<',
+                        },
+                        ({ i: sampleIndex }) => {
+                          const progress = float(sampleIndex)
+                            .div(SWEPT_FACE_SAMPLE_COUNT)
+                            .toVar('rockFaceSweepProgress');
+                          If(trianglesIntersect(
+                            mix(previousFirst, first, progress),
+                            mix(previousSecond, second, progress),
+                            mix(previousThird, third, progress),
+                            rockFirst,
+                            rockSecond,
+                            rockThird,
+                          ), () => {
+                            intersects.assign(bool(true));
+                          });
+                        },
+                      );
+                    } else {
+                      intersects.assign(trianglesIntersect(
+                        first,
+                        second,
+                        third,
                         rockFirst,
                         rockSecond,
                         rockThird,
-                      )).or(trianglesIntersect(
-                        sweptFirstHalf,
-                        sweptSecondHalf,
-                        sweptThirdHalf,
-                        rockFirst,
-                        rockSecond,
-                        rockThird,
-                      )).or(trianglesIntersect(
-                        sweptFirstThreeQuarter,
-                        sweptSecondThreeQuarter,
-                        sweptThirdThreeQuarter,
-                        rockFirst,
-                        rockSecond,
-                        rockThird,
-                      ))
-                      : currentIntersects;
+                      ));
+                    }
                     If(intersects, () => {
                       triangleIntersects.assign(bool(true));
                     });
@@ -2926,12 +2956,16 @@ export class GpuCapeSimulation {
           atomicOr(this.materialContactFlagBuffer.element(capeIndex), uint(1));
         });
         If(hadFaceContact, () => {
-          const applyCorrection = (particleIndex: THREE.Node<'uint'>): void => {
+          const applyCorrection = (
+            particleIndex: THREE.Node<'uint'>,
+            declarationSuffix: string,
+          ): void => {
             If(
               particleIndex.mod(uint(PARTICLE_COUNT)).greaterThanEqual(uint(CAPE.columns)),
               () => {
               const state = buffer.element(particleIndex);
-              const corrected = state.xyz.add(faceCorrection).toVar('correctedRockFace');
+              const corrected = state.xyz.add(faceCorrection)
+                .toVar(`correctedRockFace${declarationSuffix}`);
               buffer.element(particleIndex).assign(vec4(
                 corrected,
                 state.w,
@@ -2939,8 +2973,9 @@ export class GpuCapeSimulation {
               const previousState = this.previousBuffer.element(particleIndex);
               const correctedPrevious = previousState.xyz
                 .add(faceCorrection)
-                .toVar('correctedPreviousRockFace');
-              const faceNormal = faceCorrection.normalize().toVar('rockFaceMotionNormal');
+                .toVar(`correctedPreviousRockFace${declarationSuffix}`);
+              const faceNormal = faceCorrection.normalize()
+                .toVar(`rockFaceMotionNormal${declarationSuffix}`);
               const inwardMotion = corrected.sub(correctedPrevious)
                 .dot(faceNormal)
                 .min(0);
@@ -2952,9 +2987,9 @@ export class GpuCapeSimulation {
               },
             );
           };
-          applyCorrection(firstIndex);
-          applyCorrection(secondIndex);
-          applyCorrection(thirdIndex);
+          applyCorrection(firstIndex, 'First');
+          applyCorrection(secondIndex, 'Second');
+          applyCorrection(thirdIndex, 'Third');
         });
       });
       return float(0);
@@ -3180,6 +3215,7 @@ export class GpuCapeSimulation {
               particleIndex: THREE.Node<'uint'>,
               state: THREE.Node<'vec4'>,
               inverseMass: THREE.Node<'float'>,
+              declarationSuffix: string,
             ): void => {
               If(inverseMass.greaterThan(0), () => {
                 const particleCorrection = lambdaCorrection
@@ -3188,7 +3224,7 @@ export class GpuCapeSimulation {
                 buffer.element(particleIndex).assign(vec4(corrected, state.w));
                 const previousState = this.previousBuffer.element(particleIndex);
                 const correctedPrevious = previousState.xyz.add(particleCorrection)
-                  .toVar('correctedPreviousVirtualBody');
+                  .toVar(`correctedPreviousVirtualBody${declarationSuffix}`);
                 const inwardMotion = corrected.sub(correctedPrevious)
                   .dot(normal)
                   .min(0);
@@ -3199,9 +3235,9 @@ export class GpuCapeSimulation {
                 ));
               });
             };
-            applyCorrection(firstIndex, firstState, firstMass);
-            applyCorrection(secondIndex, secondState, secondMass);
-            applyCorrection(thirdIndex, thirdState, thirdMass);
+            applyCorrection(firstIndex, firstState, firstMass, 'First');
+            applyCorrection(secondIndex, secondState, secondMass, 'Second');
+            applyCorrection(thirdIndex, thirdState, thirdMass, 'Third');
           },
         );
       });

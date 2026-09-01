@@ -85,13 +85,12 @@ for (const scenario of requestedScenarios) {
 
 const programFilesX86 = process.env['ProgramFiles(x86)'];
 const browserCandidates = [
-  process.env.CAPE_EDGE_PATH,
-  process.env.ProgramFiles && join(process.env.ProgramFiles, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
-  programFilesX86 && join(programFilesX86, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+  process.env.CAPE_BROWSER_PATH,
   process.env.ProgramFiles && join(process.env.ProgramFiles, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+  programFilesX86 && join(programFilesX86, 'Google', 'Chrome', 'Application', 'chrome.exe'),
 ].filter(Boolean);
 const browserExecutable = browserCandidates.find(existsSync);
-if (!browserExecutable) throw new Error('Edge or Chrome was not found; set CAPE_EDGE_PATH.');
+if (!browserExecutable) throw new Error('Chrome was not found; set CAPE_BROWSER_PATH.');
 const deferredCleanupErrors = [];
 
 function particleDistance(first, second, offset) {

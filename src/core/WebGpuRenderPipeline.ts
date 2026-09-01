@@ -89,6 +89,7 @@ export class WebGpuRenderPipeline {
     camera: THREE.Camera,
     private readonly preference: RendererPreference,
     trackTimestamps = false,
+    private readonly ownedDevice?: GPUDevice,
   ) {
     this.renderer = new THREE.WebGPURenderer({
       canvas,
@@ -99,6 +100,7 @@ export class WebGpuRenderPipeline {
       stencil: false,
       depth: true,
       trackTimestamp: trackTimestamps,
+      device: ownedDevice,
       requiredLimits: preference === 'webgpu'
         ? {
             maxStorageBuffersInVertexStage: 1,
@@ -370,12 +372,18 @@ export class WebGpuRenderPipeline {
   }
 
   public dispose(): void {
-    this.directPass.dispose();
-    this.worldPass.dispose();
-    this.characterPass.dispose();
-    this.renderPipeline.dispose();
-    this.readbackTarget.dispose();
-    this.renderer.dispose();
+    try {
+      this.directPass.dispose();
+      this.worldPass.dispose();
+      this.characterPass.dispose();
+      this.renderPipeline.dispose();
+      this.readbackTarget.dispose();
+      this.renderer.dispose();
+    } finally {
+      // Three.js intentionally does not destroy a caller-provided device. The
+      // bootstrap transfers ownership to this pipeline, so release it here.
+      this.ownedDevice?.destroy();
+    }
   }
 
   private createBloomOutput(colorNode: THREE.Node<'vec4'>): THREE.Node<'vec4'> {

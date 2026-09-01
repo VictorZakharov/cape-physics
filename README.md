@@ -122,14 +122,31 @@ Open the printed URL in a WebGPU or WebGL 2 browser with hardware acceleration e
 bun run check          # strict TypeScript and deterministic unit/integration tests
 bun run harness        # renderer-free traversal plus the optional local timing budget
 bun run audit:visual   # direct Edge/Chrome dynamic audit across 37 rendered views
+bun run probe:webgpu   # local-only bounded WebGPU lifecycle/workload diagnostic
 bun run profile:render # local-only, non-gating synchronized renderer profile
 bun run stress:rocks   # optional extended rock-contact stress matrix
 bun run build:pages    # production GitHub Pages build
 ```
 
-The renderer-free harness advances character movement, cloth, jumping, water landings, footsteps, ceiling drops, lights, and mineral effects without using a browser. The visual audit then drives the production build directly through Edge or Chrome and checks desktop and touch input, responsive controls, depth ordering, shadows, water motion, cape contact, and animation from 37 camera studies.
+The renderer-free harness advances character movement, cloth, jumping, water landings, footsteps, ceiling drops, lights, and mineral effects without using a browser. The visual audit then drives the production build directly through Chrome and checks desktop and touch input, responsive controls, depth ordering, shadows, water motion, cape contact, and animation from 37 camera studies.
 
 CI gates deterministic correctness, geometry, collision, rendering, and builds. It runs the complete multi-angle audit through WebGL plus a short native WebGPU compute/readback smoke; the full 37-view WebGPU audit remains available locally. CI does **not** gate merges on millisecond or elapsed-time thresholds. Pull requests receive a temporary GitHub Pages preview, while merges to `main` deploy the production demo.
+
+### Permanent WebGPU isolation probes
+
+The repository retains three click-to-start, one-shot WebGPU diagnostics for device-specific failures:
+
+- `?webgpuProbe=1` — minimal adapter, device, renderer, cube, queue, and teardown boundary.
+- `?webgpuProbe=1&probeWorkload=three-cloth` — adds one compute and render step adapted from the official Three.js r185 `webgpu_compute_cloth` example.
+- `?webgpuProbe=1&probeWorkload=app-cape` — adds the production one-cape GPU graph in a simple scene without the character, cave, colliders, PMREM, post-processing, bots, or frame loop.
+
+No probe requests a GPU before its button is clicked. Each stage has a deadline, reports device loss and uncaptured errors, never reloads or falls back to WebGL, and explicitly disposes the renderer and externally owned device. The Chrome harness treats every console warning, error, exception, and WebGPU validation error as a failed probe. The application-cape report also records generated WGSL character count, node-build time, and asynchronous pipeline-compile time for every kernel, including the last shader built when native pipeline creation hangs. Keep these pages, their report format, the CPU-only architecture tests, and `scripts/run-webgpu-isolation-probe.mjs`; they are reusable field diagnostics rather than temporary incident scaffolding.
+
+The local CDP harness defaults to the application-cape boundary. Select another workload with `CAPE_PROBE_WORKLOAD`. Browser harnesses use Chrome only because Edge profiles can retain Windows-protected database locks after exit; there is no Edge fallback. Set `CAPE_BROWSER_PATH` to choose a specific Chrome executable. Browser profiles and temporary data live under repository-local `artifacts/.tmp/` and are removed in `finally`.
+
+Three 0.185.1 synchronously creates compute pipelines on the first dispatch. Until Three r186 is released, `WebGpuComputeWarmup` backports the merged upstream `compileComputeAsync()` behavior for the production cape: its 17 unique kernels are built with `createComputePipelineAsync()`, one at a time, with an animation-frame yield and real loading progress between kernels. The first physics step therefore submits already-compiled pipelines instead of placing seconds of cold compilation behind the first queue fence.
+
+The normal loading screen keeps an on-screen, timestamped startup history from HTML shell entry through renderer construction, low-level backend stages, WebGPU kernel compilation, fallback, and failure. Its bounded history survives the one-time WebGPU-to-WebGL recovery reload in session storage and is included in copied crash diagnostics; a completed run is discarded when the next navigation begins.
 
 ## Project structure
 

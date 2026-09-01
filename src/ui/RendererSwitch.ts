@@ -15,6 +15,7 @@ export class RendererSwitch {
   public constructor(
     requested: RendererPreference,
     webGPUAvailable: boolean,
+    webGpuUnavailableReason: string | null = null,
     private readonly environment: RendererSwitchEnvironment = {
       location: window.location,
     },
@@ -31,7 +32,8 @@ export class RendererSwitch {
     );
     if (webGPUButton && !webGPUAvailable) {
       webGPUButton.disabled = true;
-      webGPUButton.title = 'WebGPU is not available in this browser';
+      webGPUButton.title = webGpuUnavailableReason
+        ?? 'WebGPU is not available in this browser';
     }
     this.setActive(requested, requested);
     for (const button of this.buttons) {

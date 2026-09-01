@@ -157,7 +157,9 @@ jobs:
     needs: publish
     if: needs.publish.outputs.should_deploy == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 2
+    # Pages deployments can remain in GitHub's deployment queue for more than
+    # two minutes even after the preview artifact has uploaded successfully.
+    timeout-minutes: 10
     permissions:
       contents: read
       pages: write

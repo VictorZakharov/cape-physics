@@ -8,6 +8,7 @@
       content="A procedural Three.js cape-physics demo inside a torchlit, water-carved cave."
     />
     <meta name="theme-color" content="#05080a" />
+    <link rel="icon" href="%BASE_URL%favicon.svg" type="image/svg+xml" />
     <title>Cape Physics — The Veiled Deep</title>
   </head>
   <body>
@@ -221,6 +222,17 @@
           <span data-loading-status>Shaping stone</span>
           <span data-loading-progress>0%</span>
         </small>
+        <ol class="loading__log" data-loading-log aria-label="Graphics startup log">
+          <li><time>0 ms</time><span>HTML shell ready</span></li>
+        </ol>
+        <div class="loading__error" data-loading-error hidden>
+          <p data-loading-error-detail></p>
+          <span>Restart Chrome and verify hardware acceleration in chrome://gpu if retrying still fails.</span>
+          <div>
+            <button type="button" data-loading-retry-webgl>RETRY WITH WEBGL</button>
+            <button type="button" data-loading-copy-diagnostics>COPY DIAGNOSTICS</button>
+          </div>
+        </div>
       </section>
 
       <noscript>This demonstration requires JavaScript and a WebGPU or WebGL 2 browser.</noscript>

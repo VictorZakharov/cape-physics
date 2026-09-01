@@ -19,6 +19,24 @@ describe('performance report', () => {
         sampleCount: 2_144,
         windowElapsedMilliseconds: 15_000,
       },
+      rendererStartup: {
+        current: null,
+        automaticReloads: 0,
+        recoveryPending: false,
+        failures: [{
+          attemptId: 'gpu-attempt',
+          renderer: 'webgpu',
+          stage: 'request-webgpu-device',
+          name: 'WebGpuBootstrapError',
+          message: 'The browser rejected the WebGPU device request.',
+          stack: null,
+          occurredAt: 1,
+          userAgent: 'Test Browser',
+          pageUrl: 'https://example.test/?renderer=webgpu',
+          recoveredWith: 'webgl',
+          recoveredAt: 2,
+        }],
+      },
       renderer: {
         backend: 'WebGL 2.0',
         vendor: 'Example Vendor',
@@ -93,6 +111,8 @@ describe('performance report', () => {
     expect(report).toContain('Frame interval: 6.98 ms average | p50 6.82 ms');
     expect(report).toContain('Renderer: WebGL 2.0 | Example Vendor | Example GPU');
     expect(report).toContain('Renderer selection: requested WEBGPU | active WEBGL | fallback active');
+    expect(report).toContain('Renderer recovery: WEBGPU failed at request-webgpu-device');
+    expect(report).toContain('recovered with WEBGL');
     expect(report).toContain('138498 triangles');
     expect(report).toContain('6 performance bots | 7 simulated capes');
     expect(report).toContain('2260 cape colliders/cape');
