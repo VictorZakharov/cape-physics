@@ -64,12 +64,16 @@ describe('on-screen startup log', () => {
       /\.loading small,\s*\.loading__track,\s*\.loading__log\s*\{[^}]*width:\s*min\(560px, 88vw\);/s,
     );
     expect(loadingStyles).not.toContain('width: min(240px, 62vw)');
-    expect(loadingStyles).toMatch(/\.loading small\s*\{[^}]*height:\s*5\.6em;/s);
-    expect(loadingStyles).toMatch(/\.loading small\s*\{[^}]*align-items:\s*end;/s);
+    expect(loadingStyles).toMatch(/\.loading small\s*\{[^}]*align-items:\s*baseline;/s);
     expect(loadingStyles).not.toContain('min-height: 3.5em');
     expect(loadingStyles).not.toContain('height: 4.2em');
+    expect(loadingStyles).not.toContain('height: 5.6em');
     expect(loadingStyles).toMatch(
-      /\[data-loading-status\]\s*\{[^}]*-webkit-line-clamp:\s*4;/s,
+      /\[data-loading-status\]\s*\{[^}]*white-space:\s*nowrap;/s,
     );
+    expect(loadingStyles).toMatch(
+      /\[data-loading-status\]\s*\{[^}]*text-overflow:\s*ellipsis;/s,
+    );
+    expect(loadingStyles).not.toContain('-webkit-line-clamp');
   });
 });

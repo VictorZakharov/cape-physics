@@ -135,9 +135,8 @@
 .loading small {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 4.2rem;
-  align-items: end;
+  align-items: baseline;
   column-gap: 12px;
-  height: 5.6em;
   margin-top: 12px;
   color: rgb(210 231 225 / 38%);
   font-size: 0.5rem;
@@ -147,12 +146,12 @@
 }
 
 .loading small [data-loading-status] {
-  display: -webkit-box;
+  display: block;
   min-width: 0;
   overflow: hidden;
   line-height: 1.4;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .loading small [data-loading-progress] {
