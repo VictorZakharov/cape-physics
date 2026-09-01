@@ -142,7 +142,7 @@ The repository retains three click-to-start, one-shot WebGPU diagnostics for dev
 
 No probe requests a GPU before its button is clicked. Each stage has a deadline, reports device loss and uncaptured errors, never reloads or falls back to WebGL, and explicitly disposes the renderer and externally owned device. Keep these pages, their report format, the CPU-only architecture tests, and `scripts/run-webgpu-isolation-probe.mjs`; they are reusable field diagnostics rather than temporary incident scaffolding.
 
-The local CDP harness defaults to the application-cape boundary. Select another workload with `CAPE_PROBE_WORKLOAD`. Its browser profile and temporary data live under repository-local `artifacts/.tmp/` and are removed in `finally`.
+The local CDP harness defaults to the application-cape boundary. Select another workload with `CAPE_PROBE_WORKLOAD`. Browser harnesses prefer Chrome because current Edge profiles can retain Windows-protected database locks after exit; set `CAPE_BROWSER_PATH` to choose a specific executable. Browser profiles and temporary data live under repository-local `artifacts/.tmp/` and are removed in `finally`.
 
 ## Project structure
 
