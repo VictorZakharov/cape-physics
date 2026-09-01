@@ -61,8 +61,13 @@
   z-index: 1;
 }
 
+.loading small,
+.loading__track,
 .loading__log {
   width: min(560px, 88vw);
+}
+
+.loading__log {
   height: clamp(112px, 25vh, 210px);
   box-sizing: border-box;
   margin: 18px 0 0;
@@ -113,7 +118,6 @@
 }
 
 .loading__track {
-  width: min(240px, 62vw);
   height: 1px;
   overflow: visible;
   background: rgb(183 225 215 / 10%);
@@ -133,8 +137,7 @@
   grid-template-columns: minmax(0, 1fr) 4.2rem;
   align-items: start;
   column-gap: 12px;
-  width: min(240px, 62vw);
-  height: 4.2em;
+  height: 5.6em;
   margin-top: 12px;
   color: rgb(210 231 225 / 38%);
   font-size: 0.5rem;
@@ -149,7 +152,7 @@
   overflow: hidden;
   line-height: 1.4;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
+  -webkit-line-clamp: 4;
 }
 
 .loading small [data-loading-progress] {

@@ -60,10 +60,15 @@ describe('on-screen startup log', () => {
     expect(loadingStyles).toMatch(/\.loading__log\s*\{[^}]*overflow-y:\s*auto;/s);
     expect(loadingStyles).toMatch(/\.loading__log\s*\{[^}]*scrollbar-gutter:\s*stable;/s);
     expect(loadingStyles).not.toContain('max-height: min(25vh, 210px)');
-    expect(loadingStyles).toMatch(/\.loading small\s*\{[^}]*height:\s*4\.2em;/s);
-    expect(loadingStyles).not.toContain('min-height: 3.5em');
     expect(loadingStyles).toMatch(
-      /\[data-loading-status\]\s*\{[^}]*-webkit-line-clamp:\s*3;/s,
+      /\.loading small,\s*\.loading__track,\s*\.loading__log\s*\{[^}]*width:\s*min\(560px, 88vw\);/s,
+    );
+    expect(loadingStyles).not.toContain('width: min(240px, 62vw)');
+    expect(loadingStyles).toMatch(/\.loading small\s*\{[^}]*height:\s*5\.6em;/s);
+    expect(loadingStyles).not.toContain('min-height: 3.5em');
+    expect(loadingStyles).not.toContain('height: 4.2em');
+    expect(loadingStyles).toMatch(
+      /\[data-loading-status\]\s*\{[^}]*-webkit-line-clamp:\s*4;/s,
     );
   });
 });
