@@ -68,12 +68,15 @@ describe('isolated WebGPU diagnostic probe', () => {
 
   test('precompiles every production compute kernel before the first cape submission', async () => {
     const source = await Bun.file('src/testing/WebGpuIsolationProbe.ts').text();
+    const harness = await Bun.file('scripts/run-webgpu-isolation-probe.mjs').text();
     const compileStage = source.indexOf("stage('compile-application-cape-compute-pipelines'");
     const submitStage = source.indexOf("stage('submit-one-application-cape-step'");
     expect(source).toContain('compileWebGpuComputePipelines(');
     expect(source).toContain('applicationCapeCompiledComputePipelines');
     expect(source).toContain('applicationCapeComputeShader${kernelNumber}Characters');
     expect(source).toContain('applicationCapeComputePipeline${loaded}Milliseconds');
+    expect(harness).toContain("relevantEvents(debuggerEvents, ['error', 'warning'])");
+    expect(harness).toContain('browser logged an exception, error, or warning');
     expect(compileStage).toBeGreaterThan(-1);
     expect(submitStage).toBeGreaterThan(compileStage);
   });

@@ -3,7 +3,6 @@ import {
   Fn,
   If,
   Loop,
-  Return,
   attribute,
   atomicLoad,
   atomicOr,
@@ -1079,7 +1078,7 @@ export class GpuCapeSimulation {
       const index = instanceIndex;
       const capeIndex = index.div(uint(PARTICLE_COUNT));
       const localIndex = index.mod(uint(PARTICLE_COUNT));
-      If(capeIndex.greaterThanEqual(this.activeCapeCountUniform), () => Return());
+      If(capeIndex.lessThan(this.activeCapeCountUniform), () => {
       const capeBase = capeIndex.mul(uint(PARTICLE_COUNT));
       const dynamics = this.dynamicsUniform.element(capeIndex);
       const current = this.positionBuffer.element(index);
@@ -1092,8 +1091,7 @@ export class GpuCapeSimulation {
         target.assign(anchor);
         previous.assign(anchor);
         this.predictedVerticalBuffer.element(index).assign(float(0));
-        Return();
-      });
+      }).Else(() => {
 
       // Match WebGL's world-space Verlet predictor. Only the pinned row above
       // receives the new anchors; translating every free particle here would
@@ -1180,6 +1178,8 @@ export class GpuCapeSimulation {
       );
       // The state lane accumulates body-contact work for final reconciliation.
       target.assign(vec4(predicted, 0));
+      });
+      });
     })().compute(PACKED_PARTICLE_COUNT).setName('Cape predict');
   }
 
@@ -1196,7 +1196,7 @@ export class GpuCapeSimulation {
       const capeIndex = workgroupId.x;
       const constraintIndex = localId.x;
       const capeBase = capeIndex.mul(uint(PARTICLE_COUNT));
-      If(capeIndex.greaterThanEqual(this.activeCapeCountUniform), () => Return());
+      If(capeIndex.lessThan(this.activeCapeCountUniform), () => {
       // This small fixed grid spends the overwhelming majority of its GPU
       // time in collision work, not 1,626 distance links. One invocation can
       // therefore reproduce WebGL's exact row-major Gauss-Seidel stream while
@@ -1455,6 +1455,7 @@ export class GpuCapeSimulation {
         }
       });
       storageBarrier();
+      });
     })().compute(PACKED_PARTICLE_COUNT, [PARTICLE_COUNT]).setName(name);
   }
 
@@ -1472,7 +1473,7 @@ export class GpuCapeSimulation {
       const index = instanceIndex;
       const capeIndex = index.div(uint(PARTICLE_COUNT));
       const localIndex = index.mod(uint(PARTICLE_COUNT));
-      If(capeIndex.greaterThanEqual(this.activeCapeCountUniform), () => Return());
+      If(capeIndex.lessThan(this.activeCapeCountUniform), () => {
       If(localIndex.greaterThanEqual(uint(CAPE.columns)), () => {
         const position = this.positionBuffer.element(index);
         const correction = position.w;
@@ -1490,6 +1491,7 @@ export class GpuCapeSimulation {
         });
         this.positionBuffer.element(index).assign(vec4(position.xyz, 0));
       });
+      });
     })().compute(PACKED_PARTICLE_COUNT).setName('Cape reconcile body contact velocity');
   }
 
@@ -1504,7 +1506,7 @@ export class GpuCapeSimulation {
       const index = instanceIndex;
       const capeIndex = index.div(uint(PARTICLE_COUNT));
       const localIndex = index.mod(uint(PARTICLE_COUNT));
-      If(capeIndex.greaterThanEqual(this.activeCapeCountUniform), () => Return());
+      If(capeIndex.lessThan(this.activeCapeCountUniform), () => {
       const hasMaterialContact = atomicLoad(
         this.materialContactFlagBuffer.element(capeIndex),
       ).greaterThan(uint(0));
@@ -1525,6 +1527,7 @@ export class GpuCapeSimulation {
           });
         },
       );
+      });
     })().compute(PACKED_PARTICLE_COUNT).setName('Cape reconcile projection vertical velocity');
   }
   private createProjectionKernel(
@@ -2953,12 +2956,16 @@ export class GpuCapeSimulation {
           atomicOr(this.materialContactFlagBuffer.element(capeIndex), uint(1));
         });
         If(hadFaceContact, () => {
-          const applyCorrection = (particleIndex: THREE.Node<'uint'>): void => {
+          const applyCorrection = (
+            particleIndex: THREE.Node<'uint'>,
+            declarationSuffix: string,
+          ): void => {
             If(
               particleIndex.mod(uint(PARTICLE_COUNT)).greaterThanEqual(uint(CAPE.columns)),
               () => {
               const state = buffer.element(particleIndex);
-              const corrected = state.xyz.add(faceCorrection).toVar('correctedRockFace');
+              const corrected = state.xyz.add(faceCorrection)
+                .toVar(`correctedRockFace${declarationSuffix}`);
               buffer.element(particleIndex).assign(vec4(
                 corrected,
                 state.w,
@@ -2966,8 +2973,9 @@ export class GpuCapeSimulation {
               const previousState = this.previousBuffer.element(particleIndex);
               const correctedPrevious = previousState.xyz
                 .add(faceCorrection)
-                .toVar('correctedPreviousRockFace');
-              const faceNormal = faceCorrection.normalize().toVar('rockFaceMotionNormal');
+                .toVar(`correctedPreviousRockFace${declarationSuffix}`);
+              const faceNormal = faceCorrection.normalize()
+                .toVar(`rockFaceMotionNormal${declarationSuffix}`);
               const inwardMotion = corrected.sub(correctedPrevious)
                 .dot(faceNormal)
                 .min(0);
@@ -2979,9 +2987,9 @@ export class GpuCapeSimulation {
               },
             );
           };
-          applyCorrection(firstIndex);
-          applyCorrection(secondIndex);
-          applyCorrection(thirdIndex);
+          applyCorrection(firstIndex, 'First');
+          applyCorrection(secondIndex, 'Second');
+          applyCorrection(thirdIndex, 'Third');
         });
       });
       return float(0);
@@ -3207,6 +3215,7 @@ export class GpuCapeSimulation {
               particleIndex: THREE.Node<'uint'>,
               state: THREE.Node<'vec4'>,
               inverseMass: THREE.Node<'float'>,
+              declarationSuffix: string,
             ): void => {
               If(inverseMass.greaterThan(0), () => {
                 const particleCorrection = lambdaCorrection
@@ -3215,7 +3224,7 @@ export class GpuCapeSimulation {
                 buffer.element(particleIndex).assign(vec4(corrected, state.w));
                 const previousState = this.previousBuffer.element(particleIndex);
                 const correctedPrevious = previousState.xyz.add(particleCorrection)
-                  .toVar('correctedPreviousVirtualBody');
+                  .toVar(`correctedPreviousVirtualBody${declarationSuffix}`);
                 const inwardMotion = corrected.sub(correctedPrevious)
                   .dot(normal)
                   .min(0);
@@ -3226,9 +3235,9 @@ export class GpuCapeSimulation {
                 ));
               });
             };
-            applyCorrection(firstIndex, firstState, firstMass);
-            applyCorrection(secondIndex, secondState, secondMass);
-            applyCorrection(thirdIndex, thirdState, thirdMass);
+            applyCorrection(firstIndex, firstState, firstMass, 'First');
+            applyCorrection(secondIndex, secondState, secondMass, 'Second');
+            applyCorrection(thirdIndex, thirdState, thirdMass, 'Third');
           },
         );
       });

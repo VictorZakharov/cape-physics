@@ -10,7 +10,10 @@ describe('WebGPU complementary rock-face contact', () => {
 
     expect(source).toContain('rockTriangleHasVertexContact');
     expect(source).toContain('triangleIntersects.and(triangleHasVertexContact.not())');
-    expect(source).toContain("toVar('correctedPreviousRockFace')");
+    expect(source).toContain('`correctedPreviousRockFace${declarationSuffix}`');
+    expect(source).toContain("applyCorrection(firstIndex, 'First')");
+    expect(source).toContain("applyCorrection(secondIndex, 'Second')");
+    expect(source).toContain("applyCorrection(thirdIndex, 'Third')");
     expect(source).not.toContain('rockFacePreviousTriangleSafe');
     expect(source).not.toContain('restorePrevious(firstIndex');
   });

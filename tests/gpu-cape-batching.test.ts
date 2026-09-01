@@ -25,6 +25,11 @@ describe('WebGPU multi-cape submission architecture', () => {
     expect(gpuSource).toContain('end: uint(SWEPT_FACE_SAMPLE_COUNT + 1)');
     expect(gpuSource).toContain('name: `capeRockFaceTrianglesIntersect${passName}`');
     expect(gpuSource).not.toContain('sweptFirstQuarter');
+    expect(gpuSource).not.toContain('Return,');
+    expect(gpuSource).not.toContain('() => Return()');
+    expect(gpuSource).toContain("applyCorrection(firstIndex, 'First');");
+    expect(gpuSource).toContain('`correctedRockFace${declarationSuffix}`');
+    expect(gpuSource).toContain('`correctedPreviousVirtualBody${declarationSuffix}`');
     expect(demoSource).toContain('this.submitGpuCapeBatch(step, [');
     expect(demoSource).toContain(
       'const computeNodes = this.cape.prepareBatchStep(step, inputs, worldColliders, time);',

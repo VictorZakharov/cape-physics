@@ -46,6 +46,8 @@ describe('on-screen startup log', () => {
 
     expect(html).toContain('data-loading-log');
     expect(html).toContain('HTML shell ready');
+    expect(html).toContain('<link rel="icon" href="./favicon.svg" type="image/svg+xml" />');
+    expect(readFileSync(resolve(root, 'public/favicon.svg'), 'utf8')).toContain('<svg');
     expect(main.indexOf("appendStartupScreenLog('Application module entry')"))
       .toBeLessThan(main.indexOf("await import('./CapeDemo')"));
     expect(loadingScreen).toContain('appendStartupScreenLog(`${percentage}% · ${message}`)');

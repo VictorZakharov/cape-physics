@@ -55,6 +55,12 @@ function relevantEvents(events, levels = ['error']) {
       return [`exception: ${params.exceptionDetails?.exception?.description
         ?? params.exceptionDetails?.text}`];
     }
+    if (method === 'Runtime.consoleAPICalled' && levels.includes(params.type)) {
+      const message = params.args?.map((argument) => (
+        argument.value ?? argument.description ?? argument.type
+      )).join(' ') ?? 'Unknown console message';
+      return [`console ${params.type}: ${message}`];
+    }
     if (method === 'Log.entryAdded' && levels.includes(params.entry?.level)) {
       return [`${params.entry?.source} ${params.entry?.level}: ${params.entry?.text}`];
     }
@@ -227,7 +233,10 @@ try {
   assert(scrollLayout.htmlOverflowY === 'auto', 'document root does not permit vertical scrolling');
   assert(scrollLayout.bodyOverflowY === 'auto', 'document body does not permit vertical scrolling');
   assert(scrollLayout.appOverflow === 'visible', 'shared app shell still clips the probe');
-  assert(relevantEvents(debuggerEvents).length === 0, 'browser logged an exception or error');
+  assert(
+    relevantEvents(debuggerEvents, ['error', 'warning']).length === 0,
+    'browser logged an exception, error, or warning',
+  );
 
   console.log('WebGPU isolated lifecycle probe: PASS');
   console.log(JSON.stringify(lastReport, null, 2));
