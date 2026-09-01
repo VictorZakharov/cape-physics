@@ -54,6 +54,11 @@ describe('on-screen startup log', () => {
       .toBeLessThan(main.indexOf("await import('./CapeDemo')"));
     expect(loadingScreen).toContain('appendStartupScreenLog(`${percentage}% · ${message}`)');
     expect(loadingScreen).toContain('startupLog: getStartupScreenLog()');
-    expect(loadingStyles).toMatch(/\.loading__log\s*\{[^}]*overflow:\s*auto;/s);
+    expect(loadingStyles).toMatch(
+      /\.loading__log\s*\{[^}]*height:\s*clamp\(112px, 25vh, 210px\);/s,
+    );
+    expect(loadingStyles).toMatch(/\.loading__log\s*\{[^}]*overflow-y:\s*auto;/s);
+    expect(loadingStyles).toMatch(/\.loading__log\s*\{[^}]*scrollbar-gutter:\s*stable;/s);
+    expect(loadingStyles).not.toContain('max-height: min(25vh, 210px)');
   });
 });
