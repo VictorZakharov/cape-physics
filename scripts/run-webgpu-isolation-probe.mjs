@@ -42,6 +42,11 @@ if (!browserExecutable) {
   throw new Error('Edge or Chrome was not found; set CAPE_PROBE_BROWSER_PATH.');
 }
 
+const workload = (process.env.CAPE_PROBE_WORKLOAD ?? 'three-cloth').trim().toLowerCase();
+if (!['minimal', 'three-cloth'].includes(workload)) {
+  throw new Error('CAPE_PROBE_WORKLOAD must be minimal or three-cloth.');
+}
+
 function assert(condition, message) {
   if (!condition) throw new Error(`WebGPU isolation probe invariant failed: ${message}`);
 }
@@ -65,7 +70,7 @@ const server = createStaticServer(distRoot);
 const staticPort = await listen(server);
 const debugPort = await reservePort();
 const profile = join(temporaryRoot, 'browser-profile');
-const pageUrl = `http://127.0.0.1:${staticPort}/?webgpuProbe=1`;
+const pageUrl = `http://127.0.0.1:${staticPort}/?webgpuProbe=1&probeWorkload=${workload}`;
 const browser = spawn(browserExecutable, [
   '--headless=new',
   '--no-first-run',
@@ -125,6 +130,7 @@ try {
     command,
     'window.__WEBGPU_ISOLATION_PROBE__.getReport()',
   );
+  assert(initialReport.workload === workload, 'page selected the wrong diagnostic workload');
   assert(initialReport.stages.length === 0, 'the page touched the GPU before explicit start');
   assert(initialReport.cleanup.deviceDestroyed === false, 'the idle report claimed a device existed');
 
@@ -147,6 +153,13 @@ try {
     'initialize-empty-renderer',
     'compile-and-submit-one-cube',
     'wait-for-submitted-work',
+    ...(workload === 'three-cloth' ? [
+      'load-three-reference-cloth-modules',
+      'build-three-reference-cloth',
+      'submit-one-three-reference-cloth-step',
+      'compile-and-submit-three-reference-cloth-frame',
+      'wait-for-three-reference-cloth-work',
+    ] : []),
   ];
   assert(lastReport.status === 'passed', `probe ended as ${lastReport.status}`);
   assert(

@@ -1,5 +1,6 @@
 import type { WebGPURenderer } from 'three/webgpu';
 import '../styles/webgpu-probe.css';
+import { readWebGpuIsolationProbeWorkload } from './WebGpuIsolationProbeQuery';
 
 const PROBE_TIMEOUT_MS = 10_000;
 
@@ -12,6 +13,7 @@ interface ProbeStage {
 
 interface ProbeReport {
   capturedAt: string;
+  workload: 'minimal' | 'three-cloth';
   status: 'idle' | 'running' | 'passed' | 'failed' | 'stopped';
   stages: ProbeStage[];
   adapterInfo: Record<string, unknown> | null;
@@ -62,13 +64,18 @@ export function runWebGpuIsolationProbe(): void {
   if (!app) throw new Error('Probe host is missing.');
   document.documentElement.classList.add('is-webgpu-probe');
   document.body.classList.add('is-webgpu-probe');
+  const workload = readWebGpuIsolationProbeWorkload(window.location.search);
+  const workloadDescription = workload === 'three-cloth'
+    ? 'After the minimal cube, this runs one step and one rendered frame adapted from the official Three.js r185 webgpu_compute_cloth example. It still excludes our cape solver, cave, PMREM, post-processing, and WebGL.'
+    : 'This does not load any cloth simulation, the cave, PMREM, post-processing, or WebGL.';
 
   const panel = document.createElement('section');
   panel.className = 'webgpu-probe';
   panel.innerHTML = `
     <span class="webgpu-probe__eyebrow">ISOLATED DIAGNOSTIC</span>
     <h1>WebGPU lifecycle probe</h1>
-    <p>This does not load the cave, cloth simulation, PMREM, post-processing, or WebGL.</p>
+    <p><b>Workload:</b> ${workload === 'three-cloth' ? 'THREE.JS R185 COMPUTE CLOTH' : 'MINIMAL CUBE'}</p>
+    <p>${workloadDescription}</p>
     <p>It requests one minimal device, initializes one renderer, submits one cube frame, waits for the queue, and destroys everything.</p>
     <canvas width="320" height="180" aria-label="WebGPU probe output"></canvas>
     <strong data-probe-status>Ready — no GPU request has been made</strong>
@@ -92,6 +99,7 @@ export function runWebGpuIsolationProbe(): void {
 
   const report: ProbeReport = {
     capturedAt: new Date().toISOString(),
+    workload,
     status: 'idle',
     stages: [],
     adapterInfo: null,
@@ -308,6 +316,45 @@ export function runWebGpuIsolationProbe(): void {
         activeDevice.queue.onSubmittedWorkDone(),
       ));
       assertRunning();
+      if (workload === 'three-cloth') {
+        const [TSL, { createThreeComputeClothProbe }] = await stage(
+          'load-three-reference-cloth-modules',
+          async () => await Promise.all([
+            import('three/tsl'),
+            import('./ThreeComputeClothProbe'),
+          ]),
+        );
+        assertRunning();
+        const clothProbe = await stage('build-three-reference-cloth', async () => (
+          createThreeComputeClothProbe(THREE, TSL)
+        ));
+        disposables.push(clothProbe);
+        assertRunning();
+        await stage('submit-one-three-reference-cloth-step', async () => {
+          const [springForces, vertexForces] = clothProbe.computeNodes;
+          if (!springForces || !vertexForces) throw new Error('Reference cloth kernels are missing.');
+          await boundedGpuOperation('Reference cloth compute submission', (async () => {
+            await initializedRenderer.computeAsync(springForces);
+            assertRunning();
+            await initializedRenderer.computeAsync(vertexForces);
+          })());
+        });
+        assertRunning();
+        await stage('compile-and-submit-three-reference-cloth-frame', async () => {
+          await boundedGpuOperation(
+            'Reference cloth render pipeline compilation',
+            initializedRenderer.compileAsync(clothProbe.scene, clothProbe.camera),
+          );
+          assertRunning();
+          initializedRenderer.render(clothProbe.scene, clothProbe.camera);
+        });
+        assertRunning();
+        await stage('wait-for-three-reference-cloth-work', async () => await boundedGpuOperation(
+          'Reference cloth queue drain',
+          activeDevice.queue.onSubmittedWorkDone(),
+        ));
+        assertRunning();
+      }
       report.status = 'passed';
       status.textContent = 'PASS — destroying the isolated device';
       await cleanup();

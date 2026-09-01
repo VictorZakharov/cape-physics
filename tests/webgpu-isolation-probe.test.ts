@@ -1,11 +1,19 @@
 import { describe, expect, test } from 'bun:test';
-import { shouldRunWebGpuIsolationProbe } from '../src/testing/WebGpuIsolationProbeQuery';
+import {
+  readWebGpuIsolationProbeWorkload,
+  shouldRunWebGpuIsolationProbe,
+} from '../src/testing/WebGpuIsolationProbeQuery';
 
 describe('isolated WebGPU diagnostic probe', () => {
   test('requires an explicit probe query', () => {
     expect(shouldRunWebGpuIsolationProbe('?webgpuProbe=1')).toBe(true);
     expect(shouldRunWebGpuIsolationProbe('?renderer=webgpu')).toBe(false);
     expect(shouldRunWebGpuIsolationProbe('')).toBe(false);
+    expect(readWebGpuIsolationProbeWorkload('?webgpuProbe=1')).toBe('minimal');
+    expect(readWebGpuIsolationProbeWorkload(
+      '?webgpuProbe=1&probeWorkload=three-cloth',
+    )).toBe('three-cloth');
+    expect(readWebGpuIsolationProbeWorkload('?probeWorkload=unknown')).toBe('minimal');
   });
 
   test('never loads the full demo or performs backend recovery', async () => {
@@ -27,5 +35,16 @@ describe('isolated WebGPU diagnostic probe', () => {
     expect(styles).toContain('html.is-webgpu-probe');
     expect(styles).toContain('body.is-webgpu-probe .app');
     expect(styles).toContain('overflow: visible');
+  });
+
+  test('keeps the Three.js reference workload separate from application cloth', async () => {
+    const source = await Bun.file('src/testing/ThreeComputeClothProbe.ts').text();
+    expect(source).toContain('mrdoob/three.js/blob/r185/examples/webgpu_compute_cloth.html');
+    expect(source).toContain('computeSpringForces');
+    expect(source).toContain('computeVertexForces');
+    expect(source).not.toContain('GpuCapeSimulation');
+    expect(source).not.toContain('CapeSimulation');
+    expect(source).not.toContain('PMREMGenerator');
+    expect(source).not.toContain('CapeDemo');
   });
 });
