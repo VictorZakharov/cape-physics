@@ -5,6 +5,7 @@ export interface WebGpuComputeWarmupProgress {
   readonly total: number;
   readonly name: string;
   readonly milliseconds: number;
+  readonly sourceCharacters?: number;
 }
 
 export interface WebGpuComputeWarmupObserver {
@@ -13,6 +14,9 @@ export interface WebGpuComputeWarmupObserver {
   ) => void | Promise<void>;
   readonly onProgress?: (
     progress: WebGpuComputeWarmupProgress,
+  ) => void | Promise<void>;
+  readonly onShaderBuilt?: (
+    progress: WebGpuComputeWarmupProgress & { readonly sourceCharacters: number },
   ) => void | Promise<void>;
 }
 
@@ -29,16 +33,20 @@ interface ComputeNodeBuilderInternal {
   buildAsync(): Promise<void>;
 }
 
+interface ComputeNodeBuilderStateInternal {
+  readonly computeShader: string;
+}
+
 interface NodeManagerInternal {
   readonly backend: ComputeBackendInternal;
   readonly renderer: THREE.WebGPURenderer;
   get(node: ComputeNodeInternal): {
-    nodeBuilderState?: unknown;
+    nodeBuilderState?: ComputeNodeBuilderStateInternal;
     version?: number;
   };
   delete(node: ComputeNodeInternal): void;
   updateForCompute(node: ComputeNodeInternal): void;
-  _createNodeBuilderState(builder: ComputeNodeBuilderInternal): unknown;
+  _createNodeBuilderState(builder: ComputeNodeBuilderInternal): ComputeNodeBuilderStateInternal;
 }
 
 interface BindingsInternal {
@@ -99,19 +107,20 @@ async function yieldToBrowser(): Promise<void> {
 async function buildComputeNodeAsync(
   nodes: NodeManagerInternal,
   computeNode: ComputeNodeInternal,
-): Promise<void> {
+): Promise<ComputeNodeBuilderStateInternal> {
   const computeData = nodes.get(computeNode);
   if (
     computeData.nodeBuilderState !== undefined
     && computeData.version === computeNode.version
   ) {
-    return;
+    return computeData.nodeBuilderState;
   }
 
   const nodeBuilder = nodes.backend.createNodeBuilder(computeNode, nodes.renderer);
   await nodeBuilder.buildAsync();
   computeData.nodeBuilderState = nodes._createNodeBuilderState(nodeBuilder);
   computeData.version = computeNode.version;
+  return computeData.nodeBuilderState;
 }
 
 async function createComputePipelineAsync(
@@ -216,7 +225,15 @@ export async function compileWebGpuComputePipelines(
         computeNode.onInitFunction?.call(computeNode, { renderer });
       }
 
-      await buildComputeNodeAsync(nodes, computeNode);
+      const nodeBuilderState = await buildComputeNodeAsync(nodes, computeNode);
+      const sourceCharacters = nodeBuilderState.computeShader.length;
+      await observer.onShaderBuilt?.({
+        loaded: index,
+        total: computeNodes.length,
+        name: computeNode.name || `kernel ${index + 1}`,
+        milliseconds: performance.now() - startedAt,
+        sourceCharacters,
+      });
       nodes.updateForCompute(computeNode);
       bindings.updateForCompute(computeNode);
       const computeBindings = bindings.getForCompute(computeNode);
@@ -238,6 +255,7 @@ export async function compileWebGpuComputePipelines(
         total: computeNodes.length,
         name: computeNode.name || `kernel ${loaded}`,
         milliseconds: performance.now() - startedAt,
+        sourceCharacters,
       });
       if (loaded < computeNodes.length) await yieldToBrowser();
     }

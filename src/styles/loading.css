@@ -9,6 +9,9 @@
   background:
     radial-gradient(circle at 50% 43%, rgb(11 30 30) 0%, rgb(5 12 14) 38%, #020405 78%),
     #020405;
+  box-sizing: border-box;
+  padding: 24px;
+  overflow: auto;
   transition: opacity 900ms ease, visibility 900ms;
 }
 
@@ -52,9 +55,51 @@
 
 .loading p,
 .loading small,
-.loading__track {
+.loading__track,
+.loading__log {
   position: relative;
   z-index: 1;
+}
+
+.loading__log {
+  width: min(560px, 88vw);
+  max-height: min(25vh, 210px);
+  box-sizing: border-box;
+  margin: 18px 0 0;
+  padding: 10px 12px;
+  overflow: auto;
+  border: 1px solid rgb(140 219 200 / 13%);
+  background: rgb(0 8 9 / 58%);
+  color: rgb(196 229 221 / 64%);
+  font: 500 0.62rem/1.45 ui-monospace, SFMono-Regular, Consolas, monospace;
+  list-style: none;
+  scrollbar-color: rgb(140 219 200 / 30%) transparent;
+}
+
+.loading__log li {
+  display: grid;
+  grid-template-columns: 4.5rem minmax(0, 1fr);
+  gap: 10px;
+}
+
+.loading__log li + li {
+  margin-top: 3px;
+}
+
+.loading__log li.is-previous-navigation {
+  opacity: 0.48;
+}
+
+.loading__log time {
+  color: rgb(140 219 200 / 52%);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.loading__log span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .loading p {

@@ -1,6 +1,11 @@
 import { invariant } from '../utils/assert';
 import type { RendererStartupDiagnostics } from '../core/RendererStartupRecovery';
 import { rendererPreferenceUrl } from '../core/RendererPreference';
+import {
+  appendStartupScreenLog,
+  getStartupScreenLog,
+  markStartupScreenLogComplete,
+} from '../core/StartupScreenLog';
 
 export class LoadingScreen {
   private readonly root: HTMLElement;
@@ -22,6 +27,7 @@ export class LoadingScreen {
     this.errorDetail = invariant(document.querySelector<HTMLElement>('[data-loading-error-detail]'), 'Loading error detail is missing.');
     this.retryButton = invariant(document.querySelector<HTMLButtonElement>('[data-loading-retry-webgl]'), 'WebGL retry button is missing.');
     this.copyButton = invariant(document.querySelector<HTMLButtonElement>('[data-loading-copy-diagnostics]'), 'Diagnostics copy button is missing.');
+    appendStartupScreenLog('Loading screen initialized');
   }
 
   public async update(progress: number, message: string): Promise<void> {
@@ -32,6 +38,7 @@ export class LoadingScreen {
     this.bar.style.width = `${percentage}%`;
     this.status.textContent = message;
     this.progress.textContent = `${percentage}%`;
+    appendStartupScreenLog(`${percentage}% · ${message}`);
     performance.mark('cape-loading-stage', {
       detail: { progress: percentage / 100, message },
     });
@@ -78,6 +85,11 @@ export class LoadingScreen {
   public async reveal(): Promise<void> {
     await this.update(1, 'Enter the deep');
     document.body.classList.add('is-ready');
+    markStartupScreenLogComplete();
+  }
+
+  public debug(message: string): void {
+    appendStartupScreenLog(message);
   }
 
   public fail(
@@ -94,6 +106,9 @@ export class LoadingScreen {
         : latest?.message ?? 'Unknown graphics initialization error';
     this.status.textContent = 'Graphics initialization failed';
     this.progress.textContent = 'FAILED';
+    appendStartupScreenLog(`FAILED · ${latest
+      ? `${latest.renderer.toUpperCase()} at ${latest.stage}: ${latest.message}`
+      : message}`);
     this.errorDetail.textContent = latest
       ? `${latest.renderer.toUpperCase()} failed at ${latest.stage}: ${latest.message}`
       : message;
@@ -106,6 +121,7 @@ export class LoadingScreen {
         capturedAt: new Date().toISOString(),
         error: message,
         diagnostics: diagnostics ?? null,
+        startupLog: getStartupScreenLog(),
         platform: navigator.platform || 'Unknown platform',
         userAgent: navigator.userAgent || 'Unavailable',
         page: window.location.href,

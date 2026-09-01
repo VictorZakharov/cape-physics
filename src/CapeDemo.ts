@@ -314,9 +314,15 @@ export class CapeDemo {
       await this.loading.update(0.03, 'Selecting the graphics backend');
     }
     await this.pipeline.init({
-      onStage: (stage) => this.startupRecovery.stage(stage),
+      onStage: (stage) => {
+        this.startupRecovery.stage(stage);
+        this.loading.debug(`Renderer stage · ${stage}`);
+      },
       onWebGpuFallback: (error, stage) => {
         console.warn(`WebGPU failed during ${stage}; recovering with WebGL.`, error);
+        this.loading.debug(
+          `WebGPU fallback · ${stage}: ${error instanceof Error ? error.message : String(error)}`,
+        );
         this.startupRecovery.fallbackToWebGl(error, stage);
       },
     });

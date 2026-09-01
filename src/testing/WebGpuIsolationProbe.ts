@@ -405,8 +405,21 @@ export function runWebGpuIsolationProbe(): void {
                   status.textContent = `Compiling cape kernel ${loaded + 1}/${total}: ${name}`;
                   renderReport();
                 },
-                onProgress: ({ loaded }) => {
+                onShaderBuilt: ({ loaded, sourceCharacters, milliseconds }) => {
+                  const kernelNumber = loaded + 1;
+                  report.workloadMetrics[
+                    `applicationCapeComputeShader${kernelNumber}Characters`
+                  ] = sourceCharacters;
+                  report.workloadMetrics[
+                    `applicationCapeComputeShader${kernelNumber}BuildMilliseconds`
+                  ] = milliseconds;
+                  renderReport();
+                },
+                onProgress: ({ loaded, milliseconds }) => {
                   report.workloadMetrics.applicationCapeCompiledComputePipelines = loaded;
+                  report.workloadMetrics[
+                    `applicationCapeComputePipeline${loaded}Milliseconds`
+                  ] = milliseconds;
                   renderReport();
                 },
               },

@@ -13,6 +13,7 @@ describe('WebGPU compute pipeline warm-up', () => {
     const events: string[] = [];
     const starts: number[] = [];
     const progress: number[] = [];
+    const builtShaders: Array<{ loaded: number; sourceCharacters: number }> = [];
     globalThis.requestAnimationFrame = ((callback: FrameRequestCallback): number => {
       events.push('yield');
       callback(performance.now());
@@ -67,7 +68,7 @@ describe('WebGPU compute pipeline warm-up', () => {
       },
       delete: () => {},
       updateForCompute: () => {},
-      _createNodeBuilderState: () => ({ bindings: [binding] }),
+      _createNodeBuilderState: () => ({ bindings: [binding], computeShader: 'fn main() {}' }),
     };
     const bindings = {
       deleteForCompute: () => {},
@@ -109,6 +110,9 @@ describe('WebGPU compute pipeline warm-up', () => {
       onProgress: ({ loaded }) => {
         progress.push(loaded);
       },
+      onShaderBuilt: ({ loaded, sourceCharacters }) => {
+        builtShaders.push({ loaded, sourceCharacters });
+      },
     });
 
     expect(syncPipelineCreations).toBe(0);
@@ -117,5 +121,9 @@ describe('WebGPU compute pipeline warm-up', () => {
     expect(events.filter((event) => event === 'yield')).toHaveLength(1);
     expect(starts).toEqual([0, 1]);
     expect(progress).toEqual([1, 2]);
+    expect(builtShaders).toEqual([
+      { loaded: 0, sourceCharacters: 12 },
+      { loaded: 1, sourceCharacters: 12 },
+    ]);
   });
 });

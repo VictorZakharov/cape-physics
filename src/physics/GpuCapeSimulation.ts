@@ -159,6 +159,7 @@ const ROCK_FACES_PER_COLLIDER = 60;
 const MAXIMUM_CONTINUOUS_ROCK_SWEEP = 0.08;
 const ROCK_SWEEP_SURFACE_OFFSET = 0.001;
 const ROCK_SWEEP_TANGENTIAL_DAMPING = 0.76;
+const SWEPT_FACE_SAMPLE_COUNT = 4;
 const BODY_BUFFER_STRIDE = 4;
 const ROCK_BUFFER_STRIDE = 4 + ROCK_FACES_PER_COLLIDER * 4;
 const TOPOLOGY_METADATA_STRIDE = 2;
@@ -2423,14 +2424,24 @@ export class GpuCapeSimulation {
         { name: 'third', type: 'vec3' },
       ],
     });
-    const trianglesIntersect = (
-      clothFirst: THREE.Node<'vec3'>,
-      clothSecond: THREE.Node<'vec3'>,
-      clothThird: THREE.Node<'vec3'>,
-      rockFirst: THREE.Node<'vec3'>,
-      rockSecond: THREE.Node<'vec3'>,
-      rockThird: THREE.Node<'vec3'>,
-    ): THREE.Node<'bool'> => intersectsSegmentTriangle(
+    const trianglesIntersect = Fn<
+      readonly [
+        THREE.Node<'vec3'>,
+        THREE.Node<'vec3'>,
+        THREE.Node<'vec3'>,
+        THREE.Node<'vec3'>,
+        THREE.Node<'vec3'>,
+        THREE.Node<'vec3'>,
+      ],
+      THREE.Node<'bool'>
+    >(([
+      clothFirst,
+      clothSecond,
+      clothThird,
+      rockFirst,
+      rockSecond,
+      rockThird,
+    ]) => intersectsSegmentTriangle(
       clothFirst,
       clothSecond,
       rockFirst,
@@ -2466,7 +2477,18 @@ export class GpuCapeSimulation {
       clothFirst,
       clothSecond,
       clothThird,
-    ));
+    )), 'bool').setLayout({
+      name: `capeRockFaceTrianglesIntersect${passName}`,
+      type: 'bool',
+      inputs: [
+        { name: 'clothFirst', type: 'vec3' },
+        { name: 'clothSecond', type: 'vec3' },
+        { name: 'clothThird', type: 'vec3' },
+        { name: 'rockFirst', type: 'vec3' },
+        { name: 'rockSecond', type: 'vec3' },
+        { name: 'rockThird', type: 'vec3' },
+      ],
+    });
     const sphereIntersectsTriangle = Fn<
       readonly [
         THREE.Node<'vec4'>,
@@ -2681,15 +2703,6 @@ export class GpuCapeSimulation {
         const previousFirst = this.previousBuffer.element(firstIndex).xyz;
         const previousSecond = this.previousBuffer.element(secondIndex).xyz;
         const previousThird = this.previousBuffer.element(thirdIndex).xyz;
-        const sweptFirstQuarter = mix(previousFirst, first, 0.25);
-        const sweptSecondQuarter = mix(previousSecond, second, 0.25);
-        const sweptThirdQuarter = mix(previousThird, third, 0.25);
-        const sweptFirstHalf = mix(previousFirst, first, 0.5);
-        const sweptSecondHalf = mix(previousSecond, second, 0.5);
-        const sweptThirdHalf = mix(previousThird, third, 0.5);
-        const sweptFirstThreeQuarter = mix(previousFirst, first, 0.75);
-        const sweptSecondThreeQuarter = mix(previousSecond, second, 0.75);
-        const sweptThirdThreeQuarter = mix(previousThird, third, 0.75);
         const triangleMinimum = first.min(second).min(third)
           .sub(CLOTH_ROCK_CLEARANCE);
         const triangleMaximum = first.max(second).max(third)
@@ -2730,30 +2743,36 @@ export class GpuCapeSimulation {
               .and(faceTriangleMaximum.z.greaterThanEqual(sphere.z.sub(sphere.w)))
               .and(faceTriangleMinimum.z.lessThanEqual(sphere.z.add(sphere.w)));
             If(overlapsSphere, () => {
-              const currentIntersects = sphereIntersectsTriangle(
-                sphere,
-                first,
-                second,
-                third,
-              );
-              const intersects = allowSweptFaceRecovery
-                ? currentIntersects.or(sphereIntersectsTriangle(
-                  sphere,
-                  sweptFirstQuarter,
-                  sweptSecondQuarter,
-                  sweptThirdQuarter,
-                )).or(sphereIntersectsTriangle(
-                  sphere,
-                  sweptFirstHalf,
-                  sweptSecondHalf,
-                  sweptThirdHalf,
-                )).or(sphereIntersectsTriangle(
-                  sphere,
-                  sweptFirstThreeQuarter,
-                  sweptSecondThreeQuarter,
-                  sweptThirdThreeQuarter,
-                ))
-                : currentIntersects;
+              const intersects = bool(false).toVar('sphereFaceIntersects');
+              if (allowSweptFaceRecovery) {
+                // Keep the four established quarter-step samples, but express
+                // them as one runtime loop. Emitting four copies of the contact
+                // query made Dawn/Metal spend unbounded time compiling this
+                // otherwise bounded kernel on Apple Silicon.
+                Loop(
+                  {
+                    start: uint(1),
+                    end: uint(SWEPT_FACE_SAMPLE_COUNT + 1),
+                    type: 'uint',
+                    condition: '<',
+                  },
+                  ({ i: sampleIndex }) => {
+                    const progress = float(sampleIndex)
+                      .div(SWEPT_FACE_SAMPLE_COUNT)
+                      .toVar('sphereFaceSweepProgress');
+                    If(sphereIntersectsTriangle(
+                      sphere,
+                      mix(previousFirst, first, progress),
+                      mix(previousSecond, second, progress),
+                      mix(previousThird, third, progress),
+                    ), () => {
+                      intersects.assign(bool(true));
+                    });
+                  },
+                );
+              } else {
+                intersects.assign(sphereIntersectsTriangle(sphere, first, second, third));
+              }
               const triangleHasVertexContact = first.sub(sphere.xyz).dot(first.sub(sphere.xyz))
                 .lessThanEqual(sphereRadiusSquared.add(0.000_001))
                 .or(second.sub(sphere.xyz).dot(second.sub(sphere.xyz))
@@ -2832,38 +2851,41 @@ export class GpuCapeSimulation {
                     .and(faceTriangleMaximum.z.greaterThanEqual(rockFaceMinimum.z))
                     .and(faceTriangleMinimum.z.lessThanEqual(rockFaceMaximum.z));
                   If(overlapsRockFace, () => {
-                    const currentIntersects = trianglesIntersect(
-                      first,
-                      second,
-                      third,
-                      rockFirst,
-                      rockSecond,
-                      rockThird,
-                    );
-                    const intersects = allowSweptFaceRecovery
-                      ? currentIntersects.or(trianglesIntersect(
-                        sweptFirstQuarter,
-                        sweptSecondQuarter,
-                        sweptThirdQuarter,
+                    const intersects = bool(false).toVar('rockFaceIntersects');
+                    if (allowSweptFaceRecovery) {
+                      Loop(
+                        {
+                          start: uint(1),
+                          end: uint(SWEPT_FACE_SAMPLE_COUNT + 1),
+                          type: 'uint',
+                          condition: '<',
+                        },
+                        ({ i: sampleIndex }) => {
+                          const progress = float(sampleIndex)
+                            .div(SWEPT_FACE_SAMPLE_COUNT)
+                            .toVar('rockFaceSweepProgress');
+                          If(trianglesIntersect(
+                            mix(previousFirst, first, progress),
+                            mix(previousSecond, second, progress),
+                            mix(previousThird, third, progress),
+                            rockFirst,
+                            rockSecond,
+                            rockThird,
+                          ), () => {
+                            intersects.assign(bool(true));
+                          });
+                        },
+                      );
+                    } else {
+                      intersects.assign(trianglesIntersect(
+                        first,
+                        second,
+                        third,
                         rockFirst,
                         rockSecond,
                         rockThird,
-                      )).or(trianglesIntersect(
-                        sweptFirstHalf,
-                        sweptSecondHalf,
-                        sweptThirdHalf,
-                        rockFirst,
-                        rockSecond,
-                        rockThird,
-                      )).or(trianglesIntersect(
-                        sweptFirstThreeQuarter,
-                        sweptSecondThreeQuarter,
-                        sweptThirdThreeQuarter,
-                        rockFirst,
-                        rockSecond,
-                        rockThird,
-                      ))
-                      : currentIntersects;
+                      ));
+                    }
                     If(intersects, () => {
                       triangleIntersects.assign(bool(true));
                     });

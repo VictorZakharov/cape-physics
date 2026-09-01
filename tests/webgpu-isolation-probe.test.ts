@@ -72,6 +72,8 @@ describe('isolated WebGPU diagnostic probe', () => {
     const submitStage = source.indexOf("stage('submit-one-application-cape-step'");
     expect(source).toContain('compileWebGpuComputePipelines(');
     expect(source).toContain('applicationCapeCompiledComputePipelines');
+    expect(source).toContain('applicationCapeComputeShader${kernelNumber}Characters');
+    expect(source).toContain('applicationCapeComputePipeline${loaded}Milliseconds');
     expect(compileStage).toBeGreaterThan(-1);
     expect(submitStage).toBeGreaterThan(compileStage);
   });
