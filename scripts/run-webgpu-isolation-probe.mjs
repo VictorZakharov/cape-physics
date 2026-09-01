@@ -34,15 +34,10 @@ const browserCandidates = [
     && join(process.env.ProgramFiles, 'Google', 'Chrome', 'Application', 'chrome.exe'),
   programFilesX86
     && join(programFilesX86, 'Google', 'Chrome', 'Application', 'chrome.exe'),
-  process.env.CAPE_EDGE_PATH,
-  process.env.ProgramFiles
-    && join(process.env.ProgramFiles, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
-  programFilesX86
-    && join(programFilesX86, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
 ].filter(Boolean);
 const browserExecutable = browserCandidates.find(existsSync);
 if (!browserExecutable) {
-  throw new Error('Chrome or Edge was not found; set CAPE_PROBE_BROWSER_PATH.');
+  throw new Error('Chrome was not found; set CAPE_PROBE_BROWSER_PATH or CAPE_BROWSER_PATH.');
 }
 
 const workload = (process.env.CAPE_PROBE_WORKLOAD ?? 'app-cape').trim().toLowerCase();

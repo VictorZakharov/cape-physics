@@ -9,15 +9,16 @@ const browserHarnesses = [
 
 describe('local browser harness storage', () => {
   for (const path of browserHarnesses) {
-    test(`${path} prefers disposable Chrome profiles under repository temp`, async () => {
+    test(`${path} uses disposable Chrome profiles under repository temp`, async () => {
       const source = await Bun.file(path).text();
       const chromeCandidate = source.indexOf("'Google', 'Chrome'");
-      const edgeCandidate = source.indexOf("'Microsoft', 'Edge'");
 
       expect(source).toContain("join(repositoryRoot, 'artifacts', '.tmp')");
       expect(source).toContain('process.env.CAPE_BROWSER_PATH');
       expect(chromeCandidate).toBeGreaterThan(-1);
-      expect(edgeCandidate).toBeGreaterThan(chromeCandidate);
+      expect(source).not.toContain('process.env.CAPE_EDGE_PATH');
+      expect(source).not.toContain("'Microsoft', 'Edge'");
+      expect(source).not.toContain('msedge.exe');
       expect(source).toContain('closeBrowserProcess(browser, debuggerConnection)');
       expect(source).toContain('rmSync(temporaryRoot, { recursive: true, force: true');
       expect(source).toContain('if (existsSync(temporaryRoot)) throw new Error');
