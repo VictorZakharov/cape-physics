@@ -44,14 +44,21 @@ describe('cape world-space Verlet integration', () => {
   });
 
   test('WebGPU predictor cannot reintroduce whole-cape anchor transport', () => {
-    const source = readFileSync(
+    const facadeSource = readFileSync(
       new URL('../src/physics/GpuCapeSimulation.ts', import.meta.url),
       'utf8',
     );
+    const predictionSource = readFileSync(
+      new URL('../src/physics/GpuCapePredictionKernels.ts', import.meta.url),
+      'utf8',
+    );
+    const source = `${facadeSource}\n${predictionSource}`;
 
     expect(source).not.toContain('anchorDisplacementUniform');
     expect(source).not.toContain('anchorAccelerationDisplacementUniform');
-    expect(source).toContain("const currentPosition = current.xyz.toVar('currentPosition')");
-    expect(source).toContain('previous.assign(vec4(currentPosition, 0))');
+    expect(predictionSource).toContain(
+      "const currentPosition = current.xyz.toVar('currentPosition')",
+    );
+    expect(predictionSource).toContain('previous.assign(vec4(currentPosition, 0))');
   });
 });

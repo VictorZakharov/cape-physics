@@ -1,0 +1,61 @@
+import { describe, expect, test } from 'bun:test';
+import { CAPE } from '../src/config';
+import { createGpuCapeDispatchSchedule } from '../src/physics/GpuCapeDispatchSchedule';
+
+const kernels = {
+  resetMaterialContactFlags: 'reset-contact-flags',
+  predict: 'predict',
+  recoverIdleDrape: 'recover-idle-drape',
+  constrainPosition: 'constrain-position',
+  constrainScratch: 'constrain-scratch',
+  scratchToPosition: 'scratch-to-position',
+  positionToScratch: 'position-to-scratch',
+  hardScratchToPosition: 'hard-scratch-to-position',
+  hardPositionToScratch: 'hard-position-to-scratch',
+  finalSelfPositionToScratch: 'final-self-position-to-scratch',
+  finalContactScratchToPosition: 'final-contact-scratch-to-position',
+  positionVirtualBodyContacts: 'position-virtual-body-contacts',
+  positionRockFaces: 'position-rock-faces',
+  positionSweptRockFaces: 'position-swept-rock-faces',
+  scratchRockFaces: 'scratch-rock-faces',
+  reconcileBodyContactVelocity: 'reconcile-body-contact-velocity',
+  reconcileProjectionVerticalVelocity: 'reconcile-projection-vertical-velocity',
+} as const;
+
+describe('WebGPU cape dispatch schedule', () => {
+  test('locks the exact production ping-pong and reconciliation order', () => {
+    expect(createGpuCapeDispatchSchedule(kernels, CAPE.solverIterations)).toEqual([
+      'reset-contact-flags',
+      'predict',
+      'recover-idle-drape',
+      'constrain-scratch', 'scratch-to-position',
+      'constrain-position', 'position-to-scratch',
+      'constrain-scratch', 'scratch-to-position',
+      'constrain-position', 'position-to-scratch',
+      'constrain-scratch', 'scratch-to-position',
+      'constrain-position', 'position-to-scratch',
+      'constrain-scratch', 'scratch-to-position',
+      'constrain-position', 'position-to-scratch',
+      'constrain-scratch', 'scratch-to-position',
+      'constrain-position', 'position-to-scratch',
+      'hard-scratch-to-position', 'position-swept-rock-faces',
+      'hard-position-to-scratch', 'scratch-rock-faces',
+      'hard-scratch-to-position', 'position-rock-faces',
+      'hard-position-to-scratch',
+      'hard-scratch-to-position',
+      'position-rock-faces',
+      'final-self-position-to-scratch',
+      'final-contact-scratch-to-position',
+      'position-virtual-body-contacts',
+      'position-rock-faces',
+      'reconcile-body-contact-velocity',
+      'reconcile-projection-vertical-velocity',
+    ]);
+  });
+
+  test('rejects schedules whose parity cannot end in the render buffer', () => {
+    expect(() => createGpuCapeDispatchSchedule(kernels, 1)).toThrow(
+      'GPU cape projection schedule must finish in the render position buffer.',
+    );
+  });
+});
