@@ -4,7 +4,7 @@ import { describe, expect, test } from 'bun:test';
 describe('WebGPU complementary rock-face contact', () => {
   test('acts only on vertex-clear crossings and never rolls back a whole triangle', () => {
     const source = readFileSync(
-      new URL('../src/physics/GpuCapeSimulation.ts', import.meta.url),
+      new URL('../src/physics/GpuCapeRockFaceKernel.ts', import.meta.url),
       'utf8',
     );
 

@@ -7,19 +7,33 @@ import {
 
 describe('WebGPU cape body contact architecture', () => {
   test('uses particle and virtual-particle capsule contact without the inverse sweep', () => {
-    const source = readFileSync(
+    const facadeSource = readFileSync(
       new URL('../src/physics/GpuCapeSimulation.ts', import.meta.url),
       'utf8',
     );
+    const colliderSource = readFileSync(
+      new URL('../src/physics/GpuCapeColliderPacking.ts', import.meta.url),
+      'utf8',
+    );
+    const projectionSource = readFileSync(
+      new URL('../src/physics/GpuCapeProjectionKernel.ts', import.meta.url),
+      'utf8',
+    );
+    const virtualBodySource = readFileSync(
+      new URL('../src/physics/GpuCapeVirtualBodyContactKernel.ts', import.meta.url),
+      'utf8',
+    );
+    const source = [facadeSource, colliderSource, projectionSource, virtualBodySource]
+      .join('\n');
 
-    expect(source).toContain('const BODY_BUFFER_STRIDE = 4');
-    expect(source).toContain("position.sub(closest).toVar('bodyDelta')");
+    expect(colliderSource).toContain('export const GPU_BODY_BUFFER_STRIDE = 4');
+    expect(projectionSource).toContain("position.sub(closest).toVar('bodyDelta')");
     expect(source).not.toContain('createBodyFaceColorFunction');
     expect(source).not.toContain('Cape body faces in position');
     expect(source).not.toContain('coloredBodyFace');
-    expect(source).toContain('createVirtualBodyContactColorFunction');
-    expect(source).toContain('triangleHasVertexContact.not()');
-    expect(source).toContain('Cape virtual body contacts');
+    expect(facadeSource).toContain('createGpuCapeVirtualBodyContactColorFunction');
+    expect(virtualBodySource).toContain('triangleHasVertexContact.not()');
+    expect(facadeSource).toContain('Cape virtual body contacts');
   });
 
   test('activates a virtual sample only for a vertex-clear face gap', () => {
