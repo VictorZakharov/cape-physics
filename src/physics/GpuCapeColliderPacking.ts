@@ -18,7 +18,7 @@ export const MAX_GPU_BODY_COLLIDERS = 32;
 export const MAX_GPU_WORLD_SPHERES = 512;
 export const MAX_GPU_WORLD_ROCKS = 16;
 export const GPU_ROCK_FACES_PER_COLLIDER = 60;
-export const GPU_BODY_BUFFER_STRIDE = 4;
+export const GPU_BODY_BUFFER_STRIDE = 5;
 export const GPU_ROCK_BUFFER_STRIDE = 4 + GPU_ROCK_FACES_PER_COLLIDER * 4;
 
 const WORLD_SPHERE_QUERY_RADIUS = calculateGpuCapeSphereQueryRadius(
@@ -44,16 +44,30 @@ export function packGpuCapeBodyColliders(
     );
   }
   colliders.forEach((collider, index) => {
+    const offset = (
+      capeIndex * MAX_GPU_BODY_COLLIDERS * GPU_BODY_BUFFER_STRIDE
+      + index * GPU_BODY_BUFFER_STRIDE
+    ) * 4;
     const axis = collider.end.clone().sub(collider.start);
     const axisDepthProjection = axis.dot(back);
     const lateralAxis = axis.clone().addScaledVector(back, -axisDepthProjection);
     const lateralRadius = collider.radius + getClothBodyClearance(collider);
     const depthRadius = getClothBodyDepthRadius(collider);
+    // Measure progress along the capsule in the same anisotropic metric used
+    // for contact. A lateral-only denominator collapses a boot's mostly-depth
+    // axis to zero, reducing its final particle contact to one endpoint.
+    const axisMetricLengthSquared = lateralAxis.lengthSq() / (lateralRadius * lateralRadius)
+      + axisDepthProjection * axisDepthProjection / (depthRadius * depthRadius);
     const verticalRadius = Math.max(lateralRadius, depthRadius);
-    const offset = (
-      capeIndex * MAX_GPU_BODY_COLLIDERS * GPU_BODY_BUFFER_STRIDE
-      + index * GPU_BODY_BUFFER_STRIDE
-    ) * 4;
+    const axisLength = axis.length();
+    const faceSampleSpacing = collider.faceSampleSpacing
+      ?? Math.max(0.04, lateralRadius * 0.82);
+    const faceSegments = axisLength < 0.000_001
+      ? 0
+      : Math.max(1, Math.ceil(axisLength / faceSampleSpacing));
+    const faceStepLength = faceSegments > 0 ? axisLength / faceSegments : 0;
+    const faceLateralRadius = Math.hypot(lateralRadius, faceStepLength * 0.5);
+    const faceDepthRadius = depthRadius * faceLateralRadius / lateralRadius;
     target[offset] = collider.start.x;
     target[offset + 1] = collider.start.y;
     target[offset + 2] = collider.start.z;
@@ -65,7 +79,7 @@ export function packGpuCapeBodyColliders(
     target[offset + 8] = lateralAxis.x;
     target[offset + 9] = lateralAxis.y;
     target[offset + 10] = lateralAxis.z;
-    target[offset + 11] = lateralAxis.lengthSq();
+    target[offset + 11] = axisMetricLengthSquared;
     if (Math.abs(back.y) < 0.000_1) {
       target[offset + 12] = Math.min(collider.start.y, collider.end.y) - verticalRadius;
       target[offset + 13] = Math.max(collider.start.y, collider.end.y) + verticalRadius;
@@ -73,6 +87,9 @@ export function packGpuCapeBodyColliders(
       target[offset + 12] = -1_000_000;
       target[offset + 13] = 1_000_000;
     }
+    target[offset + 14] = faceSegments;
+    target[offset + 15] = faceLateralRadius;
+    target[offset + 16] = faceDepthRadius;
   });
 }
 

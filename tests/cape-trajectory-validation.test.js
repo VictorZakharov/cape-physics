@@ -4,11 +4,44 @@ import {
   measureAverageCenterlineShapeChange,
   MIN_TRAVELLING_WAVE_RATIO,
   MIN_TRAVELLING_WAVE_SHAPE_CHANGE_RATIO,
+  validateBackwardStartContact,
   validateNecklineAttachment,
   validateTravellingWave,
 } from '../scripts/cape-trajectory-invariants.mjs';
 
 describe('local cape trajectory validation', () => {
+  test('accepts bounded deformable contact when backward motion begins', () => {
+    expect(() => validateBackwardStartContact({
+      maximumGeometricBodyPenetration: 0.015,
+      maximumBootPenetration: 0.0029,
+      transitionMaximumParticleStep: 0.094,
+      transitionMaximumParticleAcceleration: 0.089,
+      transitionMaximumUpwardParticleStep: 0.021,
+    })).not.toThrow();
+  });
+
+  test('rejects both triangle clipping and an upward backward-input impulse', () => {
+    const valid = {
+      maximumGeometricBodyPenetration: 0.015,
+      maximumBootPenetration: 0.0029,
+      transitionMaximumParticleStep: 0.094,
+      transitionMaximumParticleAcceleration: 0.089,
+      transitionMaximumUpwardParticleStep: 0.021,
+    };
+    expect(() => validateBackwardStartContact({
+      ...valid,
+      maximumGeometricBodyPenetration: 0.08,
+    })).toThrow('cloth triangles crossed the animated body by 0.0800 m');
+    expect(() => validateBackwardStartContact({
+      ...valid,
+      maximumBootPenetration: 0.012,
+    })).toThrow('crossed a boot collision envelope by 0.0120 m');
+    expect(() => validateBackwardStartContact({
+      ...valid,
+      transitionMaximumUpwardParticleStep: 0.04,
+    })).toThrow('reversed the falling cape upward by 0.0400 m/frame');
+  });
+
   test('accepts both neckline endpoints within the attachment tolerance', () => {
     expect(() => validateNecklineAttachment({
       scenario: 'forward-start',

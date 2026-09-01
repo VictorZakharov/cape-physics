@@ -65,14 +65,36 @@ describe('WebGPU cape collider packing', () => {
     packGpuCapeBodyColliders(target, 1, [createBodyCollider()], new THREE.Vector3(0, 0, 1));
 
     const offset = MAX_GPU_BODY_COLLIDERS * GPU_BODY_BUFFER_STRIDE * 4;
-    expect([...target.slice(offset, offset + 14)]).toEqual([
+    expect([...target.slice(offset, offset + 11)]).toEqual([
       1, 2, 3, 0.23,
       1, 2, 3, 0.13,
-      1, 2, 0, 5,
-      1.77, 4.23,
+      1, 2, 0,
     ].map(Math.fround));
+    expect(target[offset + 11]).toBeCloseTo(627.0623, 3);
+    expect([...target.slice(offset + 12, offset + 14)]).toEqual(
+      [1.77, 4.23].map(Math.fround),
+    );
+    expect(target[offset + 14]).toBe(20);
+    expect(target[offset + 15]).toBeCloseTo(0.2483, 4);
+    expect(target[offset + 16]).toBeCloseTo(0.1403, 4);
+    expect([...target.slice(offset + 17, offset + 20)]).toEqual([0, 0, 0]);
     expect(target.slice(0, offset).every((value) => value === 0)).toBe(true);
   });
+
+  test('preserves a boot capsule axis aligned with character depth', () => {
+    const target = new Float32Array(MAX_GPU_BODY_COLLIDERS * GPU_BODY_BUFFER_STRIDE * 4);
+    const boot: CapsuleCollider = {
+      start: new THREE.Vector3(0, 0, -0.115),
+      end: new THREE.Vector3(0, 0, -0.005),
+      radius: 0.095,
+      name: 'right boot',
+    };
+    packGpuCapeBodyColliders(target, 0, [boot], new THREE.Vector3(0, 0, 1));
+
+    expect([...target.slice(8, 11)]).toEqual([0, 0, 0]);
+    expect(target[11]).toBeCloseTo((0.11 / 0.121) ** 2, 6);
+  });
+
 
   test('retains unbounded vertical capsule limits for tilted back vectors', () => {
     const target = new Float32Array(MAX_GPU_BODY_COLLIDERS * GPU_BODY_BUFFER_STRIDE * 4);

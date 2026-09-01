@@ -11,6 +11,7 @@ export interface GpuCapeDispatchKernels<T> {
   readonly finalSelfPositionToScratch: T;
   readonly finalContactScratchToPosition: T;
   readonly positionVirtualBodyContacts: T;
+  readonly scratchVirtualBodyContacts: T;
   readonly positionRockFaces: T;
   readonly positionSweptRockFaces: T;
   readonly scratchRockFaces: T;
@@ -39,6 +40,13 @@ export function createGpuCapeDispatchSchedule<T>(
       currentBufferIsPosition ? kernels.positionToScratch : kernels.scratchToPosition,
     );
     currentBufferIsPosition = !currentBufferIsPosition;
+    if (iteration >= solverIterations - 3) {
+      sequence.push(
+        currentBufferIsPosition
+          ? kernels.positionVirtualBodyContacts
+          : kernels.scratchVirtualBodyContacts,
+      );
+    }
   }
   for (let reconciliation = 0; reconciliation < 3; reconciliation += 1) {
     sequence.push(
@@ -66,7 +74,20 @@ export function createGpuCapeDispatchSchedule<T>(
     kernels.finalSelfPositionToScratch,
     kernels.finalContactScratchToPosition,
     kernels.positionVirtualBodyContacts,
+    // Triangle contact uses the standard barycentric PBD gradient, so repair
+    // stretch locally and then recheck the body before the final point pass.
+    kernels.constrainPosition,
+    kernels.positionVirtualBodyContacts,
+    // A virtual face correction moves all three real vertices. Re-run the
+    // authoritative particle contacts afterward so that correction cannot
+    // leave a vertex inside a different animated limb capsule.
+    kernels.hardPositionToScratch,
+    kernels.hardScratchToPosition,
     kernels.positionRockFaces,
+    // Particle and rock reconciliation can leave the interior of a coarse
+    // cloth triangle across an animated boot even when all three vertices
+    // are outside. End body contact with the exact deformable face constraint.
+    kernels.positionVirtualBodyContacts,
     kernels.reconcileBodyContactVelocity,
     kernels.reconcileProjectionVerticalVelocity,
   );

@@ -26,7 +26,7 @@ const SWEPT_FACE_SAMPLE_COUNT = 4;
 
 export interface GpuCapeRockFaceResources {
   readonly caveShellBuffer: THREE.StorageBufferNode<'vec2'>;
-  readonly materialContactFlagBuffer: THREE.StorageBufferNode<'uint'>;
+  readonly worldContactFlagBuffer: THREE.StorageBufferNode<'uint'>;
   readonly positionBuffer: THREE.StorageBufferNode<'vec4'>;
   readonly previousBuffer: THREE.StorageBufferNode<'vec4'>;
   readonly rockBuffer: THREE.StorageBufferNode<'vec4'>;
@@ -629,9 +629,6 @@ export function createGpuCapeRockFaceColorFunction(
         faceCorrection.mulAssign(float(0.015).div(correctionLength));
       });
       If(hadFaceContact, () => {
-        atomicOr(resources.materialContactFlagBuffer.element(capeIndex), uint(1));
-      });
-      If(hadFaceContact, () => {
         const applyCorrection = (
           particleIndex: THREE.Node<'uint'>,
           declarationSuffix: string,
@@ -639,6 +636,7 @@ export function createGpuCapeRockFaceColorFunction(
           If(
             particleIndex.mod(uint(resources.particleCount)).greaterThanEqual(uint(CAPE.columns)),
             () => {
+            atomicOr(resources.worldContactFlagBuffer.element(particleIndex), uint(1));
             const state = buffer.element(particleIndex);
             const corrected = state.xyz.add(faceCorrection)
               .toVar(`correctedRockFace${declarationSuffix}`);

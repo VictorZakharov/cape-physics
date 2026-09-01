@@ -80,6 +80,9 @@ interface CapeDemoDiagnostics {
       readonly point: number;
       readonly face: number;
       readonly maximum: number;
+      readonly geometricPoint: number;
+      readonly geometricFace: number;
+      readonly geometricMaximum: number;
     };
     readonly bodyPenetrationByCollider: Readonly<Record<string, number>>;
     readonly maximumEnvironmentPenetration: number;
@@ -197,6 +200,7 @@ declare global {
           | 'raised-drop'
           | 'falling-forward-start'
           | 'forward-start'
+          | 'backward-start'
           | 'forward-stop'
           | 'reverse'
           | 'back-and-forth'
@@ -208,6 +212,7 @@ declare global {
           | 'raised-drop'
           | 'falling-forward-start'
           | 'forward-start'
+          | 'backward-start'
           | 'forward-stop'
           | 'reverse'
           | 'back-and-forth'
@@ -247,6 +252,9 @@ declare global {
             readonly point: number;
             readonly face: number;
             readonly maximum: number;
+            readonly geometricPoint: number;
+            readonly geometricFace: number;
+            readonly geometricMaximum: number;
           };
           readonly bodyPenetrationByCollider: Readonly<Record<string, number>>;
           readonly maximumStructuralError: number;

@@ -23,6 +23,7 @@ import {
 import { close, createStaticServer, listen } from './audit/static-server.mjs';
 import {
   measureAverageCenterlineShapeChange,
+  validateBackwardStartContact,
   validateNecklineAttachment,
   validateTravellingWave,
 } from './cape-trajectory-invariants.mjs';
@@ -57,11 +58,36 @@ const outputPath = resolve(
     ?? join(repositoryRoot, 'artifacts', 'trajectories', 'webgl-webgpu.json'),
 );
 const requestedScenarios = (process.env.CAPE_TRAJECTORY_SCENARIOS
-  ?? 'raised-drop,falling-forward-start,forward-start,forward-stop,reverse,back-and-forth,lightweight-stop')
+  ?? 'raised-drop,falling-forward-start,forward-start,backward-start,forward-stop,reverse,back-and-forth,lightweight-stop')
   .split(',')
   .map((value) => value.trim())
   .filter(Boolean);
+const requestedRenderers = (process.env.CAPE_TRAJECTORY_RENDERERS ?? 'webgl,webgpu')
+  .split(',')
+  .map((value) => value.trim().toLowerCase())
+  .filter(Boolean);
+if (
+  requestedRenderers.length < 1
+  || requestedRenderers.some((renderer) => renderer !== 'webgl' && renderer !== 'webgpu')
+  || new Set(requestedRenderers).size !== requestedRenderers.length
+) {
+  throw new Error('CAPE_TRAJECTORY_RENDERERS must contain webgl, webgpu, or both once.');
+}
+const captureFrame = process.env.CAPE_TRAJECTORY_CAPTURE_FRAME === undefined
+  ? null
+  : Number.parseInt(process.env.CAPE_TRAJECTORY_CAPTURE_FRAME, 10);
+const captureScenario = process.env.CAPE_TRAJECTORY_CAPTURE_SCENARIO
+  ?? requestedScenarios[0];
+if (captureFrame !== null && (!Number.isInteger(captureFrame) || captureFrame < 1)) {
+  throw new Error('CAPE_TRAJECTORY_CAPTURE_FRAME must be a positive integer.');
+}
+if (captureFrame !== null && !requestedScenarios.includes(captureScenario)) {
+  throw new Error('CAPE_TRAJECTORY_CAPTURE_SCENARIO must be in CAPE_TRAJECTORY_SCENARIOS.');
+}
 const enforce = (process.env.CAPE_TRAJECTORY_ENFORCE ?? 'true').trim().toLowerCase() !== 'false';
+if (enforce && requestedRenderers.length !== 2) {
+  throw new Error('Enforced trajectory parity requires both webgl and webgpu renderers.');
+}
 const sampleEvery = Number.parseInt(process.env.CAPE_TRAJECTORY_SAMPLE_EVERY ?? '1', 10);
 if (!Number.isInteger(sampleEvery) || sampleEvery < 1 || sampleEvery > 12) {
   throw new Error('CAPE_TRAJECTORY_SAMPLE_EVERY must be an integer from 1 to 12.');
@@ -74,6 +100,7 @@ const scenarioFrames = {
   'raised-drop': 120,
   'falling-forward-start': 180,
   'forward-start': 300,
+  'backward-start': 450,
   'forward-stop': 130,
   reverse: 130,
   'back-and-forth': 360,
@@ -113,6 +140,12 @@ function summarizeMotion(report, transitionFrame) {
   let rowTwistRangeTotal = 0;
   let maximumNecklineAttachmentError = 0;
   let maximumBodyPenetration = 0;
+  let maximumBodyPointPenetration = 0;
+  let maximumBodyFacePenetration = 0;
+  let maximumGeometricBodyPointPenetration = 0;
+  let maximumGeometricBodyFacePenetration = 0;
+  let maximumGeometricBodyPenetration = 0;
+  let maximumBootPenetration = 0;
   let maximumStructuralError = 0;
   let minimumSelfSeparation = Number.POSITIVE_INFINITY;
   let maximumUpwardFold = 0;
@@ -142,6 +175,31 @@ function summarizeMotion(report, transitionFrame) {
       sample.maximumNecklineAttachmentError,
     );
     maximumBodyPenetration = Math.max(maximumBodyPenetration, sample.maximumBodyPenetration);
+    maximumBodyPointPenetration = Math.max(
+      maximumBodyPointPenetration,
+      sample.bodyPenetrationByKind?.point ?? 0,
+    );
+    maximumBodyFacePenetration = Math.max(
+      maximumBodyFacePenetration,
+      sample.bodyPenetrationByKind?.face ?? 0,
+    );
+    maximumGeometricBodyPointPenetration = Math.max(
+      maximumGeometricBodyPointPenetration,
+      sample.bodyPenetrationByKind?.geometricPoint ?? 0,
+    );
+    maximumGeometricBodyFacePenetration = Math.max(
+      maximumGeometricBodyFacePenetration,
+      sample.bodyPenetrationByKind?.geometricFace ?? 0,
+    );
+    maximumGeometricBodyPenetration = Math.max(
+      maximumGeometricBodyPenetration,
+      sample.bodyPenetrationByKind?.geometricMaximum ?? 0,
+    );
+    maximumBootPenetration = Math.max(
+      maximumBootPenetration,
+      sample.bodyPenetrationByCollider?.['left boot'] ?? 0,
+      sample.bodyPenetrationByCollider?.['right boot'] ?? 0,
+    );
     maximumStructuralError = Math.max(maximumStructuralError, sample.maximumStructuralError);
     minimumSelfSeparation = Math.min(minimumSelfSeparation, sample.minimumSelfSeparation);
     maximumUpwardFold = Math.max(maximumUpwardFold, sample.maximumUpwardFold);
@@ -263,6 +321,12 @@ function summarizeMotion(report, transitionFrame) {
     averageRowTwistRange: rowTwistRangeTotal / Math.max(1, report.samples.length),
     maximumNecklineAttachmentError,
     maximumBodyPenetration,
+    maximumBodyPointPenetration,
+    maximumBodyFacePenetration,
+    maximumGeometricBodyPointPenetration,
+    maximumGeometricBodyFacePenetration,
+    maximumGeometricBodyPenetration,
+    maximumBootPenetration,
     maximumStructuralError,
     minimumSelfSeparation: Number.isFinite(minimumSelfSeparation) ? minimumSelfSeparation : 0,
     maximumUpwardFold,
@@ -303,6 +367,38 @@ function validateScenario(scenario, webgl, webgpu, comparison) {
   const finalGpu = webgpu.samples.at(-1);
   assert(finalGl, `${scenario} has no WebGL samples`);
   assert(finalGpu, `${scenario} has no WebGPU samples`);
+  if (scenario === 'backward-start') {
+    const wakeFrame = webgpu.samples.find((sample) => sample.frame === 408);
+    assert(wakeFrame, 'backward-start WebGPU omitted the 0.2 s wake-up sample');
+    validateNecklineAttachment({
+      scenario,
+      renderer: 'WebGPU',
+      maximumError: webgpuMotion.maximumNecklineAttachmentError,
+    });
+    validateBackwardStartContact(webgpuMotion);
+    assert(
+      webgpuMotion.maximumStructuralError <= 0.08,
+      `backward-start WebGPU stretched a structural link by `
+        + `${webgpuMotion.maximumStructuralError.toFixed(4)} m`,
+    );
+    assert(
+      webgpuMotion.minimumSelfSeparation >= 0.05,
+      `backward-start WebGPU collapsed self-separation to `
+        + `${webgpuMotion.minimumSelfSeparation.toFixed(4)} m`,
+    );
+    assert(
+      webgpuMotion.maximumLowerCapeRowCurlRatio <= 0.3,
+      `backward-start WebGPU curled a lower row `
+        + `(${webgpuMotion.maximumLowerCapeRowCurlRatio.toFixed(3)})`,
+    );
+    assert(
+      wakeFrame.hemDrop >= 1.35 && wakeFrame.maximumLowerHorizontalOffset <= 0.6,
+      `backward-start WebGPU folded through the character at frame 408 `
+        + `(${wakeFrame.hemDrop.toFixed(3)} m drop, `
+        + `${wakeFrame.maximumLowerHorizontalOffset.toFixed(3)} m offset)`,
+    );
+    return;
+  }
   for (const [renderer, motion] of [
     ['WebGL', webglMotion],
     ['WebGPU', webgpuMotion],
@@ -631,6 +727,34 @@ async function captureRenderer(renderer, staticPort) {
         })})`,
       );
     }
+    if (captureFrame !== null) {
+      await evaluate(
+        command,
+        `window.__CAPE_DEMO__.traceCapeScenario(${JSON.stringify({
+          scenario: captureScenario,
+          frames: captureFrame,
+          sampleEvery: Math.min(12, sampleEvery),
+        })})`,
+      );
+      await evaluate(command, `(async () => {
+        await window.__CAPE_DEMO__.setView({ yaw: 0.08, pitch: 0.2, distance: 4.25 });
+        const style = document.createElement('style');
+        style.textContent = '.performance-panel,.controls,.title-card,.quality-badge,.onboarding,.loading,.film-grain{display:none!important}';
+        document.head.append(style);
+        return true;
+      })()`);
+      const screenshot = await command('Page.captureScreenshot', {
+        format: 'jpeg',
+        quality: 78,
+        fromSurface: true,
+        captureBeyondViewport: false,
+      });
+      mkdirSync(dirname(outputPath), { recursive: true });
+      writeFileSync(
+        join(dirname(outputPath), `${renderer}-${captureScenario}-${captureFrame}.jpg`),
+        Buffer.from(screenshot.data, 'base64'),
+      );
+    }
     if (renderer === 'webgpu') {
       reports.packedBatch = await evaluate(
         command,
@@ -689,26 +813,32 @@ async function captureRenderer(renderer, staticPort) {
 const server = createStaticServer(distRoot);
 const staticPort = await listen(server);
 try {
-  const webgl = await captureRenderer('webgl', staticPort);
-  const webgpu = await captureRenderer('webgpu', staticPort);
+  const traces = {};
+  for (const renderer of requestedRenderers) {
+    traces[renderer] = await captureRenderer(renderer, staticPort);
+  }
+  const webgl = traces.webgl;
+  const webgpu = traces.webgpu;
   const transitions = {
     'raised-drop': 0,
     'falling-forward-start': 30,
     'forward-start': 30,
+    'backward-start': 384,
     'forward-stop': 90,
     reverse: 90,
     'back-and-forth': 60,
     'lightweight-stop': 90,
   };
-  const comparisons = Object.fromEntries(requestedScenarios.map((scenario) => [
-    scenario,
-    {
-      webglMotion: summarizeMotion(webgl[scenario], transitions[scenario]),
-      webgpuMotion: summarizeMotion(webgpu[scenario], transitions[scenario]),
-      parity: compareReports(webgl[scenario], webgpu[scenario]),
-    },
-  ]));
-  const packedBatch = summarizePackedBatch(webgpu.packedBatch);
+  const comparisons = Object.fromEntries(requestedScenarios.map((scenario) => {
+    const comparison = {};
+    if (webgl) comparison.webglMotion = summarizeMotion(webgl[scenario], transitions[scenario]);
+    if (webgpu) {
+      comparison.webgpuMotion = summarizeMotion(webgpu[scenario], transitions[scenario]);
+    }
+    if (webgl && webgpu) comparison.parity = compareReports(webgl[scenario], webgpu[scenario]);
+    return [scenario, comparison];
+  }));
+  const packedBatch = webgpu ? summarizePackedBatch(webgpu.packedBatch) : null;
   const result = {
     generatedAt: new Date().toISOString(),
     validationReceipt: {
@@ -720,12 +850,13 @@ try {
       passed: false,
     },
     browser: browserExecutable,
+    renderers: requestedRenderers,
     scenarios: requestedScenarios,
     enforced: enforce,
     sampleEvery,
     packedBatch,
     comparisons,
-    traces: { webgl, webgpu },
+    traces,
   };
   mkdirSync(dirname(outputPath), { recursive: true });
   writeFileSync(outputPath, `${JSON.stringify(result, null, 2)}\n`);

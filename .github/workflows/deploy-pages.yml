@@ -119,7 +119,9 @@ jobs:
       pages: write
       id-token: write
     runs-on: ubuntu-24.04
-    timeout-minutes: 2
+    # Pages deployments can remain in GitHub's deployment queue for more than
+    # two minutes even after the artifact has already been uploaded.
+    timeout-minutes: 10
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

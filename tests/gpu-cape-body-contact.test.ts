@@ -1,50 +1,55 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, test } from 'bun:test';
-import {
-  getVirtualBodyContactParticleScales,
-  shouldApplyVirtualBodyContact,
-} from '../src/physics/GpuVirtualBodyContact';
+
+const readPhysicsSource = (file: string): string => readFileSync(
+  new URL(`../src/physics/${file}`, import.meta.url),
+  'utf8',
+);
 
 describe('WebGPU cape body contact architecture', () => {
-  test('uses particle and virtual-particle capsule contact without the inverse sweep', () => {
-    const facadeSource = readFileSync(
-      new URL('../src/physics/GpuCapeSimulation.ts', import.meta.url),
-      'utf8',
-    );
-    const colliderSource = readFileSync(
-      new URL('../src/physics/GpuCapeColliderPacking.ts', import.meta.url),
-      'utf8',
-    );
-    const projectionSource = readFileSync(
-      new URL('../src/physics/GpuCapeProjectionKernel.ts', import.meta.url),
-      'utf8',
-    );
-    const virtualBodySource = readFileSync(
-      new URL('../src/physics/GpuCapeVirtualBodyContactKernel.ts', import.meta.url),
-      'utf8',
-    );
+  test('keeps body contact local and independent of character velocity', () => {
+    const facadeSource = readPhysicsSource('GpuCapeSimulation.ts');
+    const colliderSource = readPhysicsSource('GpuCapeColliderPacking.ts');
+    const projectionSource = readPhysicsSource('GpuCapeProjectionKernel.ts');
+    const virtualBodySource = readPhysicsSource('GpuCapeVirtualBodyContactKernel.ts');
     const source = [facadeSource, colliderSource, projectionSource, virtualBodySource]
       .join('\n');
 
-    expect(colliderSource).toContain('export const GPU_BODY_BUFFER_STRIDE = 4');
+    expect(colliderSource).toContain('export const GPU_BODY_BUFFER_STRIDE = 5');
+    expect(colliderSource).toContain('axisMetricLengthSquared');
     expect(projectionSource).toContain("position.sub(closest).toVar('bodyDelta')");
+    expect(projectionSource).toContain("axisDepth.xyz.dot(back).toVar('bodyAxisBack')");
+    expect(projectionSource).toContain('metricProjection.div(lateralAxis.w).clamp(0, 1)');
+    expect(projectionSource).toContain('candidate.assign(back.mul(surfaceDepth.sub(depth).max(0)))');
+    expect(virtualBodySource).toContain("const closest = first.toVar('virtualBodyClosest')");
+    expect(virtualBodySource).toContain('candidateLengthSquared.greaterThan');
+    expect(virtualBodySource).toContain('.mul(inverseMass.mul(barycentricWeight))');
+    expect(virtualBodySource).toContain('If(inverseMass.greaterThan(0)');
+    expect(source).not.toContain('previousBodyState');
+    expect(source).not.toContain('bodyMotion');
+    expect(facadeSource).not.toContain('input.characterVelocity.dot(input.anchors.back)');
     expect(source).not.toContain('createBodyFaceColorFunction');
-    expect(source).not.toContain('Cape body faces in position');
-    expect(source).not.toContain('coloredBodyFace');
     expect(facadeSource).toContain('createGpuCapeVirtualBodyContactColorFunction');
-    expect(virtualBodySource).toContain('triangleHasVertexContact.not()');
-    expect(facadeSource).toContain('Cape virtual body contacts');
   });
 
-  test('activates a virtual sample only for a vertex-clear face gap', () => {
-    expect(shouldApplyVirtualBodyContact([0, 0, 0], 0.01)).toBe(true);
-    expect(shouldApplyVirtualBodyContact([0.001, 0, 0], 0.01)).toBe(false);
-    expect(shouldApplyVirtualBodyContact([0, 0, 0], 0)).toBe(false);
-  });
+  test('separates body response from world support when reconciling falling velocity', () => {
+    const projectionSource = readPhysicsSource('GpuCapeProjectionKernel.ts');
+    const virtualBodySource = readPhysicsSource('GpuCapeVirtualBodyContactKernel.ts');
+    const reconciliationSource = readPhysicsSource('GpuCapeReconciliationKernels.ts');
 
-  test('redistributes a centroid correction without moving pinned particles', () => {
-    expect(getVirtualBodyContactParticleScales([1, 1, 1])).toEqual([1, 1, 1]);
-    expect(getVirtualBodyContactParticleScales([0, 1, 1])).toEqual([0, 1.5, 1.5]);
-    expect(getVirtualBodyContactParticleScales([0, 0, 0])).toEqual([0, 0, 0]);
+    expect(projectionSource).not.toContain(
+      'atomicOr(resources.worldContactFlagBuffer.element(capeIndex), uint(2))',
+    );
+    expect(virtualBodySource).not.toContain(
+      'atomicOr(resources.worldContactFlagBuffer.element(capeIndex), uint(2))',
+    );
+    expect(projectionSource).toContain(
+      'atomicOr(resources.worldContactFlagBuffer.element(index), uint(1))',
+    );
+    expect(reconciliationSource).toContain(
+      'resources.worldContactFlagBuffer.element(index)',
+    );
+    expect(reconciliationSource).toContain('.bitAnd(uint(1)).greaterThan(uint(0))');
+    expect(reconciliationSource).toContain('.and(hasWorldContact.not())');
   });
 });

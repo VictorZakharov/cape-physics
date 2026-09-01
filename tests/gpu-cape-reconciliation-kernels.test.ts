@@ -9,14 +9,16 @@ const source = readFileSync(
 
 describe('WebGPU cape reconciliation kernel boundaries', () => {
   test('keeps the three reconciliation passes independently named', () => {
-    expect(source).toContain("setName('Cape reset material contact flag')");
+    expect(source).toContain("setName('Cape reset material contact flags')");
     expect(source).toContain("setName('Cape reconcile body contact velocity')");
     expect(source).toContain(".setName('Cape reconcile projection vertical velocity')");
   });
 
-  test('retains material-contact gating for falling velocity repair', () => {
+  test('allows only per-particle world support to bypass falling velocity repair', () => {
     expect(source).toContain('atomicLoad(');
-    expect(source).toContain('.and(hasMaterialContact.not())');
+    expect(source).toContain('worldContactFlagBuffer.element(index)');
+    expect(source).toContain('.bitAnd(uint(1)).greaterThan(uint(0))');
+    expect(source).toContain('.and(hasWorldContact.not())');
     expect(source).toContain('.and(resources.predictedVerticalBuffer.element(index).lessThan(0))');
   });
 });
