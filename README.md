@@ -122,6 +122,7 @@ Open the printed URL in a WebGPU or WebGL 2 browser with hardware acceleration e
 bun run check          # strict TypeScript and deterministic unit/integration tests
 bun run harness        # renderer-free traversal plus the optional local timing budget
 bun run audit:visual   # direct Edge/Chrome dynamic audit across 37 rendered views
+bun run probe:webgpu   # local-only bounded WebGPU lifecycle/workload diagnostic
 bun run profile:render # local-only, non-gating synchronized renderer profile
 bun run stress:rocks   # optional extended rock-contact stress matrix
 bun run build:pages    # production GitHub Pages build
@@ -130,6 +131,18 @@ bun run build:pages    # production GitHub Pages build
 The renderer-free harness advances character movement, cloth, jumping, water landings, footsteps, ceiling drops, lights, and mineral effects without using a browser. The visual audit then drives the production build directly through Edge or Chrome and checks desktop and touch input, responsive controls, depth ordering, shadows, water motion, cape contact, and animation from 37 camera studies.
 
 CI gates deterministic correctness, geometry, collision, rendering, and builds. It runs the complete multi-angle audit through WebGL plus a short native WebGPU compute/readback smoke; the full 37-view WebGPU audit remains available locally. CI does **not** gate merges on millisecond or elapsed-time thresholds. Pull requests receive a temporary GitHub Pages preview, while merges to `main` deploy the production demo.
+
+### Permanent WebGPU isolation probes
+
+The repository retains three click-to-start, one-shot WebGPU diagnostics for device-specific failures:
+
+- `?webgpuProbe=1` — minimal adapter, device, renderer, cube, queue, and teardown boundary.
+- `?webgpuProbe=1&probeWorkload=three-cloth` — adds one compute and render step adapted from the official Three.js r185 `webgpu_compute_cloth` example.
+- `?webgpuProbe=1&probeWorkload=app-cape` — adds the production one-cape GPU graph in a simple scene without the character, cave, colliders, PMREM, post-processing, bots, or frame loop.
+
+No probe requests a GPU before its button is clicked. Each stage has a deadline, reports device loss and uncaptured errors, never reloads or falls back to WebGL, and explicitly disposes the renderer and externally owned device. Keep these pages, their report format, the CPU-only architecture tests, and `scripts/run-webgpu-isolation-probe.mjs`; they are reusable field diagnostics rather than temporary incident scaffolding.
+
+The local CDP harness defaults to the application-cape boundary. Select another workload with `CAPE_PROBE_WORKLOAD`. Its browser profile and temporary data live under repository-local `artifacts/.tmp/` and are removed in `finally`.
 
 ## Project structure
 

@@ -31,33 +31,35 @@ const browserCandidates = [
   process.env.CAPE_PROBE_BROWSER_PATH,
   process.env.CAPE_EDGE_PATH,
   process.env.ProgramFiles
+    && join(process.env.ProgramFiles, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+  programFilesX86
+    && join(programFilesX86, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+  process.env.ProgramFiles
     && join(process.env.ProgramFiles, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
   programFilesX86
     && join(programFilesX86, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
-  process.env.ProgramFiles
-    && join(process.env.ProgramFiles, 'Google', 'Chrome', 'Application', 'chrome.exe'),
 ].filter(Boolean);
 const browserExecutable = browserCandidates.find(existsSync);
 if (!browserExecutable) {
   throw new Error('Edge or Chrome was not found; set CAPE_PROBE_BROWSER_PATH.');
 }
 
-const workload = (process.env.CAPE_PROBE_WORKLOAD ?? 'three-cloth').trim().toLowerCase();
-if (!['minimal', 'three-cloth'].includes(workload)) {
-  throw new Error('CAPE_PROBE_WORKLOAD must be minimal or three-cloth.');
+const workload = (process.env.CAPE_PROBE_WORKLOAD ?? 'app-cape').trim().toLowerCase();
+if (!['minimal', 'three-cloth', 'app-cape'].includes(workload)) {
+  throw new Error('CAPE_PROBE_WORKLOAD must be minimal, three-cloth, or app-cape.');
 }
 
 function assert(condition, message) {
   if (!condition) throw new Error(`WebGPU isolation probe invariant failed: ${message}`);
 }
 
-function relevantEvents(events) {
+function relevantEvents(events, levels = ['error']) {
   return [...new Set(events.flatMap(({ method, params }) => {
     if (method === 'Runtime.exceptionThrown') {
       return [`exception: ${params.exceptionDetails?.exception?.description
         ?? params.exceptionDetails?.text}`];
     }
-    if (method === 'Log.entryAdded' && ['error', 'warning'].includes(params.entry?.level)) {
+    if (method === 'Log.entryAdded' && levels.includes(params.entry?.level)) {
       return [`${params.entry?.source} ${params.entry?.level}: ${params.entry?.text}`];
     }
     return [];
@@ -80,8 +82,11 @@ const browser = spawn(browserExecutable, [
   '--disable-breakpad',
   '--disable-crash-reporter',
   '--disable-component-update',
+  '--disable-default-apps',
+  '--disable-extensions',
   '--disable-gpu-shader-disk-cache',
   '--disable-skia-graphite',
+  '--disable-sync',
   '--disable-features=CalculateNativeWinOcclusion,AutofillAiServerModel,WebGPUBlobCache',
   '--enable-gpu',
   '--ignore-gpu-blocklist',
@@ -159,6 +164,14 @@ try {
       'submit-one-three-reference-cloth-step',
       'compile-and-submit-three-reference-cloth-frame',
       'wait-for-three-reference-cloth-work',
+    ] : workload === 'app-cape' ? [
+      'load-application-cape-module',
+      'build-application-cape-graph',
+      'submit-one-application-cape-step',
+      'wait-for-application-cape-compute',
+      'compile-and-submit-application-cape-position-frame',
+      'compile-and-submit-application-cape-frame',
+      'wait-for-application-cape-work',
     ] : []),
   ];
   assert(lastReport.status === 'passed', `probe ended as ${lastReport.status}`);
@@ -169,6 +182,18 @@ try {
   assert(lastReport.stages.every(({ status }) => status === 'passed'), 'a probe stage failed');
   assert(lastReport.stages.every(({ milliseconds }) => milliseconds <= 10_500), 'a stage exceeded its deadline');
   assert(lastReport.uncapturedErrors.length === 0, 'WebGPU emitted an uncaptured error');
+  if (workload === 'app-cape') {
+    assert(
+      lastReport.workloadMetrics.applicationCapeDispatchNodes > 0,
+      'application cape reported no dispatch nodes',
+    );
+    assert(
+      lastReport.workloadMetrics.applicationCapeUniqueComputeNodes > 0
+        && lastReport.workloadMetrics.applicationCapeUniqueComputeNodes
+          <= lastReport.workloadMetrics.applicationCapeDispatchNodes,
+      'application cape reported invalid unique compute-node metrics',
+    );
+  }
   assert(lastReport.cleanup.rendererDisposed, 'Three.js renderer was not disposed');
   assert(lastReport.cleanup.deviceDestroyed, 'external GPUDevice was not destroyed');
   assert(lastReport.cleanup.canvasReleased, 'probe canvas was not released');
@@ -206,7 +231,7 @@ try {
   throw new Error(
     `${error.message}\nProbe report:\n${JSON.stringify(lastReport, null, 2)}`
       + `\nHeadless browser log:\n${browserLog}`
-      + `\nPage diagnostics:\n${relevantEvents(debuggerEvents).join('\n')}`,
+      + `\nPage diagnostics:\n${relevantEvents(debuggerEvents, ['error', 'warning']).join('\n')}`,
     { cause: error },
   );
 } finally {

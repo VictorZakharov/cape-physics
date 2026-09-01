@@ -13,6 +13,9 @@ describe('isolated WebGPU diagnostic probe', () => {
     expect(readWebGpuIsolationProbeWorkload(
       '?webgpuProbe=1&probeWorkload=three-cloth',
     )).toBe('three-cloth');
+    expect(readWebGpuIsolationProbeWorkload(
+      '?webgpuProbe=1&probeWorkload=app-cape',
+    )).toBe('app-cape');
     expect(readWebGpuIsolationProbeWorkload('?probeWorkload=unknown')).toBe('minimal');
   });
 
@@ -46,5 +49,19 @@ describe('isolated WebGPU diagnostic probe', () => {
     expect(source).not.toContain('CapeSimulation');
     expect(source).not.toContain('PMREMGenerator');
     expect(source).not.toContain('CapeDemo');
+  });
+
+  test('keeps the production cape workload isolated from the full scene', async () => {
+    const source = await Bun.file('src/testing/ApplicationCapeProbe.ts').text();
+    expect(source).toContain("import { GpuCapeSimulation }");
+    expect(source).toContain('simulation.prepareStep(');
+    expect(source).toContain('usePositionOnlyMaterial');
+    expect(source).toContain('useProductionMaterial');
+    expect(source).not.toContain('CapeDemo');
+    expect(source).not.toContain('Character(');
+    expect(source).not.toContain('CaveWorld');
+    expect(source).not.toContain('PMREMGenerator');
+    expect(source).not.toContain('RenderPipeline');
+    expect(source).not.toContain('PostProcessing');
   });
 });

@@ -1,6 +1,9 @@
 import type { WebGPURenderer } from 'three/webgpu';
 import '../styles/webgpu-probe.css';
-import { readWebGpuIsolationProbeWorkload } from './WebGpuIsolationProbeQuery';
+import {
+  readWebGpuIsolationProbeWorkload,
+  type WebGpuIsolationProbeWorkload,
+} from './WebGpuIsolationProbeQuery';
 
 const PROBE_TIMEOUT_MS = 10_000;
 
@@ -13,11 +16,12 @@ interface ProbeStage {
 
 interface ProbeReport {
   capturedAt: string;
-  workload: 'minimal' | 'three-cloth';
+  workload: WebGpuIsolationProbeWorkload;
   status: 'idle' | 'running' | 'passed' | 'failed' | 'stopped';
   stages: ProbeStage[];
   adapterInfo: Record<string, unknown> | null;
   requestedFeatures: string[];
+  workloadMetrics: Record<string, number>;
   deviceLost: unknown;
   uncapturedErrors: string[];
   cleanup: {
@@ -67,14 +71,21 @@ export function runWebGpuIsolationProbe(): void {
   const workload = readWebGpuIsolationProbeWorkload(window.location.search);
   const workloadDescription = workload === 'three-cloth'
     ? 'After the minimal cube, this runs one step and one rendered frame adapted from the official Three.js r185 webgpu_compute_cloth example. It still excludes our cape solver, cave, PMREM, post-processing, and WebGL.'
-    : 'This does not load any cloth simulation, the cave, PMREM, post-processing, or WebGL.';
+    : workload === 'app-cape'
+      ? 'After the minimal cube, this builds the production one-cape compute graph, submits one 120 Hz step, and renders one cape frame. It excludes the character, cave, colliders, PMREM, post-processing, bots, animation loop, and WebGL.'
+      : 'This does not load any cloth simulation, the cave, PMREM, post-processing, or WebGL.';
+  const workloadLabel = workload === 'three-cloth'
+    ? 'THREE.JS R185 COMPUTE CLOTH'
+    : workload === 'app-cape'
+      ? 'APPLICATION GPU CAPE ONLY'
+      : 'MINIMAL CUBE';
 
   const panel = document.createElement('section');
   panel.className = 'webgpu-probe';
   panel.innerHTML = `
     <span class="webgpu-probe__eyebrow">ISOLATED DIAGNOSTIC</span>
     <h1>WebGPU lifecycle probe</h1>
-    <p><b>Workload:</b> ${workload === 'three-cloth' ? 'THREE.JS R185 COMPUTE CLOTH' : 'MINIMAL CUBE'}</p>
+    <p><b>Workload:</b> ${workloadLabel}</p>
     <p>${workloadDescription}</p>
     <p>It requests one minimal device, initializes one renderer, submits one cube frame, waits for the queue, and destroys everything.</p>
     <canvas width="320" height="180" aria-label="WebGPU probe output"></canvas>
@@ -104,6 +115,7 @@ export function runWebGpuIsolationProbe(): void {
     stages: [],
     adapterInfo: null,
     requestedFeatures: [],
+    workloadMetrics: {},
     deviceLost: null,
     uncapturedErrors: [],
     cleanup: {
@@ -351,6 +363,59 @@ export function runWebGpuIsolationProbe(): void {
         assertRunning();
         await stage('wait-for-three-reference-cloth-work', async () => await boundedGpuOperation(
           'Reference cloth queue drain',
+          activeDevice.queue.onSubmittedWorkDone(),
+        ));
+        assertRunning();
+      } else if (workload === 'app-cape') {
+        const { createApplicationCapeProbe } = await stage(
+          'load-application-cape-module',
+          async () => await import('./ApplicationCapeProbe'),
+        );
+        assertRunning();
+        const applicationCape = await stage('build-application-cape-graph', async () => (
+          createApplicationCapeProbe(initializedRenderer)
+        ));
+        disposables.push(applicationCape);
+        assertRunning();
+        await stage('submit-one-application-cape-step', async () => {
+          const computeNodes = applicationCape.prepareStep();
+          if (computeNodes.length === 0) throw new Error('Application cape graph is empty.');
+          report.workloadMetrics.applicationCapeDispatchNodes = computeNodes.length;
+          report.workloadMetrics.applicationCapeUniqueComputeNodes = new Set(computeNodes).size;
+          renderReport();
+          await boundedGpuOperation(
+            'Application cape compute submission',
+            initializedRenderer.computeAsync(computeNodes),
+          );
+        });
+        assertRunning();
+        await stage('wait-for-application-cape-compute', async () => await boundedGpuOperation(
+          'Application cape compute queue drain',
+          activeDevice.queue.onSubmittedWorkDone(),
+        ));
+        assertRunning();
+        applicationCape.usePositionOnlyMaterial();
+        await stage('compile-and-submit-application-cape-position-frame', async () => {
+          await boundedGpuOperation(
+            'Application cape position-only pipeline compilation',
+            initializedRenderer.compileAsync(applicationCape.scene, applicationCape.camera),
+          );
+          assertRunning();
+          initializedRenderer.render(applicationCape.scene, applicationCape.camera);
+        });
+        assertRunning();
+        applicationCape.useProductionMaterial();
+        await stage('compile-and-submit-application-cape-frame', async () => {
+          await boundedGpuOperation(
+            'Application cape render pipeline compilation',
+            initializedRenderer.compileAsync(applicationCape.scene, applicationCape.camera),
+          );
+          assertRunning();
+          initializedRenderer.render(applicationCape.scene, applicationCape.camera);
+        });
+        assertRunning();
+        await stage('wait-for-application-cape-work', async () => await boundedGpuOperation(
+          'Application cape queue drain',
           activeDevice.queue.onSubmittedWorkDone(),
         ));
         assertRunning();
