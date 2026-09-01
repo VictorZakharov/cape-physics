@@ -135,7 +135,7 @@
 .loading small {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 4.2rem;
-  align-items: start;
+  align-items: end;
   column-gap: 12px;
   height: 5.6em;
   margin-top: 12px;

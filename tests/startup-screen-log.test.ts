@@ -65,6 +65,7 @@ describe('on-screen startup log', () => {
     );
     expect(loadingStyles).not.toContain('width: min(240px, 62vw)');
     expect(loadingStyles).toMatch(/\.loading small\s*\{[^}]*height:\s*5\.6em;/s);
+    expect(loadingStyles).toMatch(/\.loading small\s*\{[^}]*align-items:\s*end;/s);
     expect(loadingStyles).not.toContain('min-height: 3.5em');
     expect(loadingStyles).not.toContain('height: 4.2em');
     expect(loadingStyles).toMatch(
