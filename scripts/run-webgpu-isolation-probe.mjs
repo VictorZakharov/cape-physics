@@ -163,6 +163,7 @@ try {
     ] : workload === 'app-cape' ? [
       'load-application-cape-module',
       'build-application-cape-graph',
+      'compile-application-cape-compute-pipelines',
       'submit-one-application-cape-step',
       'wait-for-application-cape-compute',
       'compile-and-submit-application-cape-position-frame',
@@ -176,7 +177,9 @@ try {
     `unexpected stages: ${lastReport.stages.map(({ name }) => name).join(', ')}`,
   );
   assert(lastReport.stages.every(({ status }) => status === 'passed'), 'a probe stage failed');
-  assert(lastReport.stages.every(({ milliseconds }) => milliseconds <= 10_500), 'a stage exceeded its deadline');
+  assert(lastReport.stages.every(({ name, milliseconds }) => (
+    milliseconds <= (name === 'compile-application-cape-compute-pipelines' ? 30_500 : 10_500)
+  )), 'a stage exceeded its deadline');
   assert(lastReport.uncapturedErrors.length === 0, 'WebGPU emitted an uncaptured error');
   if (workload === 'app-cape') {
     assert(
@@ -188,6 +191,11 @@ try {
         && lastReport.workloadMetrics.applicationCapeUniqueComputeNodes
           <= lastReport.workloadMetrics.applicationCapeDispatchNodes,
       'application cape reported invalid unique compute-node metrics',
+    );
+    assert(
+      lastReport.workloadMetrics.applicationCapeCompiledComputePipelines
+        === lastReport.workloadMetrics.applicationCapeUniqueComputeNodes,
+      'application cape did not precompile every unique compute pipeline',
     );
   }
   assert(lastReport.cleanup.rendererDisposed, 'Three.js renderer was not disposed');

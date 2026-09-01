@@ -144,6 +144,8 @@ No probe requests a GPU before its button is clicked. Each stage has a deadline,
 
 The local CDP harness defaults to the application-cape boundary. Select another workload with `CAPE_PROBE_WORKLOAD`. Browser harnesses use Chrome only because Edge profiles can retain Windows-protected database locks after exit; there is no Edge fallback. Set `CAPE_BROWSER_PATH` to choose a specific Chrome executable. Browser profiles and temporary data live under repository-local `artifacts/.tmp/` and are removed in `finally`.
 
+Three 0.185.1 synchronously creates compute pipelines on the first dispatch. Until Three r186 is released, `WebGpuComputeWarmup` backports the merged upstream `compileComputeAsync()` behavior for the production cape: its 17 unique kernels are built with `createComputePipelineAsync()`, one at a time, with an animation-frame yield and real loading progress between kernels. The first physics step therefore submits already-compiled pipelines instead of placing seconds of cold compilation behind the first queue fence.
+
 ## Project structure
 
 - `src/physics` — cloth integration, constraints, body/world contact, face contact, and self-collision

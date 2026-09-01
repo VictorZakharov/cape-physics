@@ -397,12 +397,6 @@ export class CapeDemo {
       await this.loading.update(0.59, 'Loading the WebGPU cloth solver');
       const { GpuCapeSimulation } = await import('./physics/GpuCapeSimulation');
       await this.loading.update(0.62, 'Allocating WebGPU cloth buffers');
-      await this.loading.beginLongStage(
-        0.64,
-        0.72,
-        'Linking WebGPU cloth compute passes',
-        2_500,
-      );
       this.capeFactory = (anchors, settings, appearance) => (
         new GpuCapeSimulation(gpuRenderer, anchors, settings, appearance)
       );
@@ -417,6 +411,33 @@ export class CapeDemo {
       this.customizationSettings,
       CRIMSON_CAPE_PALETTE,
     );
+    if (!(this.cape instanceof CapeSimulation)) {
+      this.startupRecovery.stage('compile-webgpu-cloth-compute-pipelines');
+      await this.loading.update(0.64, 'Preparing WebGPU cloth kernels');
+      const { compileWebGpuComputePipelines } = await import('./core/WebGpuComputeWarmup');
+      await compileWebGpuComputePipelines(
+        gpuRenderer!,
+        this.cape.getComputePipelineNodes(),
+        {
+          onPipelineStart: async ({ loaded, total, name }) => {
+            const startProgress = 0.64 + loaded / total * 0.08;
+            const endProgress = 0.64 + (loaded + 1) / total * 0.08;
+            await this.loading.beginLongStage(
+              startProgress,
+              endProgress,
+              `Compiling WebGPU cloth kernel ${loaded + 1}/${total}: ${name}`,
+              4_000,
+            );
+          },
+          onProgress: async ({ loaded, total, name }) => {
+            await this.loading.update(
+              0.64 + loaded / total * 0.08,
+              `Compiled WebGPU cloth kernel ${loaded}/${total}: ${name}`,
+            );
+          },
+        },
+      );
+    }
     this.scene.add(this.cape.mesh);
     await this.loading.update(0.73, 'Rigging movement and camera');
     this.configureCharacterRenderObjects(this.character, this.cape);

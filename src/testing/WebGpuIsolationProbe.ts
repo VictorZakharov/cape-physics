@@ -4,6 +4,7 @@ import {
   readWebGpuIsolationProbeWorkload,
   type WebGpuIsolationProbeWorkload,
 } from './WebGpuIsolationProbeQuery';
+import { compileWebGpuComputePipelines } from '../core/WebGpuComputeWarmup';
 
 const PROBE_TIMEOUT_MS = 10_000;
 
@@ -49,12 +50,16 @@ function describeError(error: unknown): string {
   return typeof error === 'string' ? error : JSON.stringify(error);
 }
 
-async function withDeadline<T>(label: string, operation: Promise<T>): Promise<T> {
+async function withDeadline<T>(
+  label: string,
+  operation: Promise<T>,
+  timeoutMilliseconds = PROBE_TIMEOUT_MS,
+): Promise<T> {
   let handle = 0;
   const timeout = new Promise<never>((_resolve, reject) => {
     handle = window.setTimeout(() => {
-      reject(new Error(`${label} exceeded ${PROBE_TIMEOUT_MS} ms`));
-    }, PROBE_TIMEOUT_MS);
+      reject(new Error(`${label} exceeded ${timeoutMilliseconds} ms`));
+    }, timeoutMilliseconds);
   });
   try {
     return await Promise.race([operation, timeout]);
@@ -171,9 +176,19 @@ export function runWebGpuIsolationProbe(): void {
   const assertRunning = (): void => {
     if (stopping) throw new Error('Probe stopped.');
   };
-  const boundedGpuOperation = async <T>(label: string, operation: Promise<T>): Promise<T> => {
-    if (!unexpectedDeviceLoss) return await withDeadline(label, operation);
-    return await withDeadline(label, Promise.race([operation, unexpectedDeviceLoss]));
+  const boundedGpuOperation = async <T>(
+    label: string,
+    operation: Promise<T>,
+    timeoutMilliseconds = PROBE_TIMEOUT_MS,
+  ): Promise<T> => {
+    if (!unexpectedDeviceLoss) {
+      return await withDeadline(label, operation, timeoutMilliseconds);
+    }
+    return await withDeadline(
+      label,
+      Promise.race([operation, unexpectedDeviceLoss]),
+      timeoutMilliseconds,
+    );
   };
   const cleanup = (): Promise<void> => {
     if (cleanupPromise) return cleanupPromise;
@@ -377,11 +392,33 @@ export function runWebGpuIsolationProbe(): void {
         ));
         disposables.push(applicationCape);
         assertRunning();
+        const pipelineNodes = applicationCape.getComputePipelineNodes();
+        report.workloadMetrics.applicationCapeUniqueComputeNodes = pipelineNodes.length;
+        await stage('compile-application-cape-compute-pipelines', async () => {
+          await boundedGpuOperation(
+            'Application cape compute pipeline compilation',
+            compileWebGpuComputePipelines(
+              initializedRenderer,
+              pipelineNodes,
+              {
+                onPipelineStart: ({ loaded, total, name }) => {
+                  status.textContent = `Compiling cape kernel ${loaded + 1}/${total}: ${name}`;
+                  renderReport();
+                },
+                onProgress: ({ loaded }) => {
+                  report.workloadMetrics.applicationCapeCompiledComputePipelines = loaded;
+                  renderReport();
+                },
+              },
+            ),
+            30_000,
+          );
+        });
+        assertRunning();
         await stage('submit-one-application-cape-step', async () => {
           const computeNodes = applicationCape.prepareStep();
           if (computeNodes.length === 0) throw new Error('Application cape graph is empty.');
           report.workloadMetrics.applicationCapeDispatchNodes = computeNodes.length;
-          report.workloadMetrics.applicationCapeUniqueComputeNodes = new Set(computeNodes).size;
           renderReport();
           await boundedGpuOperation(
             'Application cape compute submission',

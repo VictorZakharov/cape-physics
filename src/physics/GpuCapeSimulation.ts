@@ -597,6 +597,11 @@ export class GpuCapeSimulation {
     }], worldColliders, time);
   }
 
+  /** Unique production kernels for asynchronous startup compilation. */
+  public getComputePipelineNodes(): THREE.ComputeNode[] {
+    return [...new Set(this.computeSequence)];
+  }
+
   /**
    * Updates every active cape lane while retaining one precompiled compute
    * graph. One workgroup handles one cape, so bot activation never constructs

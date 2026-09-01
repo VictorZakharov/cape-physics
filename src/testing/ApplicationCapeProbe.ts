@@ -6,6 +6,7 @@ import type { CapeAnchors } from '../player/Character';
 export interface ApplicationCapeProbe {
   readonly scene: THREE.Scene;
   readonly camera: THREE.PerspectiveCamera;
+  getComputePipelineNodes(): THREE.ComputeNode[];
   prepareStep(): THREE.ComputeNode[];
   usePositionOnlyMaterial(): void;
   useProductionMaterial(): void;
@@ -48,6 +49,7 @@ export function createApplicationCapeProbe(
   return {
     scene,
     camera,
+    getComputePipelineNodes: () => simulation.getComputePipelineNodes(),
     prepareStep: () => simulation.prepareStep(
       PHYSICS_STEP,
       anchors,

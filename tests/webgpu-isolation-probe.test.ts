@@ -55,6 +55,7 @@ describe('isolated WebGPU diagnostic probe', () => {
     const source = await Bun.file('src/testing/ApplicationCapeProbe.ts').text();
     expect(source).toContain("import { GpuCapeSimulation }");
     expect(source).toContain('simulation.prepareStep(');
+    expect(source).toContain('simulation.getComputePipelineNodes()');
     expect(source).toContain('usePositionOnlyMaterial');
     expect(source).toContain('useProductionMaterial');
     expect(source).not.toContain('CapeDemo');
@@ -63,5 +64,15 @@ describe('isolated WebGPU diagnostic probe', () => {
     expect(source).not.toContain('PMREMGenerator');
     expect(source).not.toContain('RenderPipeline');
     expect(source).not.toContain('PostProcessing');
+  });
+
+  test('precompiles every production compute kernel before the first cape submission', async () => {
+    const source = await Bun.file('src/testing/WebGpuIsolationProbe.ts').text();
+    const compileStage = source.indexOf("stage('compile-application-cape-compute-pipelines'");
+    const submitStage = source.indexOf("stage('submit-one-application-cape-step'");
+    expect(source).toContain('compileWebGpuComputePipelines(');
+    expect(source).toContain('applicationCapeCompiledComputePipelines');
+    expect(compileStage).toBeGreaterThan(-1);
+    expect(submitStage).toBeGreaterThan(compileStage);
   });
 });
