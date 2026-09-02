@@ -6,6 +6,8 @@ export interface GpuCapeDispatchKernels<T> {
   readonly constrainScratch: T;
   readonly scratchToPosition: T;
   readonly positionToScratch: T;
+  readonly scratchToPositionWithoutContacts: T;
+  readonly positionToScratchWithoutContacts: T;
   readonly hardScratchToPosition: T;
   readonly hardPositionToScratch: T;
   readonly finalSelfPositionToScratch: T;
@@ -35,9 +37,21 @@ export function createGpuCapeDispatchSchedule<T>(
 
   let currentBufferIsPosition = false;
   for (let iteration = 0; iteration < solverIterations; iteration += 1) {
+    // Prediction gets an immediate collision solve. The six middle structural
+    // passes only copy the ping-pong state; the last three restore full
+    // contact cadence before the authoritative reconciliation sequence below.
+    // Re-running the complete cave/body/world projector in every middle pass
+    // was redundant and amplified fixed-step catch-up work on Apple GPUs.
+    const solveContacts = iteration === 0 || iteration >= solverIterations - 3;
     sequence.push(
       currentBufferIsPosition ? kernels.constrainPosition : kernels.constrainScratch,
-      currentBufferIsPosition ? kernels.positionToScratch : kernels.scratchToPosition,
+      currentBufferIsPosition
+        ? solveContacts
+          ? kernels.positionToScratch
+          : kernels.positionToScratchWithoutContacts
+        : solveContacts
+          ? kernels.scratchToPosition
+          : kernels.scratchToPositionWithoutContacts,
     );
     currentBufferIsPosition = !currentBufferIsPosition;
     if (iteration >= solverIterations - 3) {

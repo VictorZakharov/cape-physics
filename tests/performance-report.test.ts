@@ -4,7 +4,7 @@ import { formatPerformanceReport } from '../src/core/PerformanceReport';
 
 describe('performance report', () => {
   test('formats the rolling FPS, renderer, quality, and scene diagnostics', () => {
-    const report = formatPerformanceReport({
+    const input = {
       capturedAt: '2026-08-25T18:00:00.000Z',
       performance: {
         averageFps: 143.2,
@@ -104,7 +104,8 @@ describe('performance report', () => {
         platform: 'Test OS',
         userAgent: 'Test Browser',
       },
-    });
+    } as const;
+    const report = formatPerformanceReport(input);
 
     expect(report).toContain('Cape Physics performance report');
     expect(report).toContain('Rendered FPS: 143.20 average | 118.40 1% low');
@@ -122,6 +123,25 @@ describe('performance report', () => {
     expect(report).toContain('sampled 1/32 active steps (113 samples)');
     expect(report).toContain('main-thread render submission is not GPU completion');
     expect(report).not.toContain('undefined');
+
+    const gpuReport = formatPerformanceReport({
+      ...input,
+      renderer: {
+        ...input.renderer,
+        backend: 'WebGPU',
+        actual: 'webgpu',
+        fallback: false,
+      },
+      capeSolver: {
+        ...input.capeSolver,
+        implementation: 'webgpu-compute',
+        dispatchesPerStep: 46,
+        constraintColorBatches: 17,
+      },
+    });
+    expect(gpuReport).toContain('10 PBD iterations with 17 constraint colors');
+    expect(gpuReport).toContain('46 dispatches in 1 compute submission/step');
+    expect(gpuReport).not.toContain('25 dispatches');
   });
 
   test('reports WebGL bot worker utilization separately from player physics', () => {

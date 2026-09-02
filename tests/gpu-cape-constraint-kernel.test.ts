@@ -8,9 +8,10 @@ const source = readFileSync(
 );
 
 describe('WebGPU cape structural constraint kernel', () => {
-  test('retains the ordered single-invocation Gauss-Seidel stream', () => {
-    expect(source).toContain('If(constraintIndex.equal(uint(0))');
-    expect(source).toContain('end: uint(resources.constraintCount)');
+  test('uses race-free parallel Gauss-Seidel color batches', () => {
+    expect(source).toContain('for (const batch of GPU_CAPE_CONSTRAINT_COLOR_BATCHES)');
+    expect(source).toContain('If(constraintIndex.lessThan(uint(batch.count))');
+    expect(source).toContain('uint(batch.offset).add(constraintIndex)');
     expect(source).toContain(".toVar('orderedConstraintCorrection')");
   });
 

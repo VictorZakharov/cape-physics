@@ -21,7 +21,10 @@ import {
 } from './CapeRestShape';
 import { FOLD_RELAXATION, MAXIMUM_LOCAL_UPWARD_FOLD } from './ClothFoldGuard';
 import { CLOTH_THICKNESS } from './ClothSelfCollision';
-import { GPU_CAPE_TOPOLOGY_METADATA_STRIDE } from './GpuCapeTopology';
+import {
+  GPU_CAPE_CONSTRAINT_COLOR_BATCHES,
+  GPU_CAPE_TOPOLOGY_METADATA_STRIDE,
+} from './GpuCapeTopology';
 
 export interface GpuCapeConstraintResources {
   readonly activeCapeCountUniform: THREE.UniformNode<'uint', number>;
@@ -30,7 +33,6 @@ export interface GpuCapeConstraintResources {
   readonly previousBuffer: THREE.StorageBufferNode<'vec4'>;
   readonly stiffnessUniform: THREE.UniformNode<'float', number>;
   readonly topologyBuffer: THREE.StorageBufferNode<'vec4'>;
-  readonly constraintCount: number;
   readonly packedParticleCount: number;
   readonly particleCount: number;
 }
@@ -50,20 +52,16 @@ export function createGpuCapeConstraintKernel(
     const constraintIndex = localId.x;
     const capeBase = capeIndex.mul(uint(resources.particleCount));
     If(capeIndex.lessThan(resources.activeCapeCountUniform), () => {
-    // This small fixed grid spends the overwhelming majority of its GPU
-    // time in collision work, not 1,626 distance links. One invocation can
-    // therefore reproduce WebGL's exact row-major Gauss-Seidel stream while
-    // the expensive self/body/world phases below remain parallel.
-    If(constraintIndex.equal(uint(0)), () => {
-      Loop(
-        {
-          start: uint(0),
-          end: uint(resources.constraintCount),
-          type: 'uint',
-          condition: '<',
-        },
-        ({ i }) => {
-          const definition = resources.constraintBuffer.element(i);
+    // Each batch is an edge color: no two constraints in it write the same
+    // particle. Solve a color in parallel, then expose its corrections to the
+    // next color. This is the race-free parallel Gauss-Seidel schedule GPUs
+    // are designed for; the previous single invocation serialized all 1,626
+    // links and made every 120 Hz catch-up step disproportionately expensive.
+    for (const batch of GPU_CAPE_CONSTRAINT_COLOR_BATCHES) {
+      If(constraintIndex.lessThan(uint(batch.count)), () => {
+          const definition = resources.constraintBuffer.element(
+            uint(batch.offset).add(constraintIndex),
+          );
           const firstIndex = uint(definition.x);
           const secondIndex = uint(definition.y);
           const firstGlobalIndex = capeBase.add(firstIndex);
@@ -89,10 +87,9 @@ export function createGpuCapeConstraintKernel(
             buffer.element(firstGlobalIndex).assign(vec4(first, firstState.w));
             buffer.element(secondGlobalIndex).assign(vec4(second, secondState.w));
           });
-        },
-      );
-    });
-    storageBarrier();
+      });
+      storageBarrier();
+    }
 
     if (includeSelfCollision) {
       const rotatingParticleCount = uint(resources.particleCount - 1);
