@@ -26,11 +26,13 @@ describe('ClothBodyCollision', () => {
       expect(Math.hypot(position.x, position.y)).toBeGreaterThan(collider.radius);
     }
     expect(collision.getMaximumPenetration([collider], back)).toBeGreaterThan(0.06);
+    expect(collision.getMaximumGeometricPenetration([collider], back)).toBeGreaterThan(0.06);
 
     for (let iteration = 0; iteration < 12; iteration += 1) {
       collision.solve([collider], back);
     }
 
     expect(collision.getMaximumPenetration([collider], back)).toBeLessThan(0.002);
+    expect(collision.getMaximumGeometricPenetration([collider], back)).toBeLessThan(0.002);
   });
 });

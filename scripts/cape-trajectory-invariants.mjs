@@ -3,6 +3,60 @@ export const MIN_TRAVELLING_WAVE_RATIO = 0.7;
 export const MIN_TRAVELLING_WAVE_TWIST = 0.04;
 export const MIN_TRAVELLING_WAVE_SHAPE_CHANGE_RATIO = 0.7;
 export const MIN_TRAVELLING_WAVE_SHAPE_CHANGE = 0.000_05;
+export const MAX_BACKWARD_GEOMETRIC_BODY_PENETRATION = 0.025;
+export const MAX_BACKWARD_BOOT_PENETRATION = 0.004;
+export const MAX_BACKWARD_TRANSITION_PARTICLE_STEP = 0.11;
+export const MAX_BACKWARD_TRANSITION_PARTICLE_ACCELERATION = 0.11;
+export const MAX_BACKWARD_TRANSITION_UPWARD_STEP = 0.025;
+
+export function validateBackwardStartContact({
+  maximumGeometricBodyPenetration,
+  maximumBootPenetration,
+  transitionMaximumParticleStep,
+  transitionMaximumParticleAcceleration,
+  transitionMaximumUpwardParticleStep,
+}) {
+  const checks = [
+    [
+      maximumGeometricBodyPenetration,
+      MAX_BACKWARD_GEOMETRIC_BODY_PENETRATION,
+      'cloth triangles crossed the animated body',
+      'm',
+    ],
+    [
+      maximumBootPenetration,
+      MAX_BACKWARD_BOOT_PENETRATION,
+      'crossed a boot collision envelope',
+      'm',
+    ],
+    [
+      transitionMaximumParticleStep,
+      MAX_BACKWARD_TRANSITION_PARTICLE_STEP,
+      'wake-up stepped',
+      'm',
+    ],
+    [
+      transitionMaximumParticleAcceleration,
+      MAX_BACKWARD_TRANSITION_PARTICLE_ACCELERATION,
+      'wake-up accelerated',
+      'm/frame²',
+    ],
+    [
+      transitionMaximumUpwardParticleStep,
+      MAX_BACKWARD_TRANSITION_UPWARD_STEP,
+      'reversed the falling cape upward',
+      'm/frame',
+    ],
+  ];
+  for (const [value, maximum, description, unit] of checks) {
+    if (Number.isFinite(value) && value <= maximum) continue;
+    const formatted = Number.isFinite(value) ? value.toFixed(4) : String(value);
+    throw new Error(
+      `Cape trajectory audit failed: backward-start WebGPU ${description} by `
+        + `${formatted} ${unit}`,
+    );
+  }
+}
 
 /**
  * Measures temporal cloth deformation rather than whole-cape travel. The

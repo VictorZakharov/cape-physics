@@ -113,6 +113,7 @@ type CapeTrajectoryScenario =
   | 'raised-drop'
   | 'falling-forward-start'
   | 'forward-start'
+  | 'backward-start'
   | 'forward-stop'
   | 'reverse'
   | 'back-and-forth'
@@ -1169,7 +1170,7 @@ export class CapeDemo {
     frames?: number;
     sampleEvery?: number;
   }): Promise<CapeTrajectoryReport> {
-    const frameCount = THREE.MathUtils.clamp(Math.round(frames), 1, 360);
+    const frameCount = THREE.MathUtils.clamp(Math.round(frames), 1, 600);
     const sampleInterval = THREE.MathUtils.clamp(Math.round(sampleEvery), 1, 12);
     this.resetHarnessPlayer();
     this.fixedTime = 0;
@@ -1190,6 +1191,10 @@ export class CapeDemo {
       if (scenario !== 'raised-drop') {
         if (scenario === 'forward-start' || scenario === 'falling-forward-start') {
           this.input.setVirtualMovement(0, frame >= 30 ? 1 : 0);
+        } else if (scenario === 'backward-start') {
+          // Reproduce the reported wake-up case from a fully settled drape,
+          // not merely from the authored initial mesh.
+          this.input.setVirtualMovement(0, frame >= 384 ? -1 : 0);
         } else if (scenario === 'forward-stop' || scenario === 'lightweight-stop') {
           this.input.setVirtualMovement(0, frame >= 30 && frame < 90 ? 1 : 0);
         } else if (scenario === 'reverse') {

@@ -18,24 +18,24 @@ import {
 
 export interface GpuCapeReconciliationResources {
   readonly activeCapeCountUniform: THREE.UniformNode<'uint', number>;
-  readonly materialContactFlagBuffer: THREE.StorageBufferNode<'uint'>;
+  readonly worldContactFlagBuffer: THREE.StorageBufferNode<'uint'>;
   readonly positionBuffer: THREE.StorageBufferNode<'vec4'>;
   readonly predictedVerticalBuffer: THREE.StorageBufferNode<'float'>;
   readonly previousBuffer: THREE.StorageBufferNode<'vec4'>;
   readonly packedParticleCount: number;
   readonly particleCount: number;
-  readonly maximumCapeCount: number;
 }
 
 export function createGpuCapeMaterialContactFlagResetKernel(
   resources: GpuCapeReconciliationResources,
 ): THREE.ComputeNode {
   return Fn(() => {
-    const capeIndex = instanceIndex;
+    const index = instanceIndex;
+    const capeIndex = index.div(uint(resources.particleCount));
     If(capeIndex.lessThan(resources.activeCapeCountUniform), () => {
-      atomicStore(resources.materialContactFlagBuffer.element(capeIndex), uint(0));
+      atomicStore(resources.worldContactFlagBuffer.element(index), uint(0));
     });
-  })().compute(resources.maximumCapeCount).setName('Cape reset material contact flag');
+  })().compute(resources.packedParticleCount).setName('Cape reset material contact flags');
 }
 
 export function createGpuCapeBodyContactReconciliationKernel(
@@ -70,8 +70,8 @@ export function createGpuCapeBodyContactReconciliationKernel(
 /**
  * Match CapeSimulation.reconcileProjectionVerticalVelocity. If physical
  * prediction was falling, a later positional length repair must not become
- * upward Verlet velocity. Material contact disables the phase for the whole
- * step because world/body projection may legitimately need upward motion.
+ * upward Verlet velocity. Only world support disables the phase; horizontal
+ * animated-body contact must not cancel an already-falling cape.
  */
 export function createGpuCapeProjectionVerticalVelocityReconciliationKernel(
   resources: GpuCapeReconciliationResources,
@@ -81,12 +81,12 @@ export function createGpuCapeProjectionVerticalVelocityReconciliationKernel(
     const capeIndex = index.div(uint(resources.particleCount));
     const localIndex = index.mod(uint(resources.particleCount));
     If(capeIndex.lessThan(resources.activeCapeCountUniform), () => {
-    const hasMaterialContact = atomicLoad(
-      resources.materialContactFlagBuffer.element(capeIndex),
-    ).greaterThan(uint(0));
+    const hasWorldContact = atomicLoad(
+      resources.worldContactFlagBuffer.element(index),
+    ).bitAnd(uint(1)).greaterThan(uint(0));
     If(
       localIndex.greaterThanEqual(uint(CAPE.columns))
-        .and(hasMaterialContact.not())
+        .and(hasWorldContact.not())
         .and(resources.predictedVerticalBuffer.element(index).lessThan(0)),
       () => {
         const position = resources.positionBuffer.element(index);

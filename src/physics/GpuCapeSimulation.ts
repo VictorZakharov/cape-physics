@@ -121,7 +121,7 @@ export class GpuCapeSimulation {
   private readonly scratchBuffer;
   private readonly previousBuffer;
   private readonly predictedVerticalBuffer;
-  private readonly materialContactFlagBuffer;
+  private readonly worldContactFlagBuffer;
   private readonly topologyBuffer;
   private readonly constraintBuffer;
   private readonly constraintCount: number;
@@ -207,7 +207,7 @@ export class GpuCapeSimulation {
     this.scratchBuffer = instancedArray(packedInitialState.slice(), 'vec4');
     this.previousBuffer = instancedArray(packedInitialState.slice(), 'vec4');
     this.predictedVerticalBuffer = instancedArray(PACKED_PARTICLE_COUNT, 'float');
-    this.materialContactFlagBuffer = instancedArray(MAXIMUM_GPU_CAPES, 'uint').toAtomic();
+    this.worldContactFlagBuffer = instancedArray(PACKED_PARTICLE_COUNT, 'uint').toAtomic();
     const topology = createGpuCapeTopology(initialState);
     this.topologyBuffer = instancedArray(topology.packed, 'vec4');
     this.constraintBuffer = instancedArray(topology.orderedConstraints, 'vec4');
@@ -236,13 +236,12 @@ export class GpuCapeSimulation {
 
     const reconciliationResources = {
       activeCapeCountUniform: this.activeCapeCountUniform,
-      materialContactFlagBuffer: this.materialContactFlagBuffer,
+      worldContactFlagBuffer: this.worldContactFlagBuffer,
       positionBuffer: this.positionBuffer,
       predictedVerticalBuffer: this.predictedVerticalBuffer,
       previousBuffer: this.previousBuffer,
       packedParticleCount: PACKED_PARTICLE_COUNT,
       particleCount: PARTICLE_COUNT,
-      maximumCapeCount: MAXIMUM_GPU_CAPES,
     };
     const predictionResources = {
       activeCapeCountUniform: this.activeCapeCountUniform,
@@ -275,17 +274,15 @@ export class GpuCapeSimulation {
       particleCount: PARTICLE_COUNT,
     };
     const virtualBodyContactResources = {
-      anchorStateUniform: this.anchorStateUniform,
       bodyBuffer: this.bodyBuffer,
       bodyStateUniform: this.bodyStateUniform,
-      materialContactFlagBuffer: this.materialContactFlagBuffer,
       positionBuffer: this.positionBuffer,
       previousBuffer: this.previousBuffer,
       particleCount: PARTICLE_COUNT,
     };
     const rockFaceResources = {
       caveShellBuffer: this.caveShellBuffer,
-      materialContactFlagBuffer: this.materialContactFlagBuffer,
+      worldContactFlagBuffer: this.worldContactFlagBuffer,
       positionBuffer: this.positionBuffer,
       previousBuffer: this.previousBuffer,
       rockBuffer: this.rockBuffer,
@@ -294,11 +291,10 @@ export class GpuCapeSimulation {
       particleCount: PARTICLE_COUNT,
     };
     this.projectionResources = {
-      anchorStateUniform: this.anchorStateUniform,
       bodyBuffer: this.bodyBuffer,
       bodyStateUniform: this.bodyStateUniform,
       caveShellBuffer: this.caveShellBuffer,
-      materialContactFlagBuffer: this.materialContactFlagBuffer,
+      worldContactFlagBuffer: this.worldContactFlagBuffer,
       positionBuffer: this.positionBuffer,
       previousBuffer: this.previousBuffer,
       rockBuffer: this.rockBuffer,
@@ -374,9 +370,9 @@ export class GpuCapeSimulation {
       false,
       true,
     );
-    // Animated character contact stays particle-to-capsule inside the
-    // projection kernels. A single final virtual-particle pass covers the
-    // triangle interiors only when all three real vertices are clear.
+    // Exact triangle-interior contact runs during the final structural
+    // iterations, matching WebGL's cadence, and once on the authoritative
+    // render buffer after reconciliation.
     const positionVirtualBodyContacts = this.createFaceSweepKernel(
       createGpuCapeVirtualBodyContactColorFunction(
         virtualBodyContactResources,
@@ -384,6 +380,14 @@ export class GpuCapeSimulation {
         'Position',
       ),
       'Cape virtual body contacts',
+    );
+    const scratchVirtualBodyContacts = this.createFaceSweepKernel(
+      createGpuCapeVirtualBodyContactColorFunction(
+        virtualBodyContactResources,
+        this.scratchBuffer,
+        'Scratch',
+      ),
+      'Cape virtual body contacts in scratch',
     );
     const positionRockFaces = this.createFaceSweepKernel(
       createGpuCapeRockFaceColorFunction(
@@ -433,6 +437,7 @@ export class GpuCapeSimulation {
       finalSelfPositionToScratch,
       finalContactScratchToPosition,
       positionVirtualBodyContacts,
+      scratchVirtualBodyContacts,
       positionRockFaces,
       positionSweptRockFaces,
       scratchRockFaces,
@@ -1129,8 +1134,9 @@ export class GpuCapeSimulation {
     back: THREE.Vector3,
   ): void {
     const bodyData = this.bodyBuffer.value.array as Float32Array;
+    const bodyState = this.bodyStateValues[capeIndex]!;
     packGpuCapeBodyColliders(bodyData, capeIndex, colliders, back);
-    this.bodyStateValues[capeIndex]!.set(back.x, back.y, back.z, colliders.length);
+    bodyState.set(back.x, back.y, back.z, colliders.length);
     this.bodyBuffer.value.needsUpdate = true;
   }
 

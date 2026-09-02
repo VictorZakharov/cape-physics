@@ -100,6 +100,9 @@ export interface BodyPenetrationDiagnostics {
   readonly point: number;
   readonly face: number;
   readonly maximum: number;
+  readonly geometricPoint: number;
+  readonly geometricFace: number;
+  readonly geometricMaximum: number;
 }
 
 export class CapeContactSolver {
@@ -363,15 +366,31 @@ export class CapeContactSolver {
   ): BodyPenetrationDiagnostics {
     this.prepareBodyColliders(colliders, back);
     let point = 0;
+    let geometricPoint = 0;
     for (let index = 0; index < this.positions.length; index += 1) {
       const position = this.positions[index];
       if (!position) continue;
       for (const collider of this.preparedBodyColliders) {
         point = Math.max(point, this.getCapsulePenetration(position, collider, back));
+        geometricPoint = Math.max(
+          geometricPoint,
+          this.getCapsulePenetration(position, collider, back, position, 0, true),
+        );
       }
     }
     const face = this.bodyFaceCollision.getMaximumPenetration(colliders, back);
-    return { point, face, maximum: Math.max(point, face) };
+    const geometricFace = this.bodyFaceCollision.getMaximumGeometricPenetration(
+      colliders,
+      back,
+    );
+    return {
+      point,
+      face,
+      maximum: Math.max(point, face),
+      geometricPoint,
+      geometricFace,
+      geometricMaximum: Math.max(geometricPoint, geometricFace),
+    };
   }
 
   public getMaximumEnvironmentPenetration(colliders: readonly WorldCollider[]): number {
@@ -514,6 +533,7 @@ export class CapeContactSolver {
     back: THREE.Vector3,
     preferredPosition: THREE.Vector3 = position,
     preferredTopologySide = 0,
+    geometric = false,
   ): number {
     if (position.y < prepared.minimumY || position.y > prepared.maximumY) return 0;
     const fromStartX = position.x - prepared.startX;
@@ -550,6 +570,16 @@ export class CapeContactSolver {
     if (lateralSquared >= prepared.lateralRadius * prepared.lateralRadius) return 0;
     const normalizedLateralSquared = lateralSquared
       / (prepared.lateralRadius * prepared.lateralRadius);
+    if (geometric) {
+      const normalizedDistanceSquared = normalizedLateralSquared
+        + depth * depth / (prepared.depthRadius * prepared.depthRadius);
+      if (normalizedDistanceSquared >= 1) return 0;
+      const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ);
+      if (normalizedDistanceSquared < 0.000_001 || distance < 0.000_001) {
+        return Math.min(prepared.lateralRadius, prepared.depthRadius);
+      }
+      return distance * (1 / Math.sqrt(normalizedDistanceSquared) - 1);
+    }
     const surfaceDepth = prepared.depthRadius
       * Math.sqrt(1 - normalizedLateralSquared);
     const backCorrection = Math.max(0, surfaceDepth - depth);

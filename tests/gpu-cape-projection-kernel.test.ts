@@ -11,7 +11,7 @@ describe('WebGPU cape particle projection kernel', () => {
   test('retains the authored projection phase ordering', () => {
     const self = source.indexOf('if (includeSelfCollision)');
     const fold = source.indexOf('if (includeFoldGuard)');
-    const body = source.indexOf(".toVar('bodyCorrectionThisPass')");
+    const body = source.indexOf(".toVar('bodyCorrection')");
     const world = source.indexOf(".toVar('worldContactStart')");
     expect(fold).toBeGreaterThan(0);
     expect(self).toBeGreaterThan(fold);
@@ -19,9 +19,9 @@ describe('WebGPU cape particle projection kernel', () => {
     expect(world).toBeGreaterThan(body);
   });
 
-  test('retains material-contact signaling and velocity-neutral world repair', () => {
-    expect(source).toContain('BODY_CONTACT_RECONCILIATION_START');
-    expect(source).toContain('atomicOr(resources.materialContactFlagBuffer.element(capeIndex)');
+  test('signals world support per particle and keeps its repair velocity-neutral', () => {
+    expect(source).toContain('atomicOr(resources.worldContactFlagBuffer.element(index)');
+    expect(source).not.toContain('worldContactFlagBuffer.element(capeIndex)');
     expect(source).toContain('previousPosition.addAssign(worldContactCorrection)');
     expect(source).toContain('rockCorrectionUsed.add(select(rockSweepResolved, 1, 0))');
   });

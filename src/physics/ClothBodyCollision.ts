@@ -93,6 +93,41 @@ export class ClothBodyCollision {
     return maximum;
   }
 
+  public getMaximumGeometricPenetration(
+    colliders: readonly CapsuleCollider[],
+    back: THREE.Vector3,
+  ): number {
+    this.updateBounds();
+    let maximum = 0;
+    this.forEachCapsuleSample(colliders, (center, lateralRadius, depthRadius) => {
+      const boundsRadius = Math.max(lateralRadius, depthRadius);
+      if (!this.intersectsBounds(center, boundsRadius)) return;
+      this.forEachTriangle(center.y, boundsRadius, (first, second, third) => {
+        const firstPoint = this.positions[first];
+        const secondPoint = this.positions[second];
+        const thirdPoint = this.positions[third];
+        if (!firstPoint || !secondPoint || !thirdPoint) return;
+        if (!this.intersectsTriangleBounds(
+          firstPoint,
+          secondPoint,
+          thirdPoint,
+          center,
+          boundsRadius,
+        )) return;
+        this.triangle.set(firstPoint, secondPoint, thirdPoint);
+        this.triangle.closestPointToPoint(center, this.closestPoint);
+        maximum = Math.max(maximum, this.getGeometricPenetration(
+          this.closestPoint,
+          center,
+          lateralRadius,
+          depthRadius,
+          back,
+        ));
+      });
+    });
+    return maximum;
+  }
+
   private solveTriangle(
     firstIndex: number,
     secondIndex: number,
@@ -241,6 +276,26 @@ export class ClothBodyCollision {
     const lateralProjection = this.delta.dot(this.contactNormal);
     const lateralCorrection = lateralBoundary - lateralProjection;
     return lateralCorrection > 0 ? lateralCorrection : backCorrection;
+  }
+
+  private getGeometricPenetration(
+    point: THREE.Vector3,
+    center: THREE.Vector3,
+    lateralRadius: number,
+    depthRadius: number,
+    back: THREE.Vector3,
+  ): number {
+    this.delta.copy(point).sub(center);
+    const depth = this.delta.dot(back);
+    const lateralSquared = Math.max(0, this.delta.lengthSq() - depth * depth);
+    const normalizedDistanceSquared = lateralSquared / (lateralRadius * lateralRadius)
+      + depth * depth / (depthRadius * depthRadius);
+    if (normalizedDistanceSquared >= 1) return 0;
+    const distance = this.delta.length();
+    if (normalizedDistanceSquared < 0.000_001 || distance < 0.000_001) {
+      return Math.min(lateralRadius, depthRadius);
+    }
+    return distance * (1 / Math.sqrt(normalizedDistanceSquared) - 1);
   }
 
   private forEachCapsuleSample(
