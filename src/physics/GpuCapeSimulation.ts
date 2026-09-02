@@ -23,7 +23,10 @@ import { createCapeFabricTextures } from '../graphics/proceduralTextures';
 import type { CapeAnchors } from '../player/Character';
 import type { CapsuleCollider, WorldCollider } from './colliders';
 import { CAPE_DRAG_PER_SECOND } from './CapeAerodynamics';
-import { createGpuCapeTopology } from './GpuCapeTopology';
+import {
+  createGpuCapeTopology,
+  GPU_CAPE_CONSTRAINT_COLOR_BATCHES,
+} from './GpuCapeTopology';
 import { CapeSimulation } from './CapeSimulation';
 import {
   BOT_CYAN_CAPE_PALETTE,
@@ -102,9 +105,9 @@ const PACKED_PARTICLE_COUNT = PARTICLE_COUNT * MAXIMUM_GPU_CAPES;
  * WebGPU cape path. Particle state never leaves storage buffers while the
  * game is running; readback is reserved for explicit harness diagnostics.
  *
- * Distance constraints use WebGL's exact shared row-major Gauss-Seidel stream
- * so projection order and Verlet velocity agree between backends. Expensive
- * self, body, cave, and formation collision work remains parallel on the GPU.
+ * Distance constraints use a race-free edge-colored Gauss-Seidel stream so
+ * independent links solve in parallel while each color observes the preceding
+ * color. Self, body, cave, and formation collision work is parallel as well.
  * Only the pinned neckline follows character translation. Free particles stay
  * in world-space Verlet motion so the ordered constraints transmit that pull
  * through the cloth exactly like the CPU/WebGL solver.
@@ -124,7 +127,6 @@ export class GpuCapeSimulation {
   private readonly worldContactFlagBuffer;
   private readonly topologyBuffer;
   private readonly constraintBuffer;
-  private readonly constraintCount: number;
   private readonly bodyBuffer;
   private readonly caveShellBuffer;
   private readonly worldSphereBuffer;
@@ -211,7 +213,6 @@ export class GpuCapeSimulation {
     const topology = createGpuCapeTopology(initialState);
     this.topologyBuffer = instancedArray(topology.packed, 'vec4');
     this.constraintBuffer = instancedArray(topology.orderedConstraints, 'vec4');
-    this.constraintCount = topology.orderedConstraints.length / 4;
     this.bodyBuffer = instancedArray(
       MAXIMUM_GPU_CAPES * MAX_BODY_COLLIDERS * BODY_BUFFER_STRIDE,
       'vec4',
@@ -269,7 +270,6 @@ export class GpuCapeSimulation {
       previousBuffer: this.previousBuffer,
       stiffnessUniform: this.stiffnessUniform,
       topologyBuffer: this.topologyBuffer,
-      constraintCount: this.constraintCount,
       packedParticleCount: PACKED_PARTICLE_COUNT,
       particleCount: PARTICLE_COUNT,
     };
@@ -337,6 +337,22 @@ export class GpuCapeSimulation {
       'Cape project position to scratch',
       false,
       true,
+    );
+    const scratchToPositionWithoutContacts = this.createProjectionKernel(
+      this.scratchBuffer,
+      this.positionBuffer,
+      false,
+      'Cape copy scratch to position',
+      false,
+      false,
+    );
+    const positionToScratchWithoutContacts = this.createProjectionKernel(
+      this.positionBuffer,
+      this.scratchBuffer,
+      false,
+      'Cape copy position to scratch',
+      false,
+      false,
     );
     const hardScratchToPosition = this.createProjectionKernel(
       this.scratchBuffer,
@@ -432,6 +448,8 @@ export class GpuCapeSimulation {
       constrainScratch,
       scratchToPosition,
       positionToScratch,
+      scratchToPositionWithoutContacts,
+      positionToScratchWithoutContacts,
       hardScratchToPosition,
       hardPositionToScratch,
       finalSelfPositionToScratch,
@@ -903,6 +921,8 @@ export class GpuCapeSimulation {
       implementation: 'webgpu-compute' as const,
       totalSteps: this.submittedSteps,
       activeSteps: this.submittedSteps,
+      dispatchesPerStep: this.computeSequence.length,
+      constraintColorBatches: GPU_CAPE_CONSTRAINT_COLOR_BATCHES.length,
     };
   }
 

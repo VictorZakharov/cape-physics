@@ -10,6 +10,8 @@ const kernels = {
   constrainScratch: 'constrain-scratch',
   scratchToPosition: 'scratch-to-position',
   positionToScratch: 'position-to-scratch',
+  scratchToPositionWithoutContacts: 'copy-scratch-to-position',
+  positionToScratchWithoutContacts: 'copy-position-to-scratch',
   hardScratchToPosition: 'hard-scratch-to-position',
   hardPositionToScratch: 'hard-position-to-scratch',
   finalSelfPositionToScratch: 'final-self-position-to-scratch',
@@ -25,17 +27,19 @@ const kernels = {
 
 describe('WebGPU cape dispatch schedule', () => {
   test('locks the exact production ping-pong and reconciliation order', () => {
-    expect(createGpuCapeDispatchSchedule(kernels, CAPE.solverIterations)).toEqual([
+    const schedule = createGpuCapeDispatchSchedule(kernels, CAPE.solverIterations);
+    expect(schedule).toHaveLength(46);
+    expect(schedule).toEqual([
       'reset-contact-flags',
       'predict',
       'recover-idle-drape',
       'constrain-scratch', 'scratch-to-position',
-      'constrain-position', 'position-to-scratch',
-      'constrain-scratch', 'scratch-to-position',
-      'constrain-position', 'position-to-scratch',
-      'constrain-scratch', 'scratch-to-position',
-      'constrain-position', 'position-to-scratch',
-      'constrain-scratch', 'scratch-to-position',
+      'constrain-position', 'copy-position-to-scratch',
+      'constrain-scratch', 'copy-scratch-to-position',
+      'constrain-position', 'copy-position-to-scratch',
+      'constrain-scratch', 'copy-scratch-to-position',
+      'constrain-position', 'copy-position-to-scratch',
+      'constrain-scratch', 'copy-scratch-to-position',
       'constrain-position', 'position-to-scratch',
       'scratch-virtual-body-contacts',
       'constrain-scratch', 'scratch-to-position',

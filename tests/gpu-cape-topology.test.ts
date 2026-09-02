@@ -5,6 +5,8 @@ import { CAPE_DISTANCE_CONSTRAINTS } from '../src/physics/CapeConstraintTopology
 import { createPackedCapeInitialState } from '../src/physics/CapeInitialState';
 import { DEFAULT_CAPE_PHYSICS_SETTINGS } from '../src/physics/CapeSettings';
 import {
+  GPU_CAPE_COLORED_CONSTRAINT_INDICES,
+  GPU_CAPE_CONSTRAINT_COLOR_BATCHES,
   createGpuCapeTopology,
   GPU_CAPE_TOPOLOGY_METADATA_STRIDE,
 } from '../src/physics/GpuCapeTopology';
@@ -28,9 +30,14 @@ describe('WebGPU cape topology packing', () => {
     initialState[index * 4 + 2]!,
   );
 
-  test('packs the exact shared ordered constraint stream', () => {
+  test('packs every shared constraint into race-free color batches', () => {
     expect(topology.orderedConstraints).toHaveLength(CAPE_DISTANCE_CONSTRAINTS.length * 4);
-    CAPE_DISTANCE_CONSTRAINTS.forEach((definition, index) => {
+    expect(GPU_CAPE_CONSTRAINT_COLOR_BATCHES).toHaveLength(17);
+    expect([...GPU_CAPE_COLORED_CONSTRAINT_INDICES].sort((a, b) => a - b)).toEqual(
+      CAPE_DISTANCE_CONSTRAINTS.map((_, index) => index),
+    );
+    GPU_CAPE_COLORED_CONSTRAINT_INDICES.forEach((definitionIndex, index) => {
+      const definition = CAPE_DISTANCE_CONSTRAINTS[definitionIndex]!;
       const first = definition.firstRow * CAPE.columns + definition.firstColumn;
       const second = definition.secondRow * CAPE.columns + definition.secondColumn;
       const offset = index * 4;
@@ -45,6 +52,20 @@ describe('WebGPU cape topology packing', () => {
         6,
       );
     });
+    for (const batch of GPU_CAPE_CONSTRAINT_COLOR_BATCHES) {
+      const particles = new Set<number>();
+      for (let index = batch.offset; index < batch.offset + batch.count; index += 1) {
+        const definition = CAPE_DISTANCE_CONSTRAINTS[
+          GPU_CAPE_COLORED_CONSTRAINT_INDICES[index]!
+        ]!;
+        const first = definition.firstRow * CAPE.columns + definition.firstColumn;
+        const second = definition.secondRow * CAPE.columns + definition.secondColumn;
+        expect(particles.has(first)).toBe(false);
+        expect(particles.has(second)).toBe(false);
+        particles.add(first);
+        particles.add(second);
+      }
+    }
   });
 
   test('clamps normal neighbors to the particle grid edges', () => {

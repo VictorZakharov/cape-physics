@@ -15,6 +15,8 @@ export type CapeProfilePhase = typeof CAPE_PROFILE_PHASES[number];
 
 export interface CapePerformanceDiagnostics {
   readonly implementation: 'cpu-pbd' | 'webgpu-compute';
+  readonly dispatchesPerStep?: number;
+  readonly constraintColorBatches?: number;
   readonly sampleIntervalSteps: number;
   readonly totalSteps: number;
   readonly activeSteps: number;

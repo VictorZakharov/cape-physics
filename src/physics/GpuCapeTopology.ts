@@ -11,6 +11,49 @@ interface ConstraintDefinition {
 
 export const GPU_CAPE_TOPOLOGY_METADATA_STRIDE = 2;
 
+export interface GpuCapeConstraintColorBatch {
+  readonly offset: number;
+  readonly count: number;
+}
+
+function colorCapeConstraints(): {
+  readonly indices: readonly number[];
+  readonly batches: readonly GpuCapeConstraintColorBatch[];
+} {
+  const colorsByParticle = Array.from(
+    { length: CAPE.columns * CAPE.rows },
+    () => new Set<number>(),
+  );
+  const groups: number[][] = [];
+  CAPE_DISTANCE_CONSTRAINTS.forEach((definition, constraintIndex) => {
+    const first = definition.firstRow * CAPE.columns + definition.firstColumn;
+    const second = definition.secondRow * CAPE.columns + definition.secondColumn;
+    let color = 0;
+    while (
+      colorsByParticle[first]!.has(color)
+      || colorsByParticle[second]!.has(color)
+    ) {
+      color += 1;
+    }
+    (groups[color] ??= []).push(constraintIndex);
+    colorsByParticle[first]!.add(color);
+    colorsByParticle[second]!.add(color);
+  });
+  const batches: GpuCapeConstraintColorBatch[] = [];
+  const indices: number[] = [];
+  for (const group of groups) {
+    batches.push({ offset: indices.length, count: group.length });
+    indices.push(...group);
+  }
+  return { indices, batches };
+}
+
+const COLORED_CAPE_CONSTRAINTS = colorCapeConstraints();
+export const GPU_CAPE_COLORED_CONSTRAINT_INDICES =
+  COLORED_CAPE_CONSTRAINTS.indices;
+export const GPU_CAPE_CONSTRAINT_COLOR_BATCHES =
+  COLORED_CAPE_CONSTRAINTS.batches;
+
 export interface GpuCapeTopology {
   readonly packed: Float32Array;
   readonly normalNeighbors: Uint32Array;
@@ -89,9 +132,15 @@ export function createGpuCapeTopology(initialState: Float32Array): GpuCapeTopolo
   }
 
   const orderedConstraints = new Float32Array(constraints.length * 4);
-  for (let index = 0; index < constraints.length; index += 1) {
-    const constraint = constraints[index]!;
-    const offset = index * 4;
+  for (
+    let coloredIndex = 0;
+    coloredIndex < GPU_CAPE_COLORED_CONSTRAINT_INDICES.length;
+    coloredIndex += 1
+  ) {
+    const constraint = constraints[
+      GPU_CAPE_COLORED_CONSTRAINT_INDICES[coloredIndex]!
+    ]!;
+    const offset = coloredIndex * 4;
     orderedConstraints[offset] = constraint.first;
     orderedConstraints[offset + 1] = constraint.second;
     orderedConstraints[offset + 2] = constraint.restLength;
