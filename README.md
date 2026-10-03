@@ -38,7 +38,7 @@ Everything is generated at runtime. There are no downloaded models, textures, or
 | One-finger swipe | Orbit the camera on touch devices |
 | Two-finger pinch | Zoom on touch devices |
 | Click the FPS graph | Copy a rolling 15-second performance report |
-| `CAPE & SCENE` panel | Tune cape physics or toggle lights, shadows, and reflections; reload or Reset Defaults restores the defaults |
+| `CAPE & SCENE` panel | Tune cape physics, add up to 10 performance bots, or toggle lights, shadows, and reflections; reload or Reset Defaults restores the defaults |
 | `WEBGPU EXP` / `WEBGL` | Reload once with the selected renderer; the next ordinary reload returns to WebGL |
 | `Esc` | Release pointer interaction |
 
@@ -52,16 +52,17 @@ Three.js describes `WebGPURenderer` as experimental, and measurements in this pr
 
 ## How the cape simulation works
 
-The cape is a 13 x 18 grid—234 particles—simulated with position-based dynamics (PBD) at a fixed 120 Hz. Its pinned top row follows an animated arc around the neck. Structural, shear, bending, and anti-fold constraints shape the free rows.
+The cape is a 13 x 18 grid—234 particles—simulated with position-based dynamics (PBD) at a fixed 120 Hz. Its pinned top row follows an animated arc around the neck. Free particles remain in world space and use damped Verlet prediction; constraints transmit the neckline's motion through the cloth rather than translating the whole cape with the character. Structural links resist stretching, diagonal links resist shear, and longer distance links approximate bending. Anti-fold, row-span, and row-curl guards preserve the cape's tuned drape.
 
 ```text
 animated neckline
        ↓
 predict inertia, gravity, and airflow
        ↓
-project cloth shape constraints (10 passes)
+project shape, self-contact, fold, and contact constraints
+       (10 iterations with staged contact solves)
        ↓
-resolve body, cave, rock, self-contact, and fold limits
+reconcile body/world contact and implicit velocity
        ↓
 update the rendered cape
 ```
@@ -73,37 +74,42 @@ Collision is deliberately hybrid:
 - Contact rocks use exact convex triangle geometry, continuous particle sweeps, and last-known-safe recovery for thin edge and face crossings.
 - Self-contact, fold limits, bounded corrections, and coupled body/world reconciliation prevent tunnelling, spikes, and contact jitter.
 
-The default CPU solver applies the ten projection passes sequentially and uploads the updated mesh. The experimental WebGPU solver keeps particle and collider state in storage buffers, batches 25 short dispatches into one compute submission per fixed step, and renders directly from GPU positions without animation-loop readback. Its position-owned Jacobi passes avoid write races; cloth triangles are split into eight non-overlapping colors for coherent face corrections.
+The default CPU solver applies distance constraints in a sequential, row-major Gauss–Seidel sweep: each constraint sees the corrections made by the preceding constraints. It interleaves shape and collision solves across ten iterations, reconciles contact velocity, and uploads the updated mesh. The player's cape stays on the main thread; performance-bot capes use a bounded Web Worker pool when available, with completed particle snapshots transferred back for rendering. The animation loop consumes available worker results without waiting for completion. The CPU solver can sleep once motion, drape, and body-clearance checks confirm that the cape has settled.
 
-This is not a global signed-distance-field simulation. Analytic body queries fit the moving character closely, while exact rock faces preserve the visible contact boundary. It is also not the Macklin “small steps” variant: motion is predicted once per 120 Hz step and the tuned shape is projected ten times.
+The experimental WebGPU solver keeps particle state in storage buffers, uploads anchors and collider inputs, and renders positions and normals directly from GPU particle storage without animation-loop readback. Distance constraints use edge-colored Gauss–Seidel: links within a color share no particles and solve in parallel, with a storage barrier before the next color. Cloth triangles use eight non-overlapping colors for race-free face corrections. Contact projection uses separate source and destination buffers.
+
+One preallocated compute graph handles the player and up to ten bot capes. With the default ten solver iterations, it batches 46 dispatches using 20 unique kernels into one compute submission per fixed step; adding capes does not add dispatches or compile another graph. Full contact projection runs in the first and final three iterations, while the six middle iterations retain shape solves and copy the ping-pong state. Final face, particle, and velocity reconciliation stages finish in the render position buffer. WebGPU keeps solving rather than adding a readback fence to evaluate the CPU's sleep checks. See the [solver architecture](docs/cape-solver-architecture.md) and the [tested dispatch schedule](tests/gpu-cape-dispatch-schedule.test.ts).
+
+Analytic body queries fit the moving character closely, while exact rock faces preserve the visible contact boundary. Motion is predicted once per 120 Hz step, followed by ten main solver iterations and final contact reconciliation, including a targeted GPU stretch-repair pass. These are projection iterations within a step, rather than the repeated motion predictions used by the Macklin “small steps” variant.
 
 The implementation builds on [Position Based Dynamics by Müller et al.](https://matthias-research.github.io/pages/publications/posBasedDyn.pdf) and [Robust Treatment of Collisions, Contact and Friction for Cloth Animation](https://graphics.stanford.edu/papers/cloth-sig02/). GPU ownership and compute/render handoff were cross-checked against [WebGPU Cloth](https://github.com/blazecus/WebGPU_Cloth), [Jack Blazes' WebGPU cloth port notes](https://jackblazes.net/posts/2024-10-09-clothsim_ported.html), and [Junyi Choi's WebGPU mass-spring project](https://junyic.blogspot.com/2024/05/06/webgpu-cloth-simulation-project-mass.html); the solver and collision model remain project-specific.
 
 ## Performance
 
-Reference measurements were captured on August 27, 2026 with Edge 151, Windows, an AMD Ryzen 9 5900X, and an NVIDIA GeForce RTX 4070 Ti. Each timing is the median of three independent warmed runs at 1600 x 900, DPR 1, and `ADAPTIVE ULTRA`: 1,728 frames over the same 12-second running route, with backend completion amortized every 12 frames.
+The following historical reference measurements were captured on August 27, 2026, before the current packed multi-cape and edge-colored GPU solver changes. They have not been remeasured for the current implementation. The desktop setup used Edge 151, Windows, an AMD Ryzen 9 5900X, and an NVIDIA GeForce RTX 4070 Ti. Each timing is the median of three independent warmed runs at 1600 x 900, DPR 1, and `ADAPTIVE ULTRA`: 1,728 frames over the same 12-second running route, with backend completion amortized every 12 frames.
 
 | Metric | WebGL 2 + CPU cape (default) | WebGPU + GPU cape (experimental) | Observation |
 | --- | ---: | ---: | --- |
 | Synchronized frame | **2.96 ms** avg / 4.25 ms p95 / 6.19 ms max | 3.21 ms / **4.00 ms** / **4.57 ms** | WebGL is 8.3% faster on average; WebGPU has a steadier local tail |
-| Main-thread cape physics | 1.970 ms/frame | **0.236 ms/frame** | WebGPU removes 8.4x of cape CPU work |
+| Main-thread cape physics | 1.970 ms/frame | **0.236 ms/frame** | WebGPU reduces main-thread cape work by 8.4x; this is not GPU execution time |
 | Scene + submission | **0.989 ms/frame** | 2.795 ms/frame | WebGPU renderer overhead offsets the compute gain |
 | Ready time | **4.80 s** | 7.25 s | WebGL becomes interactive 2.45 s sooner |
 | JavaScript loaded | **0.77 MB** | 1.48 MB | WebGL loads 48% less JavaScript |
 | Warm shader programs | **41 → 41** | 94 → 94 | Neither route grows after warm-up |
 
-Real-device testing is why WebGL remains the default. On an Adreno 830 phone at DPR 3.75, WebGL held 59.93 FPS average with a 59.52 FPS 1% low and 16.8 ms p99. WebGPU measured 55.07 FPS average, a 28.99 FPS 1% low, 34.5 ms p99, and a 650.8 ms worst frame. On a 144 Hz NVIDIA desktop both backends reached the display callback ceiling, so displayed FPS could not distinguish them.
+Historical real-device testing informed the decision to keep WebGL as the default. On an Adreno 830 phone at DPR 3.75, WebGL held 59.93 FPS average with a 59.52 FPS 1% low and 16.8 ms p99. WebGPU measured 55.07 FPS average, a 28.99 FPS 1% low, 34.5 ms p99, and a 650.8 ms worst frame. On a 144 Hz NVIDIA desktop both backends reached the display callback ceiling, so displayed FPS could not distinguish them.
 
-These are throughput diagnostics, not universal guarantees. GPU, browser, driver, thermal state, scene activity, and display refresh all matter. Click the in-game FPS graph to copy a rolling report with callback pacing, physics, scene, submission, renderer counters, and cape state.
+These measurements compare the complete rendering and simulation backends, so they do not isolate CPU versus GPU solver execution. Lower main-thread physics cost can be offset by rendering and submission overhead. GPU, browser, driver, thermal state, scene activity, cape count, and display refresh all matter. Click the in-game FPS graph to copy a rolling report with callback pacing, physics, scene, submission, renderer counters, and cape state.
 
-Reproduce the local, non-gating profile with:
+Measure the current implementation with the local, non-gating Chrome profile:
 
 ```powershell
 $env:CAPE_PROFILE_RENDERER = "webgl" # or "webgpu"
+$env:CAPE_PROFILE_BOTS = "0"        # 0 to 10; use the same count for both backends
 bun run profile:render
 ```
 
-Timing budgets are never CI merge gates. CI uses deterministic tests plus short renderer smoke checks; the full 37-view audit remains available locally with `bun run audit:visual`.
+Timing budgets are never CI merge gates. CI uses deterministic, renderer-free checks; the full 37-view browser audit remains available locally with `bun run audit:visual`.
 
 ## Run locally
 
@@ -121,7 +127,7 @@ Open the printed URL in a WebGPU or WebGL 2 browser with hardware acceleration e
 ```powershell
 bun run check          # strict TypeScript and deterministic unit/integration tests
 bun run harness        # renderer-free traversal plus the optional local timing budget
-bun run audit:visual   # direct Edge/Chrome dynamic audit across 37 rendered views
+bun run audit:visual   # local-only Chrome dynamic audit across 37 rendered views
 bun run probe:webgpu   # local-only bounded WebGPU lifecycle/workload diagnostic
 bun run profile:render # local-only, non-gating synchronized renderer profile
 bun run stress:rocks   # optional extended rock-contact stress matrix
@@ -130,7 +136,7 @@ bun run build:pages    # production GitHub Pages build
 
 The renderer-free harness advances character movement, cloth, jumping, water landings, footsteps, ceiling drops, lights, and mineral effects without using a browser. The visual audit then drives the production build directly through Chrome and checks desktop and touch input, responsive controls, depth ordering, shadows, water motion, cape contact, and animation from 37 camera studies.
 
-CI gates deterministic correctness, geometry, collision, rendering, and builds. It runs the complete multi-angle audit through WebGL plus a short native WebGPU compute/readback smoke; the full 37-view WebGPU audit remains available locally. CI does **not** gate merges on millisecond or elapsed-time thresholds. Pull requests receive a temporary GitHub Pages preview, while merges to `main` deploy the production demo.
+CI gates source-size budgets, strict types, deterministic correctness, geometry, collision, the renderer-free scene harness, production and Pages builds, and Pages-safe asset paths. Pull requests also require linear history. The required check named `Dynamic multi-angle render audit` now runs renderer-free trajectory validation and worker architecture tests; actual browser/GPU audits, isolation probes, and profiles remain local opt-in checks. CI does **not** gate merges on millisecond or elapsed-time thresholds. Pull requests receive a temporary GitHub Pages preview, while merges to `main` deploy the production demo.
 
 ### Permanent WebGPU isolation probes
 
@@ -144,7 +150,7 @@ No probe requests a GPU before its button is clicked. Each stage has a deadline,
 
 The local CDP harness defaults to the application-cape boundary. Select another workload with `CAPE_PROBE_WORKLOAD`. Browser harnesses use Chrome only because Edge profiles can retain Windows-protected database locks after exit; there is no Edge fallback. Set `CAPE_BROWSER_PATH` to choose a specific Chrome executable. Browser profiles and temporary data live under repository-local `artifacts/.tmp/` and are removed in `finally`.
 
-Three 0.185.1 synchronously creates compute pipelines on the first dispatch. Until Three r186 is released, `WebGpuComputeWarmup` backports the merged upstream `compileComputeAsync()` behavior for the production cape: its 17 unique kernels are built with `createComputePipelineAsync()`, one at a time, with an animation-frame yield and real loading progress between kernels. The first physics step therefore submits already-compiled pipelines instead of placing seconds of cold compilation behind the first queue fence.
+The pinned Three 0.185.1 synchronously creates compute pipelines on the first dispatch. `WebGpuComputeWarmup` backports the upstream `compileComputeAsync()` behavior for the production cape: its 20 unique kernels are built with `createComputePipelineAsync()`, one at a time, with an animation-frame yield and real loading progress between kernels. The first physics step therefore submits already-compiled pipelines instead of placing seconds of cold compilation behind the first queue fence.
 
 The normal loading screen keeps an on-screen, timestamped startup history from HTML shell entry through renderer construction, low-level backend stages, WebGPU kernel compilation, fallback, and failure. Its bounded history survives the one-time WebGPU-to-WebGL recovery reload in session storage and is included in copied crash diagnostics; a completed run is discarded when the next navigation begins.
 
