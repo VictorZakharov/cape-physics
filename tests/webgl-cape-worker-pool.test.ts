@@ -93,7 +93,7 @@ describe('WebGlCapeWorkerPool', () => {
     pool.enqueueStep(1 / 120, 2 / 120, inputs);
     pool.enqueueStep(1 / 120, 3 / 120, inputs);
     pool.flush();
-    expect(pool.getDiagnostics().queuedSteps).toBe(4);
+    expect(pool.getDiagnostics().queuedSteps).toBe(2);
     FakeWorker.instances.forEach((worker) => {
       expect(worker.posted.filter((message) => message.type === 'step-batch')).toHaveLength(1);
     });
@@ -111,6 +111,9 @@ describe('WebGlCapeWorkerPool', () => {
           capeId: add.capeId,
           revision: add.revision,
           anchors: add.anchors,
+          previousAnchors: add.anchors,
+          time: firstBatch.frames.at(-1)!.time,
+          deltaTime: firstBatch.frames.at(-1)!.deltaTime,
           positions: add.positions.slice(),
           previous: add.previous.slice(),
         }],
@@ -118,7 +121,8 @@ describe('WebGlCapeWorkerPool', () => {
       worker.emit(response);
       const batches = worker.posted.filter((message) => message.type === 'step-batch');
       expect(batches).toHaveLength(2);
-      expect(batches[1]?.frames).toHaveLength(2);
+      expect(batches[1]?.frames).toHaveLength(1);
+      expect(batches[1]?.frames[0]?.time).toBe(3 / 120);
     });
     expect(pool.consumeLatestState(1)).not.toBeNull();
     expect(pool.consumeLatestState(2)).not.toBeNull();
@@ -143,7 +147,7 @@ describe('WebGlCapeWorkerPool', () => {
         pool.enqueueStep(1 / 120, step / 120, inputs);
         pool.flush();
       }
-      expect(pool.getDiagnostics().queuedSteps).toBe(FakeWorker.instances.length * 4);
+      expect(pool.getDiagnostics().queuedSteps).toBe(FakeWorker.instances.length);
       for (const worker of FakeWorker.instances) {
         const batch = worker.posted.find((message) => message.type === 'step-batch');
         if (!batch || batch.type !== 'step-batch') throw new Error('Missing first batch.');
@@ -151,7 +155,7 @@ describe('WebGlCapeWorkerPool', () => {
         const batches = worker.posted.filter((message) => message.type === 'step-batch');
         expect(batches).toHaveLength(2);
         expect(batches[1]!.frames.map((frame) => frame.time)).toEqual([
-          1_197 / 120, 1_198 / 120, 1_199 / 120, 10,
+          10,
         ]);
         expect(batches[1]!.frames.every((frame) => frame.capes.length > 0)).toBe(true);
       }

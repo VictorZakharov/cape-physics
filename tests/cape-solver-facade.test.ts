@@ -93,6 +93,7 @@ describe('cape solver facade contract', () => {
       'step',
       'prepareStep',
       'getComputePipelineNodes',
+      'prewarmBotMesh',
       'prepareBatchStep',
       'syncGeometry',
       'reset',

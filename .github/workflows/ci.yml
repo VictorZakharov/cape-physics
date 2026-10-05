@@ -95,5 +95,12 @@ jobs:
           bun test
           tests/cape-trajectory-validation.test.js
           tests/cape-worker-protocol.test.ts
+          tests/cape-worker-presentation.test.ts
+          tests/cape-worker-timing.test.ts
+          tests/cape-worker-step-stability.test.ts
+          tests/character-pose-cache.test.ts
+          tests/bot-population.test.ts
+          tests/bot-render-warmup.test.ts
+          tests/gpu-cape-lane-activation.test.ts
           tests/webgl-cape-worker-pool.test.ts
           --timeout 30000

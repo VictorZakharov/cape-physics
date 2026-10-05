@@ -64,6 +64,10 @@ export class WorldCollisionResolver {
     this.constrainPlanarBounds(position);
 
     for (const collider of this.obstacleColliders) {
+      // Re-evaluate after every push: an earlier obstacle can move the
+      // capsule into a later one. Reject distant spheres before hot calls.
+      if (!isWorldRockCollider(collider)
+        && Math.abs(position.z - collider.center.z) >= collider.radius + PLAYER.radius) continue;
       this.resolveObstacle(position, collider);
     }
 
@@ -129,6 +133,8 @@ export class WorldCollisionResolver {
     z: number,
     groundHeight: number,
   ): number | null {
+    if (z < collider.bounds.min.z - WALKABLE_ROCK_FOOTPRINT
+      || z > collider.bounds.max.z + WALKABLE_ROCK_FOOTPRINT) return null;
     const centerX = (collider.bounds.min.x + collider.bounds.max.x) * 0.5;
     const centerZ = (collider.bounds.min.z + collider.bounds.max.z) * 0.5;
     const radiusX = (collider.bounds.max.x - collider.bounds.min.x) * 0.5

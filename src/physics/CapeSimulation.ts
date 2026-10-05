@@ -161,6 +161,7 @@ export class CapeSimulation {
     worldColliders: readonly WorldCollider[],
     characterVelocity: THREE.Vector3,
     time: number,
+    previousDeltaTime = deltaTime,
   ): void {
     const characterSpeed = characterVelocity.length();
     const profileActive = this.profiler.beginStep(
@@ -192,7 +193,7 @@ export class CapeSimulation {
       }
       return;
     }
-    this.prediction.predict(deltaTime, characterVelocity, time, this.settings);
+    this.prediction.predict(deltaTime, characterVelocity, time, this.settings, previousDeltaTime);
     if (profileActive) {
       const profileNow = performance.now();
       this.profiler.record('prediction', profileNow - profilePhaseStart);

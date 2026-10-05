@@ -626,6 +626,14 @@ export class GpuCapeSimulation {
     return [...new Set(this.computeSequence)];
   }
 
+  /** Give startup render warm-up real cloth triangles without activating simulation lanes. */
+  public prewarmBotMesh(anchors: CapeAnchors): void {
+    for (let capeIndex = 1; capeIndex < MAXIMUM_GPU_CAPES; capeIndex += 1) {
+      this.initializeCapeLane(capeIndex, anchors);
+    }
+    this.botMesh.count = MAXIMUM_GPU_CAPES - 1;
+  }
+
   /**
    * Updates every active cape lane while retaining one precompiled compute
    * graph. One workgroup handles one cape, so bot activation never constructs
@@ -1129,6 +1137,9 @@ export class GpuCapeSimulation {
       this.previousBuffer.value,
     ]) {
       (attribute.array as Float32Array).set(state, offset);
+      // Existing lanes live only on the GPU. A full upload would rewind them
+      // to the stale CPU initialization data whenever another bot appears.
+      attribute.addUpdateRange(offset, state.length);
       attribute.needsUpdate = true;
     }
     this.updateAnchorValues(capeIndex, anchors);
@@ -1158,7 +1169,10 @@ export class GpuCapeSimulation {
     const bodyState = this.bodyStateValues[capeIndex]!;
     packGpuCapeBodyColliders(bodyData, capeIndex, colliders, back);
     bodyState.set(back.x, back.y, back.z, colliders.length);
-    this.bodyBuffer.value.needsUpdate = true;
+    if (colliders.length > 0) {
+      this.bodyBuffer.value.addUpdateRange(capeIndex * MAX_BODY_COLLIDERS * BODY_BUFFER_STRIDE * 4, colliders.length * BODY_BUFFER_STRIDE * 4);
+      this.bodyBuffer.value.needsUpdate = true;
+    }
   }
 
   private updateWorldBuffers(capeIndex: number, colliders: readonly WorldCollider[]): void {
@@ -1181,7 +1195,13 @@ export class GpuCapeSimulation {
       0,
       0,
     );
-    this.worldSphereBuffer.value.needsUpdate = true;
-    this.rockBuffer.value.needsUpdate = true;
+    if (candidates.spheres.length > 0) {
+      this.worldSphereBuffer.value.addUpdateRange(capeIndex * MAX_WORLD_SPHERES * 4, candidates.spheres.length * 4);
+      this.worldSphereBuffer.value.needsUpdate = true;
+    }
+    if (candidates.rocks.length > 0) {
+      this.rockBuffer.value.addUpdateRange(capeIndex * MAX_WORLD_ROCKS * ROCK_BUFFER_STRIDE * 4, candidates.rocks.length * ROCK_BUFFER_STRIDE * 4);
+      this.rockBuffer.value.needsUpdate = true;
+    }
   }
 }
