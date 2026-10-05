@@ -8,7 +8,9 @@ describe('performance bot movement', () => {
   test('normalizes the UI count to the supported integer range', () => {
     expect(normalizeBotCount(-4)).toBe(0);
     expect(normalizeBotCount(4.6)).toBe(5);
-    expect(normalizeBotCount(99)).toBe(10);
+    expect(normalizeBotCount(25)).toBe(25);
+    expect(normalizeBotCount(50)).toBe(50);
+    expect(normalizeBotCount(99)).toBe(50);
     expect(normalizeBotCount(Number.NaN)).toBe(0);
   });
 
