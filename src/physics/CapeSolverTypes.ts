@@ -11,8 +11,6 @@ export interface CapeSimulationOptions {
   readonly renderResources?: boolean;
   /** Immutable fabric material shared by same-palette performance bots. */
   readonly material?: THREE.MeshPhysicalMaterial;
-  /** Crowd cloth retains structural/environment passes but runs body/self on four passes. */
-  readonly collisionCadence?: 'full' | 'crowd';
 }
 
 export interface PackedCapeState {

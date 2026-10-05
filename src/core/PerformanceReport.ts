@@ -99,7 +99,7 @@ export function formatPerformanceReport(input: PerformanceReportInput): string {
       ]
       : [
         capeWorkers?.active
-          ? `Cape solver: CPU PBD Gauss-Seidel | player at ${Math.round(1 / PHYSICS_STEP)} Hz on main thread, bots on adaptive worker steps (at most 33.3 ms) across ${capeWorkers.workers} workers | ${CAPE.solverIterations} structural/environment passes, 4 bot body/self passes | sampled 1/${capeSolver.sampleIntervalSteps} player steps (${capeSolver.sampledActiveSteps} samples)`
+          ? `Cape solver: CPU PBD Gauss-Seidel | player at ${Math.round(1 / PHYSICS_STEP)} Hz on main thread, bots on adaptive worker steps (at most 33.3 ms) across ${capeWorkers.workers} workers | ${CAPE.solverIterations} projection passes | sampled 1/${capeSolver.sampleIntervalSteps} player steps (${capeSolver.sampledActiveSteps} samples)`
           : `Cape solver: sequential CPU PBD Gauss-Seidel at ${Math.round(1 / PHYSICS_STEP)} Hz | ${CAPE.solverIterations} projection passes | sampled 1/${capeSolver.sampleIntervalSteps} active steps (${capeSolver.sampledActiveSteps} samples)`,
         `Cape step sampled average: ${metric(capeSolver.averageStepMilliseconds)} ms | prediction ${metric(capeSolver.phases.prediction)} | constraints ${metric(capeSolver.phases.constraints)} | self ${metric(capeSolver.phases.selfCollision)} | fold ${metric(capeSolver.phases.foldGuard)} | body ${metric(capeSolver.phases.bodyCollision)} | world ${metric(capeSolver.phases.worldCollision)} | cave ${metric(capeSolver.phases.caveCollision)} | reconcile ${metric(capeSolver.phases.reconciliation)}`,
         ...(capeWorkers?.active ? [

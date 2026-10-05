@@ -104,7 +104,6 @@ export class CapeSimulation {
   private sleeping = false;
   private readonly ownsMaterial: boolean;
   private settings: CapePhysicsSettings;
-  private readonly crowdCollisionCadence: boolean;
 
   public constructor(
     initialAnchors: CapeAnchors,
@@ -113,7 +112,6 @@ export class CapeSimulation {
     options: CapeSimulationOptions = {},
   ) {
     this.settings = normalizeCapePhysicsSettings(settings);
-    this.crowdCollisionCadence = options.collisionCadence === 'crowd';
     const particleCount = CAPE.columns * CAPE.rows;
     this.inverseMass = new Float32Array(particleCount);
     this.predictedVerticalDisplacement = new Float32Array(particleCount);
@@ -203,14 +201,13 @@ export class CapeSimulation {
     }
 
     for (let iteration = 0; iteration < CAPE.solverIterations; iteration += 1) {
-      const solveContacts = !this.crowdCollisionCadence || iteration === 0 || iteration >= CAPE.solverIterations - 3;
       this.constraints.solve(this.settings.stiffness);
       if (profileActive) {
         const profileNow = performance.now();
         this.profiler.record('constraints', profileNow - profilePhaseStart);
         profilePhaseStart = profileNow;
       }
-      if (solveContacts) this.shapeGuards.solveSelfCollision();
+      this.shapeGuards.solveSelfCollision();
       if (profileActive) {
         const profileNow = performance.now();
         this.profiler.record('selfCollision', profileNow - profilePhaseStart);
@@ -234,7 +231,7 @@ export class CapeSimulation {
           IDLE_DRAPE_RECOVERY_DELAY_SECONDS + IDLE_DRAPE_RECOVERY_RAMP_SECONDS,
         ));
       }
-      if (solveContacts) this.contactSolver.solveBody(bodyColliders, anchors.back, this.crowdCollisionCadence && iteration >= CAPE.solverIterations - 3);
+      this.contactSolver.solveBody(bodyColliders, anchors.back);
       if (profileActive) {
         const profileNow = performance.now();
         this.profiler.record('bodyCollision', profileNow - profilePhaseStart);
@@ -263,9 +260,9 @@ export class CapeSimulation {
         // then reconcile exact world-face crossings once more. Both rock
         // point projections share one strict per-particle step budget; exact
         // face translations are independently bounded and velocity-neutral.
-        this.contactSolver.solveBody(bodyColliders, anchors.back, this.crowdCollisionCadence);
+        this.contactSolver.solveBody(bodyColliders, anchors.back);
         if (this.contactSolver.solvePostCaveWorldContacts() > 0) {
-          this.contactSolver.solveBody(bodyColliders, anchors.back, this.crowdCollisionCadence);
+          this.contactSolver.solveBody(bodyColliders, anchors.back);
           this.contactSolver.solvePostCaveWorldContacts();
         }
         // Final world/body reconciliation can push a triangle interior back
@@ -275,7 +272,7 @@ export class CapeSimulation {
         // world so the rendered cloth cannot remain inside a floor formation.
         this.contactSolver.solveCave();
         for (let pass = 0; pass < 4; pass += 1) {
-          this.contactSolver.solveBody(bodyColliders, anchors.back, this.crowdCollisionCadence);
+          this.contactSolver.solveBody(bodyColliders, anchors.back);
           if (this.contactSolver.solvePostCaveWorldContacts() === 0) break;
         }
       }

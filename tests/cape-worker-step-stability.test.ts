@@ -7,11 +7,11 @@ import { Character } from '../src/player/Character';
 import { caveCenterX } from '../src/world/caveProfile';
 import { WorldCollisionResolver } from '../src/world/WorldCollisionResolver';
 
-test.each(['full', 'crowd'] as const)('%s contacts keep adaptive walking long-cape steps stable and attached', (collisionCadence) => {
+test('adaptive bot steps keep a walking long cape finite, attached and outside its owner', () => {
   const character = new Character(), world = new WorldCollisionResolver([]);
   character.root.position.set(caveCenterX(-8), world.getPlayerRootHeight(caveCenterX(-8), -8), -8);
   let precedingAnchors = cloneCapeAnchors(character.getCapeAnchors());
-  const cape = new CapeSimulation(precedingAnchors, { length: CAPE.lengthRange.max }, undefined, { renderResources: false, collisionCadence });
+  const cape = new CapeSimulation(precedingAnchors, { length: CAPE.lengthRange.max }, undefined, { renderResources: false });
   let previousDelta = PHYSICS_STEP, time = 0;
   try {
     for (let step = 0; step < 150; step++) {
