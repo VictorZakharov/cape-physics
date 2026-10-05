@@ -48,7 +48,7 @@ function handleMessage(message: CapeWorkerRequest): void {
         anchors,
         message.settings,
         CRIMSON_CAPE_PALETTE,
-        { renderResources: false },
+        { renderResources: false, collisionCadence: 'crowd' },
       );
       simulation.overwriteStateForHarness(message.positions, message.previous);
       capes.set(message.capeId, {

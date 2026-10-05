@@ -15,6 +15,15 @@ import {
 import { WorldCollisionResolver } from '../src/world/WorldCollisionResolver';
 
 describe('WorldCollisionResolver', () => {
+  test('rechecks distant candidates after an earlier obstacle pushes the capsule toward them', () => {
+    const x = caveCenterX(0);
+    const y = new WorldCollisionResolver([]).getPlayerRootHeight(x, 0) + PLAYER.height * 0.5;
+    const collider = (z: number): WorldSphereCollider => ({ center: new THREE.Vector3(x, y, z), radius: 0.7, walkable: false, kind: 'formation' });
+    const position = new THREE.Vector3(x, 0, 0);
+    new WorldCollisionResolver([collider(-0.2), collider(1.6)]).resolvePlayer(position);
+    expect(position.z).toBeCloseTo(1.6 - 0.7 - PLAYER.radius, 6);
+  });
+
   test('walks onto rock support instead of clipping through it', () => {
     const rock: WorldSphereCollider = {
       center: new THREE.Vector3(0, 0.22, 0),

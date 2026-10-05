@@ -9,12 +9,19 @@ mkdirSync(parent, { recursive: true });
 const root = mkdtempSync(join(parent, 'live-cape-profile-'));
 const renderer = process.env.CAPE_PROFILE_RENDERER ?? 'webgl';
 const duration = Number(process.env.CAPE_PROFILE_LIVE_SECONDS ?? 8);
+const warmup = Number(process.env.CAPE_PROFILE_LIVE_WARMUP_SECONDS ?? 1);
 let browser, connection, server;
 try {
   if (!['webgl', 'webgpu'].includes(renderer)) throw Error('CAPE_PROFILE_RENDERER must be webgl or webgpu.');
   if (!Number.isFinite(duration) || duration < 1 || duration > 30) throw Error('CAPE_PROFILE_LIVE_SECONDS must be between 1 and 30.');
+  if (!Number.isFinite(warmup) || warmup < 0 || warmup > 60) throw Error('CAPE_PROFILE_LIVE_WARMUP_SECONDS must be between 0 and 60.');
   cpSync(resolve(process.env.CAPE_PROFILE_DIST_ROOT ?? 'dist'), join(root, 'dist'), { recursive: true });
   const assets = join(root, 'dist', 'assets');
+  // The disposable fixture can serve either production or Pages output locally.
+  for (const name of ['index.html', ...readdirSync(assets).filter((name) => name.endsWith('.js')).map((name) => join('assets', name))]) {
+    const file = join(root, 'dist', name);
+    writeFileSync(file, readFileSync(file, 'utf8').replaceAll('/cape-physics/', '/'));
+  }
   const asset = readdirSync(assets).find((name) => /^CapeDemo-.*\.js$/.test(name));
   if (!asset) throw Error('Build the production bundle before profiling.');
   const path = join(assets, asset);
@@ -38,12 +45,20 @@ try {
     const demo=window.__CAPE_INTERNAL__;
     await window.__CAPE_DEMO__.setBotCount(50);
     demo.clock.reset(performance.now());
-    for(let frame=0;frame<60;frame++) demo.frame(await new Promise(requestAnimationFrame));
+    const until=performance.now()+${warmup * 1000};
+    while(performance.now()<until) demo.frame(await new Promise(requestAnimationFrame));
   })()`);
   await connection.command('Profiler.enable');
   await connection.command('Profiler.start');
   const result = await evaluate(connection.command, `(async()=>{
     const demo=window.__CAPE_INTERNAL__,intervals=[],counts=new Map(),last=new Map();
+    let phases={};const totals={};
+    for(const [object,method,label] of [[demo,'simulateStep','simulation'],[demo.cape,'step','playerCape'],
+      [demo.worldCollision,'resolvePlayer','characterCollision'],[demo,'applyWorkerCapeResults','workerResults'],
+      [demo,'syncCapeGeometries','capeMeshes'],[demo,'updateScene','scene'],[demo.pipeline,'render','render'],[demo,'applyQuality','qualityResize']]){
+      const original=object[method].bind(object);
+      object[method]=(...args)=>{const start=performance.now();const result=original(...args);phases[label]=(phases[label]||0)+performance.now()-start;return result;};
+    }
     for(const bot of demo.performanceBots){
       if(!bot.capePresentation)continue;
       const accept=bot.capePresentation.accept.bind(bot.capePresentation);
@@ -52,17 +67,22 @@ try {
         last.set(bot.id,now);counts.set(bot.id,(counts.get(bot.id)||0)+1);accept(state);
       };
     }
-    const start=performance.now(),frames=[],cpu=[];
-    let preceding=start;
+    const start=performance.now(),simulationStart=demo.fixedTime,frames=[],cpu=[],stalls=[];
+    let preceding=null;
     while(performance.now()-start<${duration * 1000}){
       const timestamp=await new Promise(requestAnimationFrame);
-      frames.push(timestamp-preceding);preceding=timestamp;
-      const before=performance.now();demo.frame(timestamp);cpu.push(performance.now()-before);
+      if(preceding!==null)frames.push(timestamp-preceding);preceding=timestamp;
+      phases={};const before=performance.now();demo.frame(timestamp);cpu.push(performance.now()-before);
+      for(const [label,time] of Object.entries(phases))totals[label]=(totals[label]||0)+time;
+      if(cpu.at(-1)>=30)stalls.push({interval:frames.at(-1),cpu:cpu.at(-1),time:demo.fixedTime,phases});
     }
     await demo.pipeline.synchronizeForLocalProfile();
     const elapsed=performance.now()-start,sorted=intervals.sort((a,b)=>a-b);
     const avg=values=>values.reduce((sum,value)=>sum+value,0)/Math.max(1,values.length);
-    return {renderer:${JSON.stringify(renderer)},frames:frames.length,fps:frames.length*1000/elapsed,
+    const sortedFrames=[...frames].sort((a,b)=>a-b);
+    return {renderer:${JSON.stringify(renderer)},hardwareThreads:navigator.hardwareConcurrency,frames:cpu.length,fps:cpu.length*1000/elapsed,
+      simulationRate:(demo.fixedTime-simulationStart)*1000/elapsed,p99FrameMs:sortedFrames[Math.floor(sortedFrames.length*.99)],worstFrameMs:Math.max(...frames),longFrames:frames.filter(value=>value>=50).length,stalls,
+      phases:Object.fromEntries(Object.entries(totals).map(([key,value])=>[key,value/cpu.length])),
       meanCpuFrameMs:avg(cpu),meanWorkerIntervalMs:avg(intervals),p95WorkerIntervalMs:sorted[Math.floor(sorted.length*.95)]??null,
       minimumCapeResults:counts.size?Math.min(...counts.values()):null,
       meanCapeResultHz:counts.size?avg([...counts.values()])*1000/elapsed:null,

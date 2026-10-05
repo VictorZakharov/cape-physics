@@ -280,7 +280,9 @@ export class WebGlCapeWorkerPool {
     }
     slot.busy = false;
     const now = performance.now();
-    slot.batchMilliseconds = now - slot.dispatchedAt;
+    const batchMilliseconds = now - slot.dispatchedAt;
+    slot.batchMilliseconds = slot.batchMilliseconds > 0
+      ? slot.batchMilliseconds * 0.9 + batchMilliseconds * 0.1 : batchMilliseconds;
     if (slot.lastResultAt > 0) {
       const interval = now - slot.lastResultAt;
       slot.resultInterval = slot.resultInterval > 0 ? slot.resultInterval * 0.9 + interval * 0.1 : interval;

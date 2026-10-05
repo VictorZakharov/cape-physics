@@ -545,7 +545,8 @@ export class CapeDemo {
     this.performance.recordFrame(timestamp);
     const physicsStart = performance.now();
     this.botPopulation.tick();
-    const timing = this.clock.advance(timestamp, this.simulateStep);
+    const timing = this.clock.advance(timestamp, this.simulateStep,
+      this.cape instanceof CapeSimulation && this.performanceBots.length > 0 ? 2 : undefined);
     this.webGlCapeWorkers?.flush();
     this.applyWorkerCapeResults();
     this.syncCapeGeometries(timing.physicsSteps > 0, this.fixedTime + timing.interpolation * PHYSICS_STEP);

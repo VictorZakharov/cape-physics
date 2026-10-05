@@ -282,7 +282,7 @@ describe('CapeSimulation', () => {
     )).toBeLessThan(0.002);
   });
 
-  test('keeps a stone-pinned cape outside animated boots throughout walking', () => {
+  test.each(['full', 'crowd'] as const)('keeps a stone-pinned cape outside animated boots throughout walking (%s contacts)', (collisionCadence) => {
     const character = new Character();
     const collision = new WorldCollisionResolver([]);
     const z = 11.8;
@@ -290,7 +290,7 @@ describe('CapeSimulation', () => {
     character.root.position.set(x, collision.getPlayerRootHeight(x, z), z);
     character.root.updateMatrixWorld(true);
     let characterAnchors = character.getCapeAnchors();
-    const cape = new CapeSimulation(characterAnchors);
+    const cape = new CapeSimulation(characterAnchors, {}, undefined, { collisionCadence });
 
     for (let tick = 0; tick < 240; tick += 1) {
       cape.step(
@@ -394,7 +394,7 @@ describe('CapeSimulation', () => {
     expect(maximumUpwardParticleStep).toBeLessThan(0.05);
   });
 
-  test('keeps a maximum-length walking cape outside floor rocks every step', () => {
+  test.each(['full', 'crowd'] as const)('keeps a maximum-length walking cape outside floor rocks every step (%s contacts)', (collisionCadence) => {
     const spec = CAPE_CONTACT_ROCKS[0];
     if (!spec) throw new Error('Cape contact course has no large test rock.');
     const geometry = createRockGeometry();
@@ -427,7 +427,7 @@ describe('CapeSimulation', () => {
     collision.resolvePlayer(character.root.position);
     character.root.updateMatrixWorld(true);
     let characterAnchors = character.getCapeAnchors();
-    const cape = new CapeSimulation(characterAnchors, { length: CAPE.lengthRange.max });
+    const cape = new CapeSimulation(characterAnchors, { length: CAPE.lengthRange.max }, undefined, { collisionCadence });
     const walkingVelocity = new THREE.Vector3(0, 0, -PLAYER.walkSpeed);
     let maximumPointPenetration = 0;
     let maximumFacePenetration = 0;
@@ -456,7 +456,7 @@ describe('CapeSimulation', () => {
     expect(maximumFacePenetration).toBeLessThan(0.002);
   });
 
-  test('keeps a maximum-length walking cape outside floor formations every step', () => {
+  test.each(['full', 'crowd'] as const)('keeps a maximum-length walking cape outside floor formations every step (%s contacts)', (collisionCadence) => {
     const cave = new CaveWorld(createRockTextures(16));
     const character = new Character();
     const collision = new WorldCollisionResolver(cave.worldColliders);
@@ -466,7 +466,7 @@ describe('CapeSimulation', () => {
     collision.resolvePlayer(character.root.position);
     character.root.updateMatrixWorld(true);
     let characterAnchors = character.getCapeAnchors();
-    const cape = new CapeSimulation(characterAnchors, { length: CAPE.lengthRange.max });
+    const cape = new CapeSimulation(characterAnchors, { length: CAPE.lengthRange.max }, undefined, { collisionCadence });
     const walkingVelocity = new THREE.Vector3(0, 0, -PLAYER.walkSpeed);
     let maximumEnvironmentPenetration = 0;
     let maximumFacePenetration = 0;

@@ -212,7 +212,7 @@ export class CapeContactSolver {
     }
   }
 
-  public solveBody(colliders: readonly CapsuleCollider[], back: THREE.Vector3): void {
+  public solveBody(colliders: readonly CapsuleCollider[], back: THREE.Vector3, forceFaces = false): void {
     for (let index = CAPE.columns; index < this.positions.length; index += 1) {
       const position = this.positions[index];
       const previous = this.previous[index];
@@ -234,7 +234,7 @@ export class CapeContactSolver {
       }
     }
     this.bodySolvePass += 1;
-    if (this.bodySolvePass > CAPE.solverIterations - BODY_FACE_SOLVER_PASSES) {
+    if (forceFaces || this.bodySolvePass > CAPE.solverIterations - BODY_FACE_SOLVER_PASSES) {
       this.bodyFaceCollision.solve(colliders, back, this.bodySideOrigin);
     }
   }
