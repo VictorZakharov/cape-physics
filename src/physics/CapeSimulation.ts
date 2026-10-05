@@ -6,6 +6,7 @@ import {
   type CapeFabricPalette,
 } from './CapeAppearance';
 import type { CapeAnchors } from '../player/Character';
+import { getCapeAnchorTransform } from './CapeAnchorTransform';
 import { reconcileCapeProjectionPreviousY } from './CapeProjectionVelocity';
 import {
   CapeContactSolver,
@@ -407,6 +408,17 @@ export class CapeSimulation {
   /** Keeps GPU readback diagnostics relative to the current moving neckline. */
   public synchronizeAnchorDiagnostics(anchors: CapeAnchors): void {
     this.anchorCenter.copy(anchors.left).add(anchors.right).multiplyScalar(0.5);
+  }
+
+  /** Carry positions and Verlet history together when overload skips owner poses. */
+  public rebaseAnchors(source: CapeAnchors, target: CapeAnchors): void {
+    const matrix = getCapeAnchorTransform(source, target, new THREE.Matrix4());
+    this.positions.forEach((position) => position.applyMatrix4(matrix));
+    this.previous.forEach((position) => position.applyMatrix4(matrix));
+    this.synchronizeAnchorDiagnostics(target);
+    this.motionTracker.synchronizeStepStart();
+    this.sleeping = false;
+    this.settledSeconds = 0;
   }
 
   public reset(anchors: CapeAnchors): void {

@@ -1,6 +1,7 @@
 import type { CapeAnchors } from '../player/Character';
 import type { CapeSimulation, PackedCapeState } from './CapeSimulation';
 import {
+  deserializeCapeAnchors,
   serializeCapeAnchors,
   serializeCapsuleColliders,
   serializeCapsuleEndpoints,
@@ -31,8 +32,15 @@ export interface WebGlCapeWorkerDiagnostics {
 interface CapeRegistration {
   readonly slot: WorkerSlot;
   revision: number;
-  latestState: PackedCapeState | null;
+  latestState: AnchoredCapeState | null;
 }
+
+export interface AnchoredCapeState extends PackedCapeState {
+  readonly anchors: CapeAnchors;
+}
+
+// Keep both queued work and result latency bounded when a crowd overloads CPUs.
+const MAXIMUM_BATCH_STEPS = 4;
 
 interface WorkerSlot {
   readonly worker: Worker;
@@ -139,7 +147,12 @@ export class WebGlCapeWorkerPool {
           characterVelocity: serializeVector3(input.characterVelocity),
         }];
       });
-      if (capes.length > 0) slot.pendingFrames.push({ deltaTime, time, capes });
+      if (capes.length > 0) {
+        slot.pendingFrames.push({ deltaTime, time, capes });
+        if (slot.pendingFrames.length > MAXIMUM_BATCH_STEPS) {
+          slot.pendingFrames.shift();
+        }
+      }
     }
   }
 
@@ -149,7 +162,7 @@ export class WebGlCapeWorkerPool {
     this.slots.forEach((slot) => this.dispatch(slot));
   }
 
-  public consumeLatestState(capeId: number): PackedCapeState | null {
+  public consumeLatestState(capeId: number): AnchoredCapeState | null {
     const registration = this.registrations.get(capeId);
     if (!registration) return null;
     const state = registration.latestState;
@@ -254,6 +267,7 @@ export class WebGlCapeWorkerPool {
       if (!registration || registration.slot !== slot) continue;
       if (registration.revision !== state.revision) continue;
       registration.latestState = {
+        anchors: deserializeCapeAnchors(state.anchors),
         positions: state.positions,
         previous: state.previous,
       };

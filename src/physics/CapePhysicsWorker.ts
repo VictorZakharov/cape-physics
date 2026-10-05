@@ -7,6 +7,7 @@ import {
   deserializeCapeAnchors,
   deserializeCapsuleColliders,
   deserializeWorldColliders,
+  serializeCapeAnchors,
   type CapeWorkerBatchResult,
   type CapeWorkerFailure,
   type CapeWorkerRequest,
@@ -19,6 +20,7 @@ interface WorkerCape {
   readonly bodyColliders: ReturnType<typeof deserializeCapsuleColliders>;
   readonly characterVelocity: THREE.Vector3;
   revision: number;
+  time: number | null;
 }
 
 const capes = new Map<number, WorkerCape>();
@@ -53,6 +55,7 @@ function handleMessage(message: CapeWorkerRequest): void {
         bodyColliders: deserializeCapsuleColliders(message.bodyColliders),
         characterVelocity: new THREE.Vector3(),
         revision: message.revision,
+        time: null,
       });
       return;
     }
@@ -63,6 +66,7 @@ function handleMessage(message: CapeWorkerRequest): void {
       cape.simulation.updateSettings(message.settings, cape.anchors);
       cape.simulation.overwriteStateForHarness(message.positions, message.previous);
       cape.revision = message.revision;
+      cape.time = null;
       return;
     }
     case 'remove-cape':
@@ -75,6 +79,11 @@ function handleMessage(message: CapeWorkerRequest): void {
         for (const input of frame.capes) {
           const cape = capes.get(input.capeId);
           if (!cape) continue;
+          if (cape.time !== null && frame.time - cape.time > frame.deltaTime * 1.5) {
+            // Skipped overload frames must not drag old world-space particles
+            // across the cave toward a character that has already moved on.
+            cape.simulation.rebaseAnchors(cape.anchors, deserializeCapeAnchors(input.anchors));
+          }
           copySerializedCapeAnchors(input.anchors, cape.anchors);
           applySerializedCapsuleEndpoints(input.bodyColliderEndpoints, cape.bodyColliders);
           cape.characterVelocity.fromArray(input.characterVelocity);
@@ -87,6 +96,7 @@ function handleMessage(message: CapeWorkerRequest): void {
             frame.time,
           );
           touchedCapeIds.add(input.capeId);
+          cape.time = frame.time;
         }
       }
       const states = [...touchedCapeIds].flatMap((capeId) => {
@@ -96,6 +106,7 @@ function handleMessage(message: CapeWorkerRequest): void {
         return [{
           capeId,
           revision: cape.revision,
+          anchors: serializeCapeAnchors(cape.anchors),
           positions: state.positions,
           previous: state.previous,
         }];

@@ -125,6 +125,7 @@ export type CapeWorkerRequest =
 export interface CapeWorkerResultState {
   readonly capeId: number;
   readonly revision: number;
+  readonly anchors: SerializedCapeAnchors;
   readonly positions: Float32Array;
   readonly previous: Float32Array;
 }

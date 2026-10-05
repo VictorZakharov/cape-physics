@@ -20,7 +20,7 @@ describe('WebGPU multi-cape submission architecture', () => {
     ).text();
     const demoSource = await Bun.file('src/CapeDemo.ts').text();
 
-    expect(gpuSource).toContain('export const MAXIMUM_GPU_CAPES = 11;');
+    expect(gpuSource).toContain('export const MAXIMUM_GPU_CAPES = BOT_COUNT_RANGE.max + 1;');
     expect(gpuSource).toContain('public prepareBatchStep(');
     expect(gpuSource).toContain('this.activeCapeCountUniform.value = inputs.length;');
     expect(gpuSource).toContain('this.botMesh.count = inputs.length - 1;');

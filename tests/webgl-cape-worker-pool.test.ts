@@ -110,6 +110,7 @@ describe('WebGlCapeWorkerPool', () => {
         states: [{
           capeId: add.capeId,
           revision: add.revision,
+          anchors: add.anchors,
           positions: add.positions.slice(),
           previous: add.previous.slice(),
         }],
@@ -126,5 +127,38 @@ describe('WebGlCapeWorkerPool', () => {
     expect(FakeWorker.instances.every((worker) => worker.terminated)).toBe(true);
     firstCape.dispose();
     secondCape.dispose();
+  });
+
+  test('bounds a 50-bot backlog and sends recent poses when overloaded workers finish', () => {
+    const pool = new WebGlCapeWorkerPool([]);
+    const cape = new CapeSimulation(anchors, {}, undefined, { renderResources: false });
+    try {
+      const inputs = Array.from({ length: 50 }, (_, capeId) => ({
+        capeId, anchors, bodyColliders, characterVelocity: new THREE.Vector3(),
+      }));
+      inputs.forEach(({ capeId }) => pool.registerCape(capeId, cape, anchors, bodyColliders));
+      pool.enqueueStep(1 / 120, 1 / 120, inputs);
+      pool.flush();
+      for (let step = 2; step <= 1_200; step += 1) {
+        pool.enqueueStep(1 / 120, step / 120, inputs);
+        pool.flush();
+      }
+      expect(pool.getDiagnostics().queuedSteps).toBe(FakeWorker.instances.length * 4);
+      for (const worker of FakeWorker.instances) {
+        const batch = worker.posted.find((message) => message.type === 'step-batch');
+        if (!batch || batch.type !== 'step-batch') throw new Error('Missing first batch.');
+        worker.emit({ type: 'batch-result', requestId: batch.requestId, states: [] });
+        const batches = worker.posted.filter((message) => message.type === 'step-batch');
+        expect(batches).toHaveLength(2);
+        expect(batches[1]!.frames.map((frame) => frame.time)).toEqual([
+          1_197 / 120, 1_198 / 120, 1_199 / 120, 10,
+        ]);
+        expect(batches[1]!.frames.every((frame) => frame.capes.length > 0)).toBe(true);
+      }
+      expect(pool.getDiagnostics().queuedSteps).toBe(0);
+    } finally {
+      pool.dispose();
+      cape.dispose();
+    }
   });
 });
