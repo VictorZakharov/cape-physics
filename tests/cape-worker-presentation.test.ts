@@ -24,6 +24,28 @@ function snapshot(cape: CapeSimulation, time: number): AnchoredCapeState {
 }
 
 describe('WebGL cape frame presentation', () => {
+  test('slow worker deliveries keep corrections moving throughout the gap without delaying pins', () => {
+    const cape = new CapeSimulation(anchors);
+    const presentation = new CapeWorkerPresentation(cape, anchors, 1);
+    try {
+      presentation.update(1.16, anchors);
+      const before = worldPoint(cape, CAPE.columns);
+      const state = snapshot(cape, 1.16);
+      state.positions[CAPE.columns * 4]! += 0.2;
+      state.previous.set(state.positions);
+      cape.overwriteStateForHarness(state.positions, state.previous);
+      presentation.accept(state);
+      presentation.update(1.16, anchors);
+      expect(worldPoint(cape, CAPE.columns).distanceTo(before)).toBeLessThan(1e-6);
+      presentation.update(1.28, anchors);
+      const late = worldPoint(cape, CAPE.columns);
+      presentation.update(1.30, anchors);
+      expect(worldPoint(cape, CAPE.columns).x - late.x).toBeGreaterThan(0.005);
+      presentation.update(1.32, anchors, true);
+      expect(worldPoint(cape, CAPE.columns).x).toBeCloseTo(state.positions[CAPE.columns * 4]!, 5);
+      expect(worldPoint(cape, 0).distanceTo(new THREE.Vector3().fromArray(state.positions, 0))).toBeLessThan(1e-5);
+    } finally { cape.dispose(); }
+  });
   test('advances free cloth on every render frame between worker results, with bounded prediction', () => {
     const cape = new CapeSimulation(anchors);
     const presentation = new CapeWorkerPresentation(cape, anchors, 1);

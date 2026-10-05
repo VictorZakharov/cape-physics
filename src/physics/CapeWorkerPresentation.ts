@@ -35,6 +35,7 @@ export class CapeWorkerPresentation {
   private time = 0;
   private renderTime = 0;
   private correctionTime = 0;
+  private correctionRate = CORRECTION_RATE;
 
   public constructor(private readonly cape: CapeSimulation, anchors: CapeAnchors, time: number) {
     this.positions = cape.mesh.geometry.getAttribute('position') as THREE.BufferAttribute;
@@ -49,6 +50,7 @@ export class CapeWorkerPresentation {
   }
 
   public reset(anchors: CapeAnchors, time: number): void {
+    this.correctionRate = CORRECTION_RATE;
     const state = this.cape.copyPackedState();
     this.renderTime = time;
     this.accept({ ...state, previous: state.positions, anchors, previousAnchors: anchors, time, deltaTime: 0 });
@@ -56,6 +58,11 @@ export class CapeWorkerPresentation {
   }
 
   public accept(state: AnchoredCapeState): void {
+    // Spread corrections across slow deliveries instead of settling in two
+    // frames and then visibly freezing until the next worker result.
+    if (state.deltaTime > 0 && state.time > this.time) {
+      this.correctionRate = THREE.MathUtils.clamp(2 / (state.time - this.time), 10, CORRECTION_RATE);
+    }
     this.correction.set(this.positions.array);
     this.normalCorrection.set(this.normals.array);
     // Normals are computed only for completed solves, then blended cheaply per frame.
@@ -101,7 +108,7 @@ export class CapeWorkerPresentation {
     }
     this.renderTime = time;
     const age = snap ? 0 : predictionAge(time - this.time);
-    const decay = snap ? 0 : Math.exp(-CORRECTION_RATE * Math.max(0, time - this.correctionTime));
+    const decay = snap ? 0 : Math.exp(-this.correctionRate * Math.max(0, time - this.correctionTime));
     const positions = this.positions.array as Float32Array;
     const normals = this.normals.array as Float32Array;
     for (let component = 0; component < this.target.length; component += 1) {

@@ -711,7 +711,7 @@ async function captureRenderer(renderer, staticPort) {
       command('Page.enable'),
       command('Log.enable'),
     ]);
-    await waitForExpression(command, 'window.__CAPE_DEMO__?.ready === true', 60_000);
+    await waitForExpression(command, 'window.__CAPE_DEMO__?.ready === true', 180_000);
     const diagnostics = await evaluate(command, 'window.__CAPE_DEMO__.getDiagnostics()');
     if (diagnostics.renderer.actual !== renderer) {
       throw new Error(`${renderer} requested but ${diagnostics.renderer.actual} is active.`);
@@ -760,6 +760,7 @@ async function captureRenderer(renderer, staticPort) {
         command,
         `window.__CAPE_DEMO__.tracePackedCapeBatch(${JSON.stringify({
           bots: packedBatchBots,
+          coalesceSteps: process.env.CAPE_TRAJECTORY_COALESCED === '1',
           frames: 90,
           sampleEvery: 6,
         })})`,

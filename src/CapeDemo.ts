@@ -48,6 +48,7 @@ import {
   type CapePhysicsSettings,
 } from './physics/CapeSettings';
 import type { GpuCapeSimulation } from './physics/GpuCapeSimulation';
+import { GpuCapeFrameBatch } from './physics/GpuCapeFrameBatch';
 import { cloneCapeAnchors } from './physics/GpuCapeStepPreparation';
 import { CapeWorkerPresentation } from './physics/CapeWorkerPresentation';
 import type { WorldCollider } from './physics/colliders';
@@ -68,6 +69,7 @@ import {
 import { RendererSwitch } from './ui/RendererSwitch';
 import { invariant } from './utils/assert';
 import { percentile } from './utils/math';
+import { averageOrNull, percentileOrNull } from './utils/profileStatistics';
 import { CaveAtmosphere } from './world/CaveAtmosphere';
 import type { WebGpuCaveAtmosphere } from './world/WebGpuCaveAtmosphere';
 import { CaveWorld } from './world/CaveWorld';
@@ -78,15 +80,6 @@ import type { WebGpuTorchSystem } from './world/WebGpuTorchSystem';
 import { WaterSystem } from './world/WaterSystem';
 import type { WebGpuWaterSystem } from './world/WebGpuWaterSystem';
 import { WorldCollisionResolver } from './world/WorldCollisionResolver';
-
-function averageOrNull(values: readonly number[]): number | null {
-  if (values.length === 0) return null;
-  return values.reduce((sum, value) => sum + value, 0) / values.length;
-}
-
-function percentileOrNull(values: readonly number[], ratio: number): number | null {
-  return values.length > 0 ? percentile(values, ratio) : null;
-}
 
 interface ScenePhaseTotals {
   camera: number;
@@ -541,12 +534,13 @@ export class CapeDemo {
     }
   }
 
+  private readonly gpuCapeFrame = new GpuCapeFrameBatch();
   private readonly frame = (timestamp: number): void => {
     this.performance.recordFrame(timestamp);
     const physicsStart = performance.now();
     this.botPopulation.tick();
-    const timing = this.clock.advance(timestamp, this.simulateStep,
-      this.cape instanceof CapeSimulation && this.performanceBots.length > 0 ? 2 : undefined);
+    const timing = this.gpuCapeFrame.run(() => this.clock.advance(timestamp, this.simulateStep,
+      this.cape instanceof CapeSimulation && this.performanceBots.length > 0 ? 2 : undefined), this.simulateGpuCape);
     this.webGlCapeWorkers?.flush();
     this.applyWorkerCapeResults();
     this.syncCapeGeometries(timing.physicsSteps > 0, this.fixedTime + timing.interpolation * PHYSICS_STEP);
@@ -619,6 +613,10 @@ export class CapeDemo {
       return;
     }
 
+    this.gpuCapeFrame.enqueue(step, this.simulateGpuCape);
+  };
+
+  private readonly simulateGpuCape = (step: number): void => {
     this.submitGpuCapeBatch(step, [
       {
         anchors: this.character.getCapeAnchors(),
@@ -1293,10 +1291,12 @@ export class CapeDemo {
     bots = 2,
     frames = 90,
     sampleEvery = 6,
+    coalesceSteps = false,
   }: {
     bots?: number;
     frames?: number;
     sampleEvery?: number;
+    coalesceSteps?: boolean;
   } = {}): Promise<PackedCapeBatchReport> {
     if (this.cape instanceof CapeSimulation) {
       throw new Error('Packed cape batch tracing requires the WebGPU solver.');
@@ -1321,7 +1321,9 @@ export class CapeDemo {
         this.input.setVirtualMovement(horizontal, moving ? 1 : 0);
         // Exercise the production packed submission path: one compute graph,
         // one workgroup per player/bot cape, and each lane's live anchors.
-        this.simulateStep(PHYSICS_STEP);
+        this.gpuCapeFrame.run(() => {
+          for (let index = 0; index < (coalesceSteps ? [1, 2, 4, 2][frame % 4]! : 1); index++) this.simulateStep(PHYSICS_STEP);
+        }, this.simulateGpuCape);
         this.syncCapeGeometries();
         this.pipeline.renderManual(PHYSICS_STEP);
         if (frame % sampleInterval === 0 || frame === frameCount - 1) {

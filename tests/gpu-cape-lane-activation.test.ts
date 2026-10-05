@@ -75,3 +75,15 @@ test('render prewarming initializes real bot triangles without activating lanes 
     expect(storage.positionBuffer.value.array.slice(length, 2 * length)).toEqual(before);
   } finally { cape.dispose(); }
 });
+test('GPU prediction rescales stored displacement when frame timestep changes', () => {
+  const anchors = { left: new THREE.Vector3(-0.48, 2.1, 0.27), right: new THREE.Vector3(0.48, 2.1, 0.27), back: new THREE.Vector3(0, 0, 1) };
+  const cape = new GpuCapeSimulation({} as THREE.WebGPURenderer, anchors);
+  const state = cape as unknown as { velocityTimeScaleUniform: { value: number } };
+  try {
+    const input = { anchors, bodyColliders: [], characterVelocity: new THREE.Vector3() };
+    for (const [delta, scale] of [[1 / 120, 1], [1 / 30, 4], [1 / 60, 0.5], [1 / 120, 0.5]]) {
+      cape.prepareBatchStep(delta!, [input], [], 0);
+      expect(state.velocityTimeScaleUniform.value).toBe(scale!);
+    }
+  } finally { cape.dispose(); }
+});

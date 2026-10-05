@@ -40,7 +40,7 @@ try {
   ], { windowsHide: true, stdio: 'ignore', env: { ...process.env, TEMP: root, TMP: root } });
   const targets = await fetchJsonWithRetry(`http://127.0.0.1:${debug}/json/list`, 40000);
   connection = await connectDebugger(targets.find((target) => target.type === 'page').webSocketDebuggerUrl);
-  await waitForExpression(connection.command, 'window.__CAPE_DEMO__?.ready === true', 120000);
+  await waitForExpression(connection.command, 'window.__CAPE_DEMO__?.ready === true', 180000);
   await evaluate(connection.command, `(async()=>{
     const demo=window.__CAPE_INTERNAL__;
     await window.__CAPE_DEMO__.setBotCount(50);
@@ -68,6 +68,7 @@ try {
       };
     }
     const start=performance.now(),simulationStart=demo.fixedTime,frames=[],cpu=[],stalls=[];
+    const solverStart=demo.cape.getPerformanceDiagnostics().totalSteps;
     let preceding=null;
     while(performance.now()-start<${duration * 1000}){
       const timestamp=await new Promise(requestAnimationFrame);
@@ -81,6 +82,7 @@ try {
     const avg=values=>values.reduce((sum,value)=>sum+value,0)/Math.max(1,values.length);
     const sortedFrames=[...frames].sort((a,b)=>a-b);
     return {renderer:${JSON.stringify(renderer)},hardwareThreads:navigator.hardwareConcurrency,frames:cpu.length,fps:cpu.length*1000/elapsed,
+      capeSolverStepsPerFrame:(demo.cape.getPerformanceDiagnostics().totalSteps-solverStart)/cpu.length,
       simulationRate:(demo.fixedTime-simulationStart)*1000/elapsed,p99FrameMs:sortedFrames[Math.floor(sortedFrames.length*.99)],worstFrameMs:Math.max(...frames),longFrames:frames.filter(value=>value>=50).length,stalls,
       phases:Object.fromEntries(Object.entries(totals).map(([key,value])=>[key,value/cpu.length])),
       meanCpuFrameMs:avg(cpu),meanWorkerIntervalMs:avg(intervals),p95WorkerIntervalMs:sorted[Math.floor(sorted.length*.95)]??null,
