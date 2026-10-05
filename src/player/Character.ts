@@ -122,6 +122,9 @@ export class Character {
   }
 
   public getCapeColliders(): readonly CapsuleCollider[] {
+    // Refresh the rig once, then transform endpoints directly. localToWorld
+    // otherwise rebuilds the same ancestor chain for every capsule endpoint.
+    this.root.updateMatrixWorld(true);
     const {
       shoulders,
       upperTorso,
@@ -344,8 +347,8 @@ export class Character {
     start: readonly [number, number, number],
     end: readonly [number, number, number],
   ): void {
-    space.localToWorld(collider.start.set(...start));
-    space.localToWorld(collider.end.set(...end));
+    collider.start.set(...start).applyMatrix4(space.matrixWorld);
+    collider.end.set(...end).applyMatrix4(space.matrixWorld);
   }
 
   private createCapeCollider(

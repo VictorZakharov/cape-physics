@@ -52,6 +52,7 @@ import { cloneCapeAnchors } from './physics/GpuCapeStepPreparation';
 import { getCapeAnchorTransform } from './physics/CapeAnchorTransform';
 import type { WorldCollider } from './physics/colliders';
 import { BotMovementInput, normalizeBotCount } from './player/BotMovementInput';
+import { BotCharacterBatch } from './player/BotCharacterBatch';
 import { getBotSpawnPosition } from './player/BotSpawnLayout';
 import { Character, type CapeAnchors } from './player/Character';
 import { CharacterController } from './player/CharacterController';
@@ -219,6 +220,7 @@ export class CapeDemo {
   private readonly performanceBots: PerformanceBot[] = [];
   private webGlCapeWorkers: WebGlCapeWorkerPool | null = null;
   private botCapeMaterial: THREE.MeshPhysicalMaterial | null = null;
+  private botCharacters: BotCharacterBatch | null = null;
   private nextPerformanceBotId = 1;
   private cave!: CaveWorld;
   private water!: WaterSystem | WebGpuWaterSystem;
@@ -660,6 +662,7 @@ export class CapeDemo {
   }
 
   private updateScene(delta: number): void {
+    this.botCharacters?.sync();
     const playerPosition = this.character.root.position;
     const planarSpeed = Math.hypot(this.character.velocity.x, this.character.velocity.z);
     this.thirdPersonCamera.update(delta, playerPosition);
@@ -827,6 +830,11 @@ export class CapeDemo {
       const bot = this.performanceBots.pop();
       if (bot) this.disposePerformanceBot(bot);
     }
+    if (targetCount > 0 && !this.botCharacters) {
+      this.botCharacters = new BotCharacterBatch();
+      this.scene.add(this.botCharacters.group);
+    }
+    this.botCharacters?.setCharacters(this.performanceBots.map((bot) => bot.character));
   }
 
   private createPerformanceBot(index: number): PerformanceBot {
@@ -1462,6 +1470,7 @@ export class CapeDemo {
   }
 
   private updateSceneProfiled(delta: number, totals: ScenePhaseTotals): void {
+    this.botCharacters?.sync();
     const playerPosition = this.character.root.position;
     const planarSpeed = Math.hypot(this.character.velocity.x, this.character.velocity.z);
     let start = performance.now();
@@ -1700,6 +1709,8 @@ export class CapeDemo {
     }
     this.webGlCapeWorkers?.dispose();
     this.webGlCapeWorkers = null;
+    this.botCharacters?.dispose();
+    this.botCharacters = null;
     this.botCapeMaterial?.map?.dispose();
     this.botCapeMaterial?.normalMap?.dispose();
     this.botCapeMaterial?.roughnessMap?.dispose();
