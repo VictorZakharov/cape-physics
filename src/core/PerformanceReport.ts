@@ -94,7 +94,7 @@ export function formatPerformanceReport(input: PerformanceReportInput): string {
   const capeSolverLines = capeSolver
     ? capeSolver.implementation === 'webgpu-compute'
       ? [
-        `Cape solver: packed WebGPU compute PBD at ${Math.round(1 / PHYSICS_STEP)} Hz | ${CAPE.columns * CAPE.rows * scene.simulatedCapes} active GPU-resident particles across ${scene.simulatedCapes} of 51 preallocated capes | ${CAPE.solverIterations} PBD iterations with ${capeSolver.constraintColorBatches ?? 'unknown'} constraint colors across packed lanes | ${capeSolver.dispatchesPerStep ?? 'unknown'} dispatches in 1 compute submission/step`,
+        `Cape solver: packed WebGPU compute PBD, frame-coalesced steps (at most 33.3 ms), scene at ${Math.round(1 / PHYSICS_STEP)} Hz | ${CAPE.columns * CAPE.rows * scene.simulatedCapes} active GPU-resident particles across ${scene.simulatedCapes} of 51 preallocated capes | ${CAPE.solverIterations} PBD iterations with ${capeSolver.constraintColorBatches ?? 'unknown'} constraint colors across packed lanes | ${capeSolver.dispatchesPerStep ?? 'unknown'} dispatches in at most 1 compute submission/rendered frame`,
         'Cape timing: no animation-loop particle readback or GPU fence; main-thread physics above measures command preparation/submission, not GPU completion',
       ]
       : [

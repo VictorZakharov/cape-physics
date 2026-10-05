@@ -140,7 +140,8 @@ describe('performance report', () => {
       },
     });
     expect(gpuReport).toContain('10 PBD iterations with 17 constraint colors');
-    expect(gpuReport).toContain('46 dispatches in 1 compute submission/step');
+    expect(gpuReport).toContain('46 dispatches in at most 1 compute submission/rendered frame');
+    expect(gpuReport).toContain('frame-coalesced steps (at most 33.3 ms), scene at 120 Hz');
     expect(gpuReport).not.toContain('25 dispatches');
   });
 

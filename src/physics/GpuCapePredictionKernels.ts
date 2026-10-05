@@ -26,6 +26,7 @@ export interface GpuCapePredictionResources {
   readonly anchorUniform: THREE.UniformArrayNode<'vec4'>;
   readonly dampingUniform: THREE.UniformNode<'float', number>;
   readonly deltaTimeUniform: THREE.UniformNode<'float', number>;
+  readonly velocityTimeScaleUniform: THREE.UniformNode<'float', number>;
   readonly dragPerSecondUniform: THREE.UniformNode<'float', number>;
   readonly dynamicsUniform: THREE.UniformArrayNode<'vec4'>;
   readonly positionBuffer: THREE.StorageBufferNode<'vec4'>;
@@ -128,6 +129,7 @@ export function createGpuCapePredictionKernel(
     const currentPosition = current.xyz.toVar('currentPosition');
     const previousPosition = previous.xyz;
     const velocity = currentPosition.sub(previousPosition).toVar('velocity');
+    velocity.mulAssign(resources.velocityTimeScaleUniform);
     const drag = resources.dragPerSecondUniform.mul(resources.dampingUniform);
     velocity.mulAssign(drag.mul(resources.deltaTimeUniform).negate().exp());
     const maximumPlanarDisplacement = resources.deltaTimeUniform

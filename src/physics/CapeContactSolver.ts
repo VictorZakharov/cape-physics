@@ -539,6 +539,11 @@ export class CapeContactSolver {
     const fromStartX = position.x - prepared.startX;
     const fromStartY = position.y - prepared.startY;
     const fromStartZ = position.z - prepared.startZ;
+    // Both one-sided and geometric responses are contained by this capsule
+    // AABB. Recompute against the current particle after each earlier contact.
+    const radius = Math.max(prepared.lateralRadius, prepared.depthRadius) + 1e-7;
+    if (fromStartX < Math.min(0, prepared.axisX) - radius || fromStartX > Math.max(0, prepared.axisX) + radius
+      || fromStartZ < Math.min(0, prepared.axisZ) - radius || fromStartZ > Math.max(0, prepared.axisZ) + radius) return 0;
     const particleDepth = fromStartX * back.x
       + fromStartY * back.y
       + fromStartZ * back.z;

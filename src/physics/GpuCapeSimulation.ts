@@ -133,6 +133,8 @@ export class GpuCapeSimulation {
   private readonly worldSphereBuffer;
   private readonly rockBuffer;
   private readonly deltaTimeUniform = uniform(1 / 120);
+  private readonly velocityTimeScaleUniform = uniform(1);
+  private previousDeltaTime: number | null = null;
   private readonly timeUniform = uniform(0);
   private readonly dragPerSecondUniform = uniform(CAPE_DRAG_PER_SECOND);
   private readonly stiffnessUniform = uniform(DEFAULT_CAPE_PHYSICS_SETTINGS.stiffness);
@@ -251,6 +253,7 @@ export class GpuCapeSimulation {
       anchorUniform: this.anchorUniform,
       dampingUniform: this.dampingUniform,
       deltaTimeUniform: this.deltaTimeUniform,
+      velocityTimeScaleUniform: this.velocityTimeScaleUniform,
       dragPerSecondUniform: this.dragPerSecondUniform,
       dynamicsUniform: this.dynamicsUniform,
       positionBuffer: this.positionBuffer,
@@ -655,6 +658,8 @@ export class GpuCapeSimulation {
     this.activeCapeCountUniform.value = inputs.length;
     this.botMesh.count = inputs.length - 1;
     this.deltaTimeUniform.value = deltaTime;
+    this.velocityTimeScaleUniform.value = deltaTime / (this.previousDeltaTime ?? deltaTime);
+    this.previousDeltaTime = deltaTime;
     this.timeUniform.value = time;
     this.dragPerSecondUniform.value = CAPE_DRAG_PER_SECOND;
     inputs.forEach((input, capeIndex) => {
