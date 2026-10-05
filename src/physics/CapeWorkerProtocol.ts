@@ -126,6 +126,9 @@ export interface CapeWorkerResultState {
   readonly capeId: number;
   readonly revision: number;
   readonly anchors: SerializedCapeAnchors;
+  readonly previousAnchors: SerializedCapeAnchors;
+  readonly time: number;
+  readonly deltaTime: number;
   readonly positions: Float32Array;
   readonly previous: Float32Array;
 }

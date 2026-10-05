@@ -37,6 +37,9 @@ interface CapeRegistration {
 
 export interface AnchoredCapeState extends PackedCapeState {
   readonly anchors: CapeAnchors;
+  readonly previousAnchors: CapeAnchors;
+  readonly time: number;
+  readonly deltaTime: number;
 }
 
 // Keep both queued work and result latency bounded when a crowd overloads CPUs.
@@ -268,6 +271,9 @@ export class WebGlCapeWorkerPool {
       if (registration.revision !== state.revision) continue;
       registration.latestState = {
         anchors: deserializeCapeAnchors(state.anchors),
+        previousAnchors: deserializeCapeAnchors(state.previousAnchors),
+        time: state.time,
+        deltaTime: state.deltaTime,
         positions: state.positions,
         previous: state.previous,
       };

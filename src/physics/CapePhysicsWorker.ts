@@ -17,10 +17,12 @@ import type { WorldCollider } from './colliders';
 interface WorkerCape {
   readonly simulation: CapeSimulation;
   readonly anchors: ReturnType<typeof deserializeCapeAnchors>;
+  readonly previousAnchors: ReturnType<typeof deserializeCapeAnchors>;
   readonly bodyColliders: ReturnType<typeof deserializeCapsuleColliders>;
   readonly characterVelocity: THREE.Vector3;
   revision: number;
   time: number | null;
+  deltaTime: number;
 }
 
 const capes = new Map<number, WorkerCape>();
@@ -52,10 +54,12 @@ function handleMessage(message: CapeWorkerRequest): void {
       capes.set(message.capeId, {
         simulation,
         anchors,
+        previousAnchors: deserializeCapeAnchors(message.anchors),
         bodyColliders: deserializeCapsuleColliders(message.bodyColliders),
         characterVelocity: new THREE.Vector3(),
         revision: message.revision,
         time: null,
+        deltaTime: 0,
       });
       return;
     }
@@ -63,6 +67,7 @@ function handleMessage(message: CapeWorkerRequest): void {
       const cape = capes.get(message.capeId);
       if (!cape) return;
       copySerializedCapeAnchors(message.anchors, cape.anchors);
+      copySerializedCapeAnchors(message.anchors, cape.previousAnchors);
       cape.simulation.updateSettings(message.settings, cape.anchors);
       cape.simulation.overwriteStateForHarness(message.positions, message.previous);
       cape.revision = message.revision;
@@ -83,6 +88,9 @@ function handleMessage(message: CapeWorkerRequest): void {
             // Skipped overload frames must not drag old world-space particles
             // across the cave toward a character that has already moved on.
             cape.simulation.rebaseAnchors(cape.anchors, deserializeCapeAnchors(input.anchors));
+            copySerializedCapeAnchors(input.anchors, cape.previousAnchors);
+          } else {
+            copySerializedCapeAnchors(serializeCapeAnchors(cape.anchors), cape.previousAnchors);
           }
           copySerializedCapeAnchors(input.anchors, cape.anchors);
           applySerializedCapsuleEndpoints(input.bodyColliderEndpoints, cape.bodyColliders);
@@ -97,6 +105,7 @@ function handleMessage(message: CapeWorkerRequest): void {
           );
           touchedCapeIds.add(input.capeId);
           cape.time = frame.time;
+          cape.deltaTime = frame.deltaTime;
         }
       }
       const states = [...touchedCapeIds].flatMap((capeId) => {
@@ -107,6 +116,9 @@ function handleMessage(message: CapeWorkerRequest): void {
           capeId,
           revision: cape.revision,
           anchors: serializeCapeAnchors(cape.anchors),
+          previousAnchors: serializeCapeAnchors(cape.previousAnchors),
+          time: cape.time!,
+          deltaTime: cape.deltaTime,
           positions: state.positions,
           previous: state.previous,
         }];

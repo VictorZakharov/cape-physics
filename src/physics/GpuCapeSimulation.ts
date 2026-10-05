@@ -626,6 +626,14 @@ export class GpuCapeSimulation {
     return [...new Set(this.computeSequence)];
   }
 
+  /** Give startup render warm-up real cloth triangles without activating simulation lanes. */
+  public prewarmBotMesh(anchors: CapeAnchors): void {
+    for (let capeIndex = 1; capeIndex < MAXIMUM_GPU_CAPES; capeIndex += 1) {
+      this.initializeCapeLane(capeIndex, anchors);
+    }
+    this.botMesh.count = MAXIMUM_GPU_CAPES - 1;
+  }
+
   /**
    * Updates every active cape lane while retaining one precompiled compute
    * graph. One workgroup handles one cape, so bot activation never constructs
@@ -1129,6 +1137,9 @@ export class GpuCapeSimulation {
       this.previousBuffer.value,
     ]) {
       (attribute.array as Float32Array).set(state, offset);
+      // Existing lanes live only on the GPU. A full upload would rewind them
+      // to the stale CPU initialization data whenever another bot appears.
+      attribute.addUpdateRange(offset, state.length);
       attribute.needsUpdate = true;
     }
     this.updateAnchorValues(capeIndex, anchors);

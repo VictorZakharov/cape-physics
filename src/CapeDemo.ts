@@ -49,10 +49,12 @@ import {
 } from './physics/CapeSettings';
 import type { GpuCapeSimulation } from './physics/GpuCapeSimulation';
 import { cloneCapeAnchors } from './physics/GpuCapeStepPreparation';
-import { getCapeAnchorTransform } from './physics/CapeAnchorTransform';
+import { CapeWorkerPresentation } from './physics/CapeWorkerPresentation';
 import type { WorldCollider } from './physics/colliders';
 import { BotMovementInput, normalizeBotCount } from './player/BotMovementInput';
 import { BotCharacterBatch } from './player/BotCharacterBatch';
+import { BotPopulation, isPopulationOnlyChange } from './player/BotPopulation';
+import { prepareBotRenderWarmup } from './player/BotRenderWarmup';
 import { getBotSpawnPosition } from './player/BotSpawnLayout';
 import { Character, type CapeAnchors } from './player/Character';
 import { CharacterController } from './player/CharacterController';
@@ -112,6 +114,7 @@ interface PerformanceBot {
   readonly controller: CharacterController;
   geometryDirty: boolean;
   capeRenderAnchors: CapeAnchors | null;
+  capePresentation: CapeWorkerPresentation | null;
 }
 
 type CapeTrajectoryScenario =
@@ -218,6 +221,7 @@ export class CapeDemo {
   private cape!: CapeInstance;
   private capeFactory!: CapeFactory;
   private readonly performanceBots: PerformanceBot[] = [];
+  private readonly botPopulation = new BotPopulation(() => this.performanceBots.length, (count) => this.reconcilePerformanceBots(count));
   private webGlCapeWorkers: WebGlCapeWorkerPool | null = null;
   private botCapeMaterial: THREE.MeshPhysicalMaterial | null = null;
   private botCharacters: BotCharacterBatch | null = null;
@@ -504,12 +508,22 @@ export class CapeDemo {
       usesNodeRenderer ? 22_000 : 4_000,
     );
     this.startupRecovery.stage('compile-render-pipelines');
-    await this.pipeline.compile(this.scene, this.camera);
+    this.botCharacters ??= new BotCharacterBatch();
+    this.scene.add(this.botCharacters.group);
+    const finishBotWarmup = prepareBotRenderWarmup(this.scene, this.botCharacters, this.cape, this.customizationSettings,
+      this.cape instanceof CapeSimulation ? this.botCapeMaterial ??= createCapeFabricMaterial(BOT_CYAN_CAPE_PALETTE) : undefined,
+      this.performanceBots.map((bot) => bot.character));
+    try {
+      await this.pipeline.compile(this.scene, this.camera);
+      this.pipeline.renderManual(0); // Include lazy shadow pipelines while loading is still visible.
+      await this.pipeline.synchronizeForLocalProfile();
+    } finally { finishBotWarmup(); }
     await this.loading.update(0.96, 'Submitting the first rendered frame');
     this.startupRecovery.stage('submit-first-frame');
     this.pipeline.renderManual(0);
     await this.loading.update(0.98, 'Validating torchlight and reflections');
     this.pipeline.renderManual(0);
+    await this.pipeline.synchronizeForLocalProfile();
 
     window.addEventListener('resize', this.handleResize);
     document.addEventListener('visibilitychange', this.handleVisibilityChange);
@@ -530,12 +544,11 @@ export class CapeDemo {
   private readonly frame = (timestamp: number): void => {
     this.performance.recordFrame(timestamp);
     const physicsStart = performance.now();
+    this.botPopulation.tick();
     const timing = this.clock.advance(timestamp, this.simulateStep);
     this.webGlCapeWorkers?.flush();
-    const workerCapeUpdated = this.applyWorkerCapeResults();
-    if (timing.physicsSteps > 0 || workerCapeUpdated) {
-      this.syncCapeGeometries(timing.physicsSteps > 0);
-    }
+    this.applyWorkerCapeResults();
+    this.syncCapeGeometries(timing.physicsSteps > 0, this.fixedTime + timing.interpolation * PHYSICS_STEP);
     const sceneStart = performance.now();
     this.updateScene(timing.delta);
     this.quality.observe(this.fixedTime, this.performance.getSnapshot());
@@ -588,6 +601,7 @@ export class CapeDemo {
         if (bot.capeRenderAnchors) {
           bot.cape.rebaseAnchors(bot.capeRenderAnchors, bot.character.getCapeAnchors());
           bot.capeRenderAnchors = null;
+          bot.capePresentation = null;
           bot.cape.mesh.matrix.identity();
         }
         bot.cape.step(
@@ -754,10 +768,12 @@ export class CapeDemo {
     settings: CustomizationSettings,
     settleDimensions: boolean,
   ): void => {
+    const populationOnly = isPopulationOnlyChange(this.customizationSettings, settings);
     this.customizationSettings = settings;
     if (!this.cape || !this.character) return;
+    this.botPopulation.request(settings.bots);
+    if (populationOnly && !settleDimensions) return;
     this.cape.updateSettings(settings, this.character.getCapeAnchors());
-    this.reconcilePerformanceBots(settings.bots);
     for (const bot of this.performanceBots) {
       if (bot.cape instanceof CapeSimulation && bot.capeRenderAnchors) {
         bot.cape.rebaseAnchors(bot.capeRenderAnchors, bot.character.getCapeAnchors());
@@ -868,6 +884,7 @@ export class CapeDemo {
       controller: new CharacterController(character, input, this.worldCollision),
       geometryDirty: false,
       capeRenderAnchors: null,
+      capePresentation: null,
     };
     this.scene.add(character.root);
     if (cape) this.scene.add(cape.mesh);
@@ -884,10 +901,11 @@ export class CapeDemo {
         character.getCapeColliders(),
       )) {
         bot.capeRenderAnchors = cloneCapeAnchors(character.getCapeAnchors());
+        bot.capePresentation = new CapeWorkerPresentation(cape, bot.capeRenderAnchors, this.fixedTime);
       }
       cape.mesh.matrixAutoUpdate = false;
     }
-    cape?.syncGeometry();
+    if (!bot.capePresentation) cape?.syncGeometry();
     return bot;
   }
 
@@ -910,21 +928,16 @@ export class CapeDemo {
     }
   }
 
-  private syncCapeGeometries(syncPlayer = true): void {
+  private syncCapeGeometries(syncPlayer = true, time = this.fixedTime, snap = false): void {
     if (syncPlayer) this.cape.syncGeometry();
     this.performanceBots.forEach((bot) => {
       if (!bot.cape) return;
-      if (bot.geometryDirty) {
+      if (bot.geometryDirty && !bot.capePresentation) {
         bot.cape.syncGeometry();
         bot.geometryDirty = false;
       }
-      if (bot.capeRenderAnchors) {
-        getCapeAnchorTransform(
-          bot.capeRenderAnchors,
-          bot.character.getCapeAnchors(),
-          bot.cape.mesh.matrix,
-        );
-      }
+      bot.capePresentation?.update(time, bot.character.getCapeAnchors(), snap);
+      if (bot.capePresentation) bot.geometryDirty = false;
     });
   }
 
@@ -932,13 +945,14 @@ export class CapeDemo {
     if (!this.webGlCapeWorkers) return false;
     let updated = false;
     for (const bot of this.performanceBots) {
-      if (!(bot.cape instanceof CapeSimulation)) continue;
+      if (!(bot.cape instanceof CapeSimulation) || !this.webGlCapeWorkers.isDrivingCape(bot.id)) continue;
       const state = this.webGlCapeWorkers.consumeLatestState(bot.id);
       if (!state) continue;
       bot.cape.overwriteStateForHarness(state.positions, state.previous);
       bot.capeRenderAnchors = state.anchors;
+      bot.capePresentation?.accept(state);
       bot.cape.synchronizeAnchorDiagnostics(bot.character.getCapeAnchors());
-      bot.geometryDirty = true;
+      bot.geometryDirty = false;
       updated = true;
     }
     return updated;
@@ -955,6 +969,7 @@ export class CapeDemo {
       );
       bot.capeRenderAnchors = cloneCapeAnchors(bot.character.getCapeAnchors());
       bot.cape.mesh.matrix.identity();
+      bot.capePresentation?.reset(bot.capeRenderAnchors, this.fixedTime);
     }
   }
 
@@ -1052,7 +1067,8 @@ export class CapeDemo {
         this.input.queueVirtualJump();
       },
       setBotCount: async (count) => {
-        this.reconcilePerformanceBots(count);
+        this.botPopulation.request(count);
+        await this.botPopulation.synchronize();
       },
       advance: ({ duration, frameStep = 1 / 60 }) => this.advanceHarness(duration, frameStep),
       traceCapeScenario: (options) => this.traceCapeScenario(options),
@@ -1449,8 +1465,8 @@ export class CapeDemo {
       simulated = true;
     }
     this.webGlCapeWorkers?.flush();
-    const workerCapeUpdated = this.applyWorkerCapeResults();
-    if (simulated || workerCapeUpdated) this.syncCapeGeometries(simulated);
+    this.applyWorkerCapeResults();
+    this.syncCapeGeometries(simulated, this.fixedTime + this.harnessAccumulator);
     const sceneStart = performance.now();
     if (scenePhaseTotals) {
       this.updateSceneProfiled(delta, scenePhaseTotals);
@@ -1466,7 +1482,7 @@ export class CapeDemo {
   private async synchronizeWebGlCapeWorkers(): Promise<void> {
     if (!this.webGlCapeWorkers) return;
     await this.webGlCapeWorkers.synchronize();
-    if (this.applyWorkerCapeResults()) this.syncCapeGeometries(false);
+    if (this.applyWorkerCapeResults()) this.syncCapeGeometries(false, this.fixedTime, true);
   }
 
   private updateSceneProfiled(delta: number, totals: ScenePhaseTotals): void {
