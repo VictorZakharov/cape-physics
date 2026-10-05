@@ -38,6 +38,8 @@ export interface PerformanceReportDetails {
     readonly workers: number;
     readonly busyWorkers: number;
     readonly queuedSteps: number;
+    readonly capeResultHz?: number;
+    readonly averageBatchMilliseconds?: number;
     readonly failure: string | null;
   } | null;
   readonly scene: {
@@ -92,16 +94,17 @@ export function formatPerformanceReport(input: PerformanceReportInput): string {
   const capeSolverLines = capeSolver
     ? capeSolver.implementation === 'webgpu-compute'
       ? [
-        `Cape solver: packed WebGPU compute PBD at ${Math.round(1 / PHYSICS_STEP)} Hz | ${CAPE.columns * CAPE.rows * scene.simulatedCapes} active GPU-resident particles across ${scene.simulatedCapes} of 11 preallocated capes | ${CAPE.solverIterations} PBD iterations with ${capeSolver.constraintColorBatches ?? 'unknown'} constraint colors across packed lanes | ${capeSolver.dispatchesPerStep ?? 'unknown'} dispatches in 1 compute submission/step`,
+        `Cape solver: packed WebGPU compute PBD at ${Math.round(1 / PHYSICS_STEP)} Hz | ${CAPE.columns * CAPE.rows * scene.simulatedCapes} active GPU-resident particles across ${scene.simulatedCapes} of 51 preallocated capes | ${CAPE.solverIterations} PBD iterations with ${capeSolver.constraintColorBatches ?? 'unknown'} constraint colors across packed lanes | ${capeSolver.dispatchesPerStep ?? 'unknown'} dispatches in 1 compute submission/step`,
         'Cape timing: no animation-loop particle readback or GPU fence; main-thread physics above measures command preparation/submission, not GPU completion',
       ]
       : [
         capeWorkers?.active
-          ? `Cape solver: CPU PBD Gauss-Seidel at ${Math.round(1 / PHYSICS_STEP)} Hz | ${CAPE.solverIterations} projection passes | player on main thread, bots across ${capeWorkers.workers} workers | sampled 1/${capeSolver.sampleIntervalSteps} player steps (${capeSolver.sampledActiveSteps} samples)`
+          ? `Cape solver: CPU PBD Gauss-Seidel | player at ${Math.round(1 / PHYSICS_STEP)} Hz on main thread, bots on adaptive worker steps (at most 33.3 ms) across ${capeWorkers.workers} workers | ${CAPE.solverIterations} projection passes | sampled 1/${capeSolver.sampleIntervalSteps} player steps (${capeSolver.sampledActiveSteps} samples)`
           : `Cape solver: sequential CPU PBD Gauss-Seidel at ${Math.round(1 / PHYSICS_STEP)} Hz | ${CAPE.solverIterations} projection passes | sampled 1/${capeSolver.sampleIntervalSteps} active steps (${capeSolver.sampledActiveSteps} samples)`,
         `Cape step sampled average: ${metric(capeSolver.averageStepMilliseconds)} ms | prediction ${metric(capeSolver.phases.prediction)} | constraints ${metric(capeSolver.phases.constraints)} | self ${metric(capeSolver.phases.selfCollision)} | fold ${metric(capeSolver.phases.foldGuard)} | body ${metric(capeSolver.phases.bodyCollision)} | world ${metric(capeSolver.phases.worldCollision)} | cave ${metric(capeSolver.phases.caveCollision)} | reconcile ${metric(capeSolver.phases.reconciliation)}`,
         ...(capeWorkers?.active ? [
           `Cape workers: ${capeWorkers.workers} active | ${capeWorkers.busyWorkers} busy | ${capeWorkers.queuedSteps} queued fixed steps | ${capeWorkers.failure ?? 'healthy'}`,
+          ...(capeWorkers.capeResultHz !== undefined ? [`Cape worker delivery: ${metric(capeWorkers.capeResultHz)} results/s/cape | ${metric(capeWorkers.averageBatchMilliseconds ?? 0)} ms average batch latency`] : []),
         ] : []),
       ]
     : [];

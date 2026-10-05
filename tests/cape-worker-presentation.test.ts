@@ -94,7 +94,7 @@ describe('WebGL cape frame presentation', () => {
     try {
       const before = worldPoint(cape, CAPE.columns);
       const state = snapshot(cape, 1);
-      state.positions[CAPE.columns * 4]! += 0.02;
+      state.positions[CAPE.columns * 4]! += 0.2;
       state.previous.set(state.positions);
       cape.overwriteStateForHarness(state.positions, state.previous);
       presentation.accept(state);

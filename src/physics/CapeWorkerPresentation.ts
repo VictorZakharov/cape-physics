@@ -11,7 +11,6 @@ const LOCAL_ANCHORS: CapeAnchors = {
 };
 const MAXIMUM_PREDICTION_SECONDS = 0.05;
 const MAXIMUM_PREDICTION_DISTANCE = 0.03;
-const MAXIMUM_CORRECTION_DISTANCE = 0.03;
 const CORRECTION_RATE = 60;
 
 function predictionAge(age: number): number {
@@ -80,7 +79,8 @@ export class CapeWorkerPresentation {
       this.previousPoint.toArray(this.velocity, offset);
       this.previousPoint.multiplyScalar(age).add(this.point);
       this.point.fromArray(this.correction, offset).sub(this.previousPoint);
-      this.point.clampLength(0, MAXIMUM_CORRECTION_DISTANCE);
+      // Retain the whole correction: clipping it makes arrivals larger than
+      // 3 cm jump immediately even though every intervening frame is updated.
       if (this.pinned[index]) this.point.set(0, 0, 0);
       this.point.toArray(this.correction, offset);
       this.point.fromBufferAttribute(this.normals, index).transformDirection(this.toLocal);

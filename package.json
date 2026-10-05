@@ -39,6 +39,7 @@
     "audit:visual": "bun run build && bun scripts/render-visual-audit.mjs",
     "probe:webgpu": "bun run build && bun scripts/run-webgpu-isolation-probe.mjs",
     "profile:render": "bun run build && bun scripts/render-performance-profile.mjs",
+    "profile:live": "bun run build && node scripts/profile-live-capes.mjs",
     "audit:cape-trajectories": "bun run build && bun scripts/compare-cape-trajectories.mjs",
     "verify": "bun run check && bun run build && bun run harness",
     "preview": "vite preview --host 0.0.0.0"

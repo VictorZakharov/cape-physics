@@ -40,7 +40,7 @@ test('worker snapshots describe the actual Verlet anchor frames, including skipp
       const result = responses.at(-1)!;
       if (result.type !== 'batch-result') throw new Error(JSON.stringify(result));
       expect(result.states[0]!.time).toBe(step * PHYSICS_STEP);
-      expect(result.states[0]!.deltaTime).toBe(PHYSICS_STEP);
+      expect(result.states[0]!.deltaTime).toBe(step === 12 ? 1 / 30 : PHYSICS_STEP);
       expect(result.states[0]!.anchors).toEqual(current);
       expect(result.states[0]!.previousAnchors).toEqual(step === 12 ? current : preceding);
       preceding = current;

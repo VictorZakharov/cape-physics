@@ -30,6 +30,7 @@ export class CapeCpuPrediction {
     characterVelocity: THREE.Vector3,
     time: number,
     settings: Pick<CapePhysicsSettings, 'damping' | 'weight'>,
+    previousDeltaTime = deltaTime,
   ): void {
     const characterSpeed = characterVelocity.length();
     const planarSpeed = Math.hypot(characterVelocity.x, characterVelocity.z);
@@ -57,7 +58,9 @@ export class CapeCpuPrediction {
         if (!position || !previous) continue;
 
         const drag = CAPE_DRAG_PER_SECOND * settings.damping;
-        this.velocity.copy(position).sub(previous).multiplyScalar(Math.exp(-drag * deltaTime));
+        this.velocity.copy(position).sub(previous).multiplyScalar(
+          deltaTime / previousDeltaTime * Math.exp(-drag * deltaTime),
+        );
         const particlePlanarSpeed = Math.hypot(this.velocity.x, this.velocity.z);
         const maximumPlanarDisplacement = MAXIMUM_PLANAR_CAPE_PARTICLE_SPEED * deltaTime;
         if (particlePlanarSpeed > maximumPlanarDisplacement) {

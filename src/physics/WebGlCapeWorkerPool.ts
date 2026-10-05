@@ -27,6 +27,8 @@ export interface WebGlCapeWorkerDiagnostics {
   readonly busyWorkers: number;
   readonly queuedSteps: number;
   readonly failure: string | null;
+  readonly capeResultHz: number;
+  readonly averageBatchMilliseconds: number;
 }
 
 interface CapeRegistration {
@@ -43,7 +45,7 @@ export interface AnchoredCapeState extends PackedCapeState {
 }
 
 // Keep both queued work and result latency bounded when a crowd overloads CPUs.
-const MAXIMUM_BATCH_STEPS = 4;
+const MAXIMUM_BATCH_STEPS = 1;
 
 interface WorkerSlot {
   readonly worker: Worker;
@@ -51,6 +53,10 @@ interface WorkerSlot {
   readonly pendingFrames: CapeWorkerStepFrame[];
   busy: boolean;
   nextRequestId: number;
+  dispatchedAt: number;
+  lastResultAt: number;
+  resultInterval: number;
+  batchMilliseconds: number;
 }
 
 function workerLimit(): number {
@@ -185,12 +191,15 @@ export class WebGlCapeWorkerPool {
   }
 
   public getDiagnostics(): WebGlCapeWorkerDiagnostics {
+    const measured = this.slots.filter((slot) => slot.capeIds.size > 0 && slot.resultInterval > 0);
     return {
       active: !this.disposed && !this.failure && this.registrations.size > 0,
       workers: this.slots.length,
       busyWorkers: this.slots.filter((slot) => slot.busy).length,
       queuedSteps: this.slots.reduce((sum, slot) => sum + slot.pendingFrames.length, 0),
       failure: this.failure,
+      capeResultHz: measured.reduce((sum, slot) => sum + 1_000 / slot.resultInterval, 0) / Math.max(1, measured.length),
+      averageBatchMilliseconds: measured.reduce((sum, slot) => sum + slot.batchMilliseconds, 0) / Math.max(1, measured.length),
     };
   }
 
@@ -217,6 +226,10 @@ export class WebGlCapeWorkerPool {
       pendingFrames: [],
       busy: false,
       nextRequestId: 1,
+      dispatchedAt: 0,
+      lastResultAt: 0,
+      resultInterval: 0,
+      batchMilliseconds: 0,
     };
     worker.onmessage = (event: MessageEvent<CapeWorkerResponse>) => {
       this.handleResponse(slot, event.data);
@@ -251,6 +264,7 @@ export class WebGlCapeWorkerPool {
       (cape) => cape.bodyColliderEndpoints.buffer,
     ));
     slot.busy = true;
+    slot.dispatchedAt = performance.now();
     this.post(slot.worker, {
       type: 'step-batch',
       requestId: slot.nextRequestId,
@@ -265,6 +279,13 @@ export class WebGlCapeWorkerPool {
       return;
     }
     slot.busy = false;
+    const now = performance.now();
+    slot.batchMilliseconds = now - slot.dispatchedAt;
+    if (slot.lastResultAt > 0) {
+      const interval = now - slot.lastResultAt;
+      slot.resultInterval = slot.resultInterval > 0 ? slot.resultInterval * 0.9 + interval * 0.1 : interval;
+    }
+    slot.lastResultAt = now;
     for (const state of response.states) {
       const registration = this.registrations.get(state.capeId);
       if (!registration || registration.slot !== slot) continue;

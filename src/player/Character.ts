@@ -90,6 +90,10 @@ export class Character {
   private readonly materials: THREE.Material[] = [];
   private capeAttachment!: THREE.Group;
   private opacity = 1;
+  private poseDirty = true;
+  private readonly lastRootMatrix = new THREE.Matrix4();
+  private readonly lastParentMatrix = new THREE.Matrix4();
+  private lastParent: THREE.Object3D | null = null;
 
   public constructor(
     private readonly capePalette: CapeFabricPalette = CRIMSON_CAPE_PALETTE,
@@ -107,16 +111,18 @@ export class Character {
     verticalVelocity = 0,
   ): void {
     this.animator.update(delta, planarSpeed, grounded, verticalVelocity);
+    this.poseDirty = true;
   }
 
   public resetAnimation(): void {
     this.animator.reset();
+    this.poseDirty = true;
   }
 
   public getCapeAnchors(): CapeAnchors {
-    this.root.updateMatrixWorld(true);
-    this.leftCapeAnchor.getWorldPosition(this.leftAnchorWorld);
-    this.rightCapeAnchor.getWorldPosition(this.rightAnchorWorld);
+    this.synchronizePoseMatrices();
+    this.leftAnchorWorld.setFromMatrixPosition(this.leftCapeAnchor.matrixWorld);
+    this.rightAnchorWorld.setFromMatrixPosition(this.rightCapeAnchor.matrixWorld);
     this.backWorld.set(0, 0, 1).applyQuaternion(this.root.quaternion).normalize();
     return this.capeAnchors;
   }
@@ -124,7 +130,7 @@ export class Character {
   public getCapeColliders(): readonly CapsuleCollider[] {
     // Refresh the rig once, then transform endpoints directly. localToWorld
     // otherwise rebuilds the same ancestor chain for every capsule endpoint.
-    this.root.updateMatrixWorld(true);
+    this.synchronizePoseMatrices();
     const {
       shoulders,
       upperTorso,
@@ -201,6 +207,20 @@ export class Character {
     });
     geometries.forEach((geometry) => geometry.dispose());
     this.materials.forEach((material) => material.dispose());
+  }
+
+  private synchronizePoseMatrices(): void {
+    this.root.updateMatrix();
+    this.root.parent?.updateWorldMatrix(true, false);
+    const parent = this.root.parent?.matrixWorld;
+    if (!this.poseDirty && this.root.parent === this.lastParent && this.root.matrix.equals(this.lastRootMatrix)
+      && (!parent || parent.equals(this.lastParentMatrix))) return;
+    this.root.updateMatrixWorld(true);
+    this.lastRootMatrix.copy(this.root.matrix);
+    if (parent) this.lastParentMatrix.copy(parent);
+    else this.lastParentMatrix.identity();
+    this.poseDirty = false;
+    this.lastParent = this.root.parent;
   }
 
   private buildBody(): void {

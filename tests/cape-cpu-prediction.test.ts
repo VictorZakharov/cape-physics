@@ -12,6 +12,16 @@ const anchors = {
 };
 
 describe('CPU cape prediction pass', () => {
+  test('preserves physical Verlet velocity when a worker changes its timestep', () => {
+    const positions = Array.from({ length: CAPE.columns + 1 }, () => new THREE.Vector3(0, 2, 0));
+    const previous = positions.map((position) => position.clone().add(new THREE.Vector3(0, -0.01, 0)));
+    const prediction = new CapeCpuPrediction(positions, previous, new Float32Array(positions.length));
+    prediction.predict(0.02, new THREE.Vector3(), 0, { weight: 0, damping: 0 }, 0.01);
+    expect(positions[CAPE.columns]!.y - previous[CAPE.columns]!.y).toBeCloseTo(0.02, 6);
+    prediction.predict(0.01, new THREE.Vector3(), 0, { weight: 0, damping: 0 }, 0.02);
+    expect(positions[CAPE.columns]!.y - previous[CAPE.columns]!.y).toBeCloseTo(0.01, 6);
+  });
+
   test('leaves pinned particles unchanged and records every free vertical prediction', () => {
     const positions = createCapeInitialParticlePositions(
       anchors,

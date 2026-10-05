@@ -1169,7 +1169,10 @@ export class GpuCapeSimulation {
     const bodyState = this.bodyStateValues[capeIndex]!;
     packGpuCapeBodyColliders(bodyData, capeIndex, colliders, back);
     bodyState.set(back.x, back.y, back.z, colliders.length);
-    this.bodyBuffer.value.needsUpdate = true;
+    if (colliders.length > 0) {
+      this.bodyBuffer.value.addUpdateRange(capeIndex * MAX_BODY_COLLIDERS * BODY_BUFFER_STRIDE * 4, colliders.length * BODY_BUFFER_STRIDE * 4);
+      this.bodyBuffer.value.needsUpdate = true;
+    }
   }
 
   private updateWorldBuffers(capeIndex: number, colliders: readonly WorldCollider[]): void {
@@ -1192,7 +1195,13 @@ export class GpuCapeSimulation {
       0,
       0,
     );
-    this.worldSphereBuffer.value.needsUpdate = true;
-    this.rockBuffer.value.needsUpdate = true;
+    if (candidates.spheres.length > 0) {
+      this.worldSphereBuffer.value.addUpdateRange(capeIndex * MAX_WORLD_SPHERES * 4, candidates.spheres.length * 4);
+      this.worldSphereBuffer.value.needsUpdate = true;
+    }
+    if (candidates.rocks.length > 0) {
+      this.rockBuffer.value.addUpdateRange(capeIndex * MAX_WORLD_ROCKS * ROCK_BUFFER_STRIDE * 4, candidates.rocks.length * ROCK_BUFFER_STRIDE * 4);
+      this.rockBuffer.value.needsUpdate = true;
+    }
   }
 }
