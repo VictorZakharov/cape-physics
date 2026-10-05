@@ -38,30 +38,48 @@ export class WorldCollisionResolver {
   private readonly rockQuery = new RockColliderQuery();
   private readonly middleBounds: CaveHorizontalBounds = { minimum: 0, maximum: 0 };
   private readonly upperBounds: CaveHorizontalBounds = { minimum: 0, maximum: 0 };
+  private readonly supportColliders: readonly WorldCollider[];
+  private readonly obstacleColliders: readonly WorldCollider[];
 
-  public constructor(private readonly colliders: readonly WorldCollider[]) {}
+  public constructor(colliders: readonly WorldCollider[]) {
+    this.supportColliders = colliders.filter((collider) => collider.walkable);
+    this.obstacleColliders = colliders.filter((collider) => !collider.walkable);
+  }
 
   public resolvePlayer(
     position: THREE.Vector3,
     verticalMotion?: PlayerVerticalMotion,
   ): PlayerCollisionResult {
+    // Reuse support only within this query while x/z remain unchanged.
+    let supportX = Number.NaN;
+    let supportZ = Number.NaN;
+    let supportHeight = 0;
     this.constrainCorridorBounds(position);
     if (!verticalMotion || verticalMotion.grounded) {
-      position.y = this.getPlayerRootHeight(position.x, position.z);
+      supportX = position.x;
+      supportZ = position.z;
+      supportHeight = this.getPlayerRootHeight(supportX, supportZ);
+      position.y = supportHeight;
     }
     this.constrainPlanarBounds(position);
 
-    for (const collider of this.colliders) {
-      if (collider.walkable) continue;
+    for (const collider of this.obstacleColliders) {
       this.resolveObstacle(position, collider);
     }
 
     this.constrainCorridorBounds(position);
     if (!verticalMotion || verticalMotion.grounded) {
-      position.y = this.getPlayerRootHeight(position.x, position.z);
+      if (position.x !== supportX || position.z !== supportZ) {
+        supportX = position.x;
+        supportZ = position.z;
+        supportHeight = this.getPlayerRootHeight(supportX, supportZ);
+      }
+      position.y = supportHeight;
     }
     this.constrainPlanarBounds(position);
-    const supportHeight = this.getPlayerRootHeight(position.x, position.z);
+    if (position.x !== supportX || position.z !== supportZ) {
+      supportHeight = this.getPlayerRootHeight(position.x, position.z);
+    }
     let grounded = verticalMotion?.grounded ?? true;
     const crossedSupportWhileFalling = verticalMotion !== undefined
       && verticalMotion.velocityY <= 0
@@ -88,8 +106,7 @@ export class WorldCollisionResolver {
 
   public getGroundHeight(x: number, z: number): number {
     let height = caveGroundHeightAt(x, z);
-    for (const collider of this.colliders) {
-      if (!collider.walkable) continue;
+    for (const collider of this.supportColliders) {
       if (isWorldRockCollider(collider)) {
         const support = this.getSmoothRockSupport(collider, x, z, height);
         if (support !== null) height = Math.max(height, support);
@@ -184,11 +201,14 @@ export class WorldCollisionResolver {
   }
 
   private resolveSphereObstacle(position: THREE.Vector3, collider: WorldSphereCollider): void {
+    const combinedRadius = collider.radius + PLAYER.radius;
+    const dx = position.x - collider.center.x;
+    const dz = position.z - collider.center.z;
+    if (dx * dx + dz * dz >= combinedRadius * combinedRadius) return;
     const capsuleBottom = position.y + PLAYER.radius;
     const capsuleTop = position.y + PLAYER.height - PLAYER.radius;
     const closestY = THREE.MathUtils.clamp(collider.center.y, capsuleBottom, capsuleTop);
     const verticalDistance = collider.center.y - closestY;
-    const combinedRadius = collider.radius + PLAYER.radius;
     const planarRequiredSquared = combinedRadius * combinedRadius - verticalDistance * verticalDistance;
     if (planarRequiredSquared <= 0) return;
 
@@ -203,6 +223,12 @@ export class WorldCollisionResolver {
   }
 
   private resolveRockObstacle(position: THREE.Vector3, collider: WorldRockCollider): void {
+    if (
+      position.x < collider.bounds.min.x - PLAYER.radius
+      || position.x > collider.bounds.max.x + PLAYER.radius
+      || position.z < collider.bounds.min.z - PLAYER.radius
+      || position.z > collider.bounds.max.z + PLAYER.radius
+    ) return;
     const capsuleBottom = position.y + PLAYER.radius;
     const capsuleTop = position.y + PLAYER.height - PLAYER.radius;
     for (let sample = 0; sample <= 4; sample += 1) {

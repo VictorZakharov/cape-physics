@@ -38,7 +38,7 @@ Everything is generated at runtime. There are no downloaded models, textures, or
 | One-finger swipe | Orbit the camera on touch devices |
 | Two-finger pinch | Zoom on touch devices |
 | Click the FPS graph | Copy a rolling 15-second performance report |
-| `CAPE & SCENE` panel | Tune cape physics, add up to 10 performance bots, or toggle lights, shadows, and reflections; reload or Reset Defaults restores the defaults |
+| `CAPE & SCENE` panel | Tune cape physics, add up to 50 performance bots, or toggle lights, shadows, and reflections; reload or Reset Defaults restores the defaults |
 | `WEBGPU EXP` / `WEBGL` | Reload once with the selected renderer; the next ordinary reload returns to WebGL |
 | `Esc` | Release pointer interaction |
 

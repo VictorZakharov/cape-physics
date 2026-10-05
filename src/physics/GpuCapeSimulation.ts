@@ -19,6 +19,7 @@ import {
   workgroupId,
 } from 'three/tsl';
 import { CAPE } from '../config';
+import { BOT_COUNT_RANGE } from '../player/BotMovementInput';
 import { createCapeFabricTextures } from '../graphics/proceduralTextures';
 import type { CapeAnchors } from '../player/Character';
 import type { CapsuleCollider, WorldCollider } from './colliders';
@@ -98,7 +99,7 @@ interface KernelTimestampBackend {
 }
 
 const PARTICLE_COUNT = CAPE.columns * CAPE.rows;
-export const MAXIMUM_GPU_CAPES = 11;
+export const MAXIMUM_GPU_CAPES = BOT_COUNT_RANGE.max + 1;
 const PACKED_PARTICLE_COUNT = PARTICLE_COUNT * MAXIMUM_GPU_CAPES;
 
 /**

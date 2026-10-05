@@ -40,6 +40,7 @@ describe('cape solver facade contract', () => {
       'copyPackedState',
       'overwriteStateForHarness',
       'synchronizeAnchorDiagnostics',
+      'rebaseAnchors',
       'reset',
       'updateSettings',
       'getSettings',

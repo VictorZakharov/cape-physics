@@ -45,6 +45,39 @@ describe('WorldCollisionResolver', () => {
     expect(Math.hypot(position.x - formation.center.x, position.z - formation.center.z)).toBeGreaterThan(0.74);
   });
 
+  test('refreshes ground support when an obstacle pushes the player onto a rock', () => {
+    const centerX = caveCenterX(0);
+    const rock: WorldSphereCollider = {
+      center: new THREE.Vector3(centerX - 0.6, 0.3, 0),
+      radius: 0.5, walkable: true, kind: 'rock',
+    };
+    const formation: WorldSphereCollider = {
+      center: new THREE.Vector3(centerX + 0.16, 0.9, 0),
+      radius: 0.42, walkable: false, kind: 'formation',
+    };
+    const resolver = new WorldCollisionResolver([formation, rock]);
+    const position = new THREE.Vector3(centerX, 0, 0);
+    resolver.resolvePlayer(position);
+    expect(position.x).toBeLessThan(centerX - 0.4);
+    expect(position.y).toBeGreaterThan(0.8);
+    expect(position.y).toBeCloseTo(resolver.getPlayerRootHeight(position.x, position.z), 6);
+  });
+
+  test('does not retain ground support between independent collision queries', () => {
+    const centerX = caveCenterX(0);
+    const rock: WorldSphereCollider = {
+      center: new THREE.Vector3(centerX, 0.3, 0),
+      radius: 0.5, walkable: true, kind: 'rock',
+    };
+    const resolver = new WorldCollisionResolver([rock]);
+    const position = new THREE.Vector3(centerX, 0, 0);
+    resolver.resolvePlayer(position);
+    const firstHeight = position.y;
+    rock.center.y += 1;
+    resolver.resolvePlayer(position);
+    expect(position.y).toBeCloseTo(firstHeight + 1, 6);
+  });
+
   test('lands an airborne capsule on terrain without passing through it', () => {
     const resolver = new WorldCollisionResolver([]);
     const z = -8;

@@ -53,9 +53,9 @@ const durationSeconds = numericSetting('CAPE_PROFILE_DURATION_SECONDS', 12, 1 / 
 const settleSeconds = numericSetting('CAPE_PROFILE_SETTLE_SECONDS', 0.45, 0, 2);
 const runningWarmupSeconds = numericSetting('CAPE_PROFILE_RUNNING_WARMUP_SECONDS', 0.85, 0, 2);
 const kernelProfileSamples = numericSetting('CAPE_PROFILE_KERNEL_SAMPLES', 0, 0, 16);
-const botCount = numericSetting('CAPE_PROFILE_BOTS', 0, 0, 10);
+const botCount = numericSetting('CAPE_PROFILE_BOTS', 0, 0, 50);
 if (!Number.isInteger(botCount)) {
-  throw new Error('CAPE_PROFILE_BOTS must be an integer from 0 to 10.');
+  throw new Error('CAPE_PROFILE_BOTS must be an integer from 0 to 50.');
 }
 if (kernelProfileSamples > 0 && (!gpuTimestamps || rendererPreference !== 'webgpu')) {
   throw new Error('CAPE_PROFILE_KERNEL_SAMPLES requires WebGPU and GPU timestamps.');

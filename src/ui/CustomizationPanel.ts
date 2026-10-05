@@ -5,10 +5,11 @@ import {
   type CapePhysicsSettings,
 } from '../physics/CapeSettings';
 import { invariant } from '../utils/assert';
-import {
-  BOT_COUNT_RANGE,
-  normalizeBotCount,
-} from '../player/BotMovementInput';
+
+// Equal slider distances select progressively larger crowds at the upper end.
+const BOT_COUNT_SLIDER_VALUES: readonly number[] = Object.freeze([
+  0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20, 30, 40, 50,
+]);
 
 export interface CustomizationSettings extends CapePhysicsSettings {
   readonly lights: boolean;
@@ -92,7 +93,7 @@ export class CustomizationPanel {
         `Customization output ${name} is missing.`,
       );
       const range = name === 'bots'
-        ? BOT_COUNT_RANGE
+        ? { min: 0, max: BOT_COUNT_SLIDER_VALUES.length - 1, step: 1 }
         : CAPE_PHYSICS_SETTING_RANGES[name];
       input.min = String(range.min);
       input.max = String(range.max);
@@ -143,7 +144,7 @@ export class CustomizationPanel {
     if (name === 'bots') {
       this.settings = {
         ...this.settings,
-        bots: normalizeBotCount(input.valueAsNumber),
+        bots: BOT_COUNT_SLIDER_VALUES[input.valueAsNumber] ?? 0,
       };
       this.updateOutput(name);
       this.status.textContent = 'Custom settings active';
@@ -196,7 +197,9 @@ export class CustomizationPanel {
 
   private syncControls(): void {
     this.numericInputs.forEach((input, name) => {
-      input.value = String(this.settings[name]);
+      input.value = String(name === 'bots'
+        ? BOT_COUNT_SLIDER_VALUES.indexOf(this.settings.bots)
+        : this.settings[name]);
       this.updateOutput(name);
     });
     this.toggleInputs.forEach((input, name) => {
@@ -208,6 +211,9 @@ export class CustomizationPanel {
     const output = this.outputElements.get(name);
     if (!output) return;
     const value = this.settings[name];
+    if (name === 'bots') {
+      this.numericInputs.get(name)?.setAttribute('aria-valuetext', `${value} bots`);
+    }
     output.value = name === 'bots'
       ? value.toFixed(0)
       : name === 'length' || name === 'width'

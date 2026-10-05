@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import type { CharacterMovementInput } from './CharacterController';
 
-export const BOT_COUNT_RANGE = Object.freeze({ min: 0, max: 10, step: 1 });
+export const BOT_COUNT_RANGE = Object.freeze({ min: 0, max: 50, step: 1 });
 
 const CYCLE_SECONDS = 8;
 const PHASE_OFFSET_SECONDS = 0.61;
