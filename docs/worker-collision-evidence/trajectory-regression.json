@@ -1,0 +1,18 @@
+{
+  "baseline": "e643183",
+  "seed": "authored CaveWorld seeds; deterministic BotMovementInput paths",
+  "steps": 600,
+  "capes": 50,
+  "particles": 234,
+  "delta": 0.03333333333333333,
+  "coordinatesCompared": 21060000,
+  "maximumDeviation": 0,
+  "tolerance": 0.00001,
+  "passed": true,
+  "worst": {
+    "step": 0,
+    "cape": 0,
+    "particle": 0,
+    "axis": 0
+  }
+}

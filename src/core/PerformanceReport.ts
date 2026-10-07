@@ -1,3 +1,4 @@
+import { WORKER_PHASES } from '../physics/WorkerStepTiming';
 import type { GpuTimingSnapshot } from './GpuTiming';
 import type { WebGlCapeWorkerDiagnostics } from '../physics/WebGlCapeWorkerPool';
 import type {
@@ -43,6 +44,10 @@ export interface PerformanceReportDetails {
     readonly logicalCores?: number;
     readonly workerLimit?: number;
     readonly selectionRule?: string;
+    readonly overridden?: boolean;
+    readonly requestedWorkers?: number | null;
+    readonly profilingEnabled?: boolean;
+    readonly stepPhases?: WebGlCapeWorkerDiagnostics['stepPhases'];
     readonly simulatedStepMilliseconds?: number | null;
     readonly utilisationPercent?: number | null;
     readonly cpuMillisecondsPerSecond?: number | null;
@@ -62,6 +67,8 @@ export interface PerformanceReportDetails {
     readonly simulationSeconds: number;
     readonly capeSleeping: boolean;
     readonly worldColliders: number;
+    readonly bodyColliders?: number;
+    readonly worldColliderKinds?: Readonly<Record<string, number>>;
     readonly activeRipples: number;
     readonly botCount: number;
     readonly simulatedCapes: number;
@@ -127,14 +134,14 @@ export function formatPerformanceReport(input: PerformanceReportInput): string {
         ...(capeWorkers?.active ? [
           `Cape workers: ${capeWorkers.workers} active | ${capeWorkers.busyWorkers} busy | ${capeWorkers.queuedSteps} queued fixed steps | ${capeWorkers.failure ?? 'healthy'}`,
           ...(capeWorkers.averageStepMilliseconds != null ? [`Cape worker execution: ${capeWorkers.workers} workers | ${metric(capeWorkers.averageStepMilliseconds)} ms/step/worker average across each worker's assigned capes (excludes result packing and message latency)`] : []),
-          `Worker selection: ${runtime.hardwareThreads ?? capeWorkers.logicalCores ?? 'unavailable'} logical cores | ${capeWorkers.workers} chosen | limit ${capeWorkers.workerLimit ?? 'unavailable'} | ${capeWorkers.selectionRule ?? 'unavailable'}`,
+          `Worker selection: ${runtime.hardwareThreads ?? capeWorkers.logicalCores ?? 'unavailable'} logical cores | ${capeWorkers.workers} chosen | limit ${capeWorkers.workerLimit ?? 'unavailable'} | ${capeWorkers.selectionRule ?? 'unavailable'} | override ${capeWorkers.overridden ? `requested ${capeWorkers.requestedWorkers}; worker budget only, CPU speed unchanged` : 'none'}`,
           `Worker simulated timestep: ${capeWorkers.simulatedStepMilliseconds != null ? metric(capeWorkers.simulatedStepMilliseconds) : 'unavailable'} ms (elapsed simulation time, separately from execution wall time) | utilisation ${capeWorkers.utilisationPercent != null ? metric(capeWorkers.utilisationPercent, 1) : 'unavailable'}% average | worker execution ${capeWorkers.cpuMillisecondsPerSecond != null ? metric(capeWorkers.cpuMillisecondsPerSecond) : 'unavailable'} ms/s summed across workers`,
           ...(capeWorkers.assignments ?? []).flatMap(item => [
             `Worker ${item.worker}: ${item.capes} capes / ${item.particles} particles per step | compute ${item.timing.computeMilliseconds != null ? metric(item.timing.computeMilliseconds) : 'unavailable'} ms/step | delivered ${item.timing.stepHz != null ? metric(item.timing.stepHz) : 'unavailable'} steps/s | busy ${item.timing.utilisationPercent != null ? metric(item.timing.utilisationPercent, 1) : 'unavailable'}%`,
-            item.timing.profile && item.timing.profile.sampledActiveSteps >= 30
-              ? `Worker ${item.worker} awake cape phase samples (${item.timing.profile.sampledActiveSteps}, ms/awake cape step): ${Object.entries(item.timing.profile.phases).map(([phase, value]) => `${phase} ${metric(value)}`).join(' | ')}`
-              : `Worker ${item.worker} awake cape phases: insufficient samples (${item.timing.profile?.sampledActiveSteps ?? 0}/30)`,
+            item.timing.stepPhases ? `Worker ${item.worker} phases (ms/step, ${item.timing.stepPhases.sampleCount} measured worker steps): ${WORKER_PHASES.map(phase => `${phase} ${metric(item.timing.stepPhases!.phases[phase])} ms (${metric(item.timing.stepPhases!.phases[phase] / Math.max(1e-9, item.timing.stepPhases!.computeMilliseconds) * 100, 1)}%)`).join(' | ')}`
+              : `Worker ${item.worker} phases: ${capeWorkers.profilingEnabled === false ? 'disabled for overhead comparison' : 'insufficient samples (minimum 8/worker; 30 pooled)'}`,
           ]),
+          `Worker phase mean: ${formatWorkerPhaseSplit(capeWorkers.stepPhases)} | phase shares sampled every fourth worker batch, apportioned to all-step compute; includes reconciliation collision calls; other includes input updates, prefilter/preparation and sleeping step updates`,
           ...(capeWorkers.capeResultHz !== undefined ? [`Cape worker delivery: ${metric(capeWorkers.capeResultHz)} results/s/cape | ${metric(capeWorkers.averageBatchMilliseconds ?? 0)} ms average batch latency`] : []),
         ] : []),
       ]
@@ -163,6 +170,7 @@ export function formatPerformanceReport(input: PerformanceReportInput): string {
     `Main thread: ${metric(workload.averageMainThreadMilliseconds)} ms average | p95 ${metric(workload.p95MainThreadMilliseconds)} ms | physics ${metric(workload.averagePhysicsMilliseconds)} ms | scene ${metric(workload.averageSceneMilliseconds)} ms | render submission ${metric(workload.averageRenderMilliseconds)} ms | ${metric(workload.averagePhysicsSteps)} physics steps/callback average, ${workload.maximumPhysicsSteps} maximum`,
     ...capeSolverLines,
     `Cloth workload: ${(CAPE.columns * CAPE.rows * scene.simulatedCapes).toLocaleString('en-US')} sim particles (${scene.simulatedCapes} \u00d7 ${CAPE.columns * CAPE.rows}) | ${(CAPE_DISTANCE_CONSTRAINTS.length * scene.simulatedCapes).toLocaleString('en-US')} distance constraints \u00d7 ${CAPE.solverIterations} iterations | main-thread simulation phase ${metric(workload.averagePhysicsMilliseconds)} ms average / ${metric(workload.p95PhysicsMilliseconds)} ms p95 (excludes asynchronous worker and GPU execution)`,
+    `Collider inventory per cape: ${scene.worldColliders} static world proxies (${Object.entries(scene.worldColliderKinds ?? {}).map(([kind, count]) => `${kind} ${count}`).join(', ') || 'types unavailable'}) | ${scene.bodyColliders ?? 'unavailable'} animated body capsules | cave floor/ceiling/sides sampled analytically, not included in proxy count`,
     `Constraints by type: ${Object.entries(CAPE_CONSTRAINT_COUNTS).map(([kind, count]) => `${kind} ${count * scene.simulatedCapes} (${count}/cape)`).join(' | ')} | excludes collision and shape guards`,
     `Simulation delivery: ${simulationDelivery(input)}`,
     `Main-thread physics wall cost: ${metric(workload.averagePhysicsMilliseconds * performance.averageFps)} ms/s (per-callback measured physics x callback rate); worker wall cost above is separate and executes in parallel`,
@@ -181,12 +189,18 @@ export function simulationDelivery(input: PerformanceReportDetails): string {
   const particles = CAPE.columns * CAPE.rows;
   const profile = input.capeSolver;
   const elapsed = profile?.windowElapsedMilliseconds ?? 0;
-  const playerHz = elapsed > 0 ? (profile?.windowActiveSteps ?? 0) * 1000 / elapsed : null;
+  const playerHz = elapsed > 0 ? (profile?.windowTotalSteps ?? profile?.windowActiveSteps ?? 0) * 1000 / elapsed : null;
   const gpu = input.gpuSimulation;
   if (profile?.implementation === 'webgpu-compute') return gpu?.capeStepsPerSecond != null
     ? `${metric(gpu.capeStepsPerSecond * particles, 0)} submitted particle-steps/s | packed GPU ${metric(gpu.stepHz ?? 0)} submissions/s | simulated timestep ${metric(gpu.simulatedStepMilliseconds ?? 0)} ms`
     : 'unavailable (packed GPU submissions)';
   const workerParticles = input.capeWorkers?.active ? input.capeWorkers.deliveredParticleStepsPerSecond : 0;
   if (playerHz === null || workerParticles == null) return 'unavailable (awaiting current-window delivery samples)';
-  return `${metric(playerHz * particles + workerParticles, 0)} particle-steps/s | awake player ${metric(playerHz)} steps/s x ${particles} particles | bot delivery ${metric(workerParticles, 0)} particle-steps/s`;
+  return `${metric(playerHz * particles + workerParticles, 0)} particle-steps/s | player ${metric(playerHz)} step calls/s (includes sleeping updates; awake ${metric((profile?.windowActiveSteps ?? 0) * 1000 / elapsed)}/s) x ${particles} particles | bot delivery ${metric(workerParticles, 0)} particle-steps/s`;
+}
+
+export function formatWorkerPhaseSplit(split: WebGlCapeWorkerDiagnostics['stepPhases'] | undefined): string {
+  if (!split) return 'insufficient samples (minimum 8/worker; 30 pooled), or profiling disabled';
+  return `${split.sampleCount} phase samples | ` + WORKER_PHASES.map(phase => `${phase} ${metric(split.phases[phase])} ms (${metric(split.phases[phase] / Math.max(1e-9, split.computeMilliseconds) * 100, 1)}%)`).join(' | ')
+    + ` | sum ${metric(Object.values(split.phases).reduce((sum, value) => sum + value, 0))} ms / compute ${metric(split.computeMilliseconds)} ms`;
 }

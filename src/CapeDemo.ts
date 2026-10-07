@@ -1664,7 +1664,7 @@ export class CapeDemo {
     pipeline: this.pipeline, startupRecovery: this.startupRecovery, quality: this.quality,
     performance: this.performance, ready: this.ready, cape: this.cape,
     webGlCapeWorkers: this.webGlCapeWorkers, worldColliders: this.worldColliders, performanceBots: this.performanceBots,
-    fixedTime: this.fixedTime, water: this.water, simulationTelemetry: this.simulationTelemetry,
+    fixedTime: this.fixedTime, water: this.water, character: this.character, simulationTelemetry: this.simulationTelemetry,
   });
 
   private enableCharacterLighting(): void {

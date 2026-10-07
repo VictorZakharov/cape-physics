@@ -311,14 +311,14 @@ describe('PerformanceMonitor', () => {
     monitor.recordFrame(250);
     const label = elements.get('[data-sim-workers]')!;
     expect(label.hidden).toBe(false);
-    expect(label.textContent).toBe('SIM WORKERS: 10 / COMPUTE\n27.35 MS/STEP @ 24.6 HZ\nDT -- MS / --% BUSY\nASSIGNMENTS UNAVAILABLE');
+    expect(label.textContent).toBe('SIM WORKERS: 10 / COMPUTE\n27.35 MS/STEP @ 24.6 HZ\nDT -- MS / --% BUSY\nCAPES UNAVAILABLE\nPARTICLES UNAVAILABLE');
     details = { ...details, capeWorkers: { ...details.capeWorkers!, averageStepMilliseconds: null, capeResultHz: 0 } };
     monitor.recordFrame(500);
-    expect(label.textContent).toBe('SIM WORKERS: 10 / COMPUTE\n-- MS/STEP @ -- HZ\nDT -- MS / --% BUSY\nASSIGNMENTS UNAVAILABLE');
+    expect(label.textContent).toBe('SIM WORKERS: 10 / COMPUTE\n-- MS/STEP @ -- HZ\nDT -- MS / --% BUSY\nCAPES UNAVAILABLE\nPARTICLES UNAVAILABLE');
     details = { ...details, capeWorkers: { ...details.capeWorkers!, active: false, failure: 'solver failed' } };
     monitor.recordFrame(750);
     expect(label.hidden).toBe(false);
-    expect(label.textContent).toBe('SIM WORKERS: FAILED\nMAIN FALLBACK\nDT -- MS / BUSY --%\nASSIGNMENTS UNAVAILABLE');
+    expect(label.textContent).toBe('SIM WORKERS: FAILED\nMAIN FALLBACK\nDT -- MS / BUSY --%\nCAPES UNAVAILABLE\nPARTICLES UNAVAILABLE');
     details = { ...details, capeWorkers: null };
     monitor.recordFrame(1000);
     expect(label.hidden).toBe(true);

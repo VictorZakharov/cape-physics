@@ -1,3 +1,5 @@
+import { chooseWorkerConfiguration } from './WorkerConfiguration';
+import { WORKER_PHASES, type WorkerStepPhases } from './WorkerStepTiming';
 import { CAPE } from '../config';
 import { WorkerTelemetry } from './WorkerTelemetry';
 import type { CapeAnchors } from '../player/Character';
@@ -36,6 +38,10 @@ export interface WebGlCapeWorkerDiagnostics {
   readonly logicalCores: number;
   readonly workerLimit: number;
   readonly selectionRule: string;
+  readonly overridden: boolean;
+  readonly requestedWorkers: number | null;
+  readonly profilingEnabled: boolean;
+  readonly stepPhases: (WorkerStepPhases & { sampleCount: number }) | null;
   readonly simulatedStepMilliseconds: number | null;
   readonly utilisationPercent: number | null;
   readonly cpuMillisecondsPerSecond: number | null;
@@ -77,7 +83,8 @@ export function workerLimit(threads = navigator.hardwareConcurrency || 4): numbe
 
 export class WebGlCapeWorkerPool {
   private readonly serializedWorldColliders;
-  private readonly maximumWorkers = workerLimit();
+  private readonly configuration = chooseWorkerConfiguration(navigator.hardwareConcurrency, typeof window === 'undefined' ? '' : window.location.search);
+  private readonly maximumWorkers = this.configuration.workers;
   private readonly slots: WorkerSlot[] = [];
   private readonly registrations = new Map<number, CapeRegistration>();
   private readonly drainWaiters = new Set<() => void>();
@@ -219,14 +226,22 @@ export class WebGlCapeWorkerPool {
     const mean = (get: (item: typeof assignments[number]) => number | null): number | null =>
       assignments.length && assignments.every(item => get(item) !== null)
         ? assignments.reduce((sum, item) => sum + get(item)!, 0) / assignments.length : null;
+    const stepPhases = assignments.length && assignments.every(item => item.timing.stepPhases !== null) && assignments.reduce((sum, item) => sum + item.timing.stepPhases!.sampleCount, 0) >= 30 ? {
+      sampleCount: assignments.reduce((sum, item) => sum + item.timing.stepPhases!.sampleCount, 0),
+      computeMilliseconds: mean(item => item.timing.stepPhases?.computeMilliseconds ?? null)!,
+      phases: Object.fromEntries(WORKER_PHASES.map(phase => [phase,
+        mean(item => item.timing.stepPhases?.phases[phase] ?? null)!])) as WorkerStepPhases['phases'],
+    } : null;
     return {
+      stepPhases,
       active: !this.disposed && !this.failure && this.registrations.size > 0,
       workers: activeSlots.length,
       busyWorkers: activeSlots.filter((slot) => slot.busy).length,
       queuedSteps: activeSlots.reduce((sum, slot) => sum + slot.pendingFrames.length, 0),
       failure: this.failure,
       logicalCores: navigator.hardwareConcurrency || 4, workerLimit: this.maximumWorkers,
-      selectionRule: 'min(10, max(1, logical cores - 2)); unknown cores: assume 4',
+      selectionRule: this.configuration.rule, overridden: this.configuration.overridden,
+      requestedWorkers: this.configuration.requested, profilingEnabled: this.configuration.profiling,
       assignments,
       workerStepHz: mean(item => item.timing.stepHz) ?? 0,
       capeResultHz: complete ? assignments.reduce((sum, item) => sum + item.timing.capeStepsPerSecond!, 0) / Math.max(1, this.registrations.size) : 0,
@@ -278,6 +293,7 @@ export class WebGlCapeWorkerPool {
     this.slots.push(slot);
     this.post(worker, {
       type: 'initialize',
+      profiling: this.configuration.profiling,
       worldColliders: this.serializedWorldColliders,
     });
     return slot;
@@ -320,7 +336,7 @@ export class WebGlCapeWorkerPool {
     if ((response.measurementEpoch ?? this.measurementEpoch) === this.measurementEpoch) {
       slot.telemetry.record({ time: now, compute: solveTime, latency: batchMilliseconds,
         simulatedStep: response.states.length ? response.states.reduce((sum, state) => sum + state.deltaTime * 1000, 0) / response.states.length : 0,
-        capes: response.states.length, profile: response.profile });
+        capes: response.states.length, stepPhases: response.stepPhases, profile: response.profile });
     }
     for (const state of response.states) {
       const registration = this.registrations.get(state.capeId);

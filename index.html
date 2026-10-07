@@ -50,7 +50,9 @@
         <small title="Main-thread simulation phase per rendered frame over the last 15 seconds, including character updates, cloth scheduling and geometry sync. Excludes asynchronous worker execution and GPU execution."><b data-sim-time>--</b> MS SIM MAIN / <b data-sim-p95>--</b> P95</small>
         <small data-sim-scope title="CPU main simulation includes the player cape, character controllers, worker submission/result reconciliation, and geometry sync. GPU main simulation is command preparation/submission with controllers and sync; GPU execution is separate.">MAIN: PLAYER + CTRL + SYNC</small>
         <small data-sim-workers hidden title="Rolling 15-second worker execution wall time per step per worker, across its assigned capes. Excludes result packing, transfer and main-thread reconciliation. Hz is measured delivered steps per second. DT is simulated elapsed time; BUSY is execution wall time divided by observation time. Workers execute in parallel.">SIM WORKERS: --</small>
-        <small data-sim-throughput title="Actual delivered awake player particle-steps plus bot results, or packed GPU solve submissions. Sleeping player steps are excluded.">-- PARTICLE-STEPS/S</small>
+        <small data-worker-colliders hidden>-- COLLIDERS / CAPE</small>
+        <small data-worker-phases hidden>WORKER PHASES: --</small>
+        <small data-sim-throughput title="Actual player step calls (including sleeping updates) plus delivered bot particle-steps, or packed GPU solve submissions.">-- PARTICLE-STEPS/S</small>
         <small data-sim-constraints>-- CONSTRAINTS</small>
         <small><b data-triangles>--</b> TRIANGLES</small>
         <small class="performance-panel__hardware" data-sim-hardware>--&#10;-- THREADS / SIM: --</small>

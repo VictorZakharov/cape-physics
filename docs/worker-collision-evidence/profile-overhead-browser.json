@@ -1,0 +1,58 @@
+{
+  "order": "matched states; ABBA ordering per step, four pairs; both paths primed 450 steps",
+  "trials": [
+    {
+      "enabled": false,
+      "milliseconds": 10419.900000022724
+    },
+    {
+      "enabled": true,
+      "milliseconds": 10425.899999994785
+    },
+    {
+      "enabled": false,
+      "milliseconds": 9239.999999988824
+    },
+    {
+      "enabled": true,
+      "milliseconds": 9243.300000013784
+    },
+    {
+      "enabled": false,
+      "milliseconds": 10202.100000007078
+    },
+    {
+      "enabled": true,
+      "milliseconds": 10257.800000006333
+    },
+    {
+      "enabled": false,
+      "milliseconds": 10486.099999971688
+    },
+    {
+      "enabled": true,
+      "milliseconds": 10446.100000010803
+    }
+  ],
+  "offMilliseconds": 40348.099999990314,
+  "onMilliseconds": 40373.100000025705,
+  "overheadPercent": 0.061960786345327534,
+  "underTwoPercent": true,
+  "inputUpdateMillisecondsPerWorkerStep": 0.03683333333892127,
+  "endpointBytesPerCapeStep": 360,
+  "collisionDetailPerCapeStep": {
+    "self": 0.5122666666799536,
+    "fold": 0.05463333331855634,
+    "world": 0.13273333330142,
+    "cave": 0.5869999999720603
+  },
+  "phasesPerWorkerStep": {
+    "constraints": 1.7943333333544433,
+    "body": 7.972833333645637,
+    "selfFold": 2.8344999999925493,
+    "worldCave": 3.598666666367402,
+    "other": 0.7971666666337599
+  },
+  "samples": 600,
+  "runtime": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/149.0.0.0 Safari/537.36"
+}

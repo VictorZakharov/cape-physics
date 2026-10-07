@@ -138,6 +138,12 @@ describe('performance report', () => {
     expect(sparse).toContain('CPU-bound: held');
     expect(sparse).toContain('24 logical cores | navigator.deviceMemory 8 GiB');
     expect(sparse).toContain('Constraints by type:');
+    const total = formatPerformanceReport({ ...input,
+      capeSolver: { ...input.capeSolver, windowTotalSteps: 1800, windowActiveSteps: 0, windowElapsedMilliseconds: 15000 },
+      capeWorkers: { active: true, workers: 10, busyWorkers: 10, queuedSteps: 0, failure: null, deliveredParticleStepsPerSecond: 368060 },
+    });
+    expect(total).toContain('396140 particle-steps/s');
+    expect(total).toContain('player 120.00 step calls/s (includes sleeping updates; awake 0.00/s)');
 
     const gpuReport = formatPerformanceReport({
       ...input,

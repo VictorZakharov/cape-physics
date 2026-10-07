@@ -1,7 +1,8 @@
+import { WORKER_PHASES, type WorkerStepPhases } from './WorkerStepTiming';
 import type { CapePerformanceDiagnostics } from './CapePerformanceProfiler';
 export interface WorkerTimingSample {
   time: number; compute: number; latency: number; simulatedStep: number;
-  capes: number; profile?: CapePerformanceDiagnostics;
+  capes: number; stepPhases?: WorkerStepPhases; profile?: CapePerformanceDiagnostics;
 }
 export class WorkerTelemetry {
   private samples: WorkerTimingSample[] = [];
@@ -18,8 +19,18 @@ export class WorkerTelemetry {
     const elapsed = count > 1 ? now - this.samples[0]!.time : 0;
     const intervals = this.samples.slice(1);
     const computeTotal = intervals.reduce((sum, sample) => sum + sample.compute, 0);
-    return { sampleCount: count, windowMilliseconds: elapsed,
-      computeMilliseconds: count ? this.samples.reduce((sum, sample) => sum + sample.compute, 0) / count : null,
+    const phaseSamples = this.samples.filter(sample => sample.stepPhases !== undefined);
+    const averageCompute = count ? this.samples.reduce((sum, sample) => sum + sample.compute, 0) / count : null;
+    const sampledCompute = phaseSamples.reduce((sum, sample) => sum + sample.compute, 0) / Math.max(1, phaseSamples.length);
+    const normalization = (averageCompute ?? 0) / Math.max(1e-9, sampledCompute);
+    const stepPhases = phaseSamples.length >= 8 ? {
+      sampleCount: phaseSamples.length,
+      computeMilliseconds: averageCompute!,
+      phases: Object.fromEntries(WORKER_PHASES.map(phase => [phase,
+        phaseSamples.reduce((sum, sample) => sum + sample.stepPhases!.phases[phase], 0) / phaseSamples.length * normalization])) as WorkerStepPhases['phases'],
+    } : null;
+    return { stepPhases, sampleCount: count, windowMilliseconds: elapsed,
+      computeMilliseconds: averageCompute,
       simulatedStepMilliseconds: count ? this.samples.reduce((sum, sample) => sum + sample.simulatedStep, 0) / count : null,
       batchLatencyMilliseconds: count ? this.samples.reduce((sum, sample) => sum + sample.latency, 0) / count : null,
       stepHz: elapsed > 0 ? intervals.length * 1000 / elapsed : null,

@@ -3,7 +3,8 @@ import * as THREE from 'three';
 export const CLOTH_THICKNESS = 0.058;
 
 const CELL_SIZE = 0.072;
-const HASH_BUCKETS = 521;
+// More buckets reduce measured hash-alias traversal; exact cell and pair order are unchanged.
+const HASH_BUCKETS = 4093;
 
 export class ClothSelfCollision {
   private readonly heads = new Int32Array(HASH_BUCKETS);

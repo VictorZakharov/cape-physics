@@ -94,7 +94,14 @@
   white-space: pre;
   font-variant-numeric: tabular-nums;
   line-height: 1.4;
-  min-height: 5.6em;
+  min-height: 7em;
+}
+
+.performance-panel [data-worker-phases] {
+  white-space: pre;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+  min-height: 7em;
 }
 
 .performance-panel__hardware {

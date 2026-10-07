@@ -1,3 +1,4 @@
+import type { WorldCollider } from '../physics/colliders';
 import type { SimulationTelemetry } from './SimulationTelemetry';
 import type { PerformanceReportDetails } from './PerformanceReport';
 import type { RenderPipeline } from './RenderPipeline';
@@ -12,7 +13,8 @@ interface ReportSource {
   performance: PerformanceMonitor; ready: boolean;
   cape: { getPerformanceDiagnostics(): CapePerformanceDiagnostics; isSleeping(): boolean };
   webGlCapeWorkers: WebGlCapeWorkerPool | null;
-  worldColliders: readonly unknown[]; performanceBots: readonly unknown[]; fixedTime: number;
+  character?: { getCapeColliders(): readonly unknown[] };
+  worldColliders: readonly WorldCollider[]; performanceBots: readonly unknown[]; fixedTime: number;
   water: { getDiagnostics(): { activeRipples: number } };
 }
 export function buildPerformanceReportDetails(source: ReportSource): PerformanceReportDetails {
@@ -58,6 +60,8 @@ export function buildPerformanceReportDetails(source: ReportSource): Performance
         simulationSeconds: source.fixedTime,
         capeSleeping: source.ready ? source.cape.isSleeping() : false,
         worldColliders: source.worldColliders.length,
+        bodyColliders: source.character?.getCapeColliders().length,
+        worldColliderKinds: source.worldColliders.reduce<Record<string, number>>((counts, collider) => { counts[collider.kind] = (counts[collider.kind] ?? 0) + 1; return counts; }, {}),
         activeRipples: source.ready ? source.water.getDiagnostics().activeRipples : 0,
         botCount: source.performanceBots.length,
         simulatedCapes: 1 + source.performanceBots.length,

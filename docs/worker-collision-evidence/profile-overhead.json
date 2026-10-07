@@ -1,0 +1,58 @@
+{
+  "runtime": "Bun 1.3.11; same Windows machine, CPU worker solver; not a browser runtime overhead guarantee",
+  "order": "ABBAABBA",
+  "trials": [
+    {
+      "enabled": false,
+      "milliseconds": 2873.749999999999
+    },
+    {
+      "enabled": true,
+      "milliseconds": 3131.4355999999907
+    },
+    {
+      "enabled": true,
+      "milliseconds": 3250.3206000000064
+    },
+    {
+      "enabled": false,
+      "milliseconds": 3313.4905000000017
+    },
+    {
+      "enabled": false,
+      "milliseconds": 3557.8099000000147
+    },
+    {
+      "enabled": true,
+      "milliseconds": 3181.4573999999957
+    },
+    {
+      "enabled": true,
+      "milliseconds": 3590.8972999999824
+    },
+    {
+      "enabled": false,
+      "milliseconds": 3256.9734000000353
+    }
+  ],
+  "offMilliseconds": 13002.02380000005,
+  "onMilliseconds": 13154.110899999974,
+  "overheadPercent": 1.1697186710266205,
+  "underTwoPercent": true,
+  "inputUpdateMillisecondsPerWorkerStep": 0.03352800000018306,
+  "endpointBytesPerCapeStep": 360,
+  "collisionDetailPerCapeStep": {
+    "self": 0.4664441000000579,
+    "fold": 0.04601050000003215,
+    "world": 0.1974275999999827,
+    "cave": 0.5739609000000728
+  },
+  "phasesPerWorkerStep": {
+    "constraints": 1.5357864999996764,
+    "body": 7.862934000000236,
+    "selfFold": 2.5622730000004506,
+    "worldCave": 3.8569425000002777,
+    "other": 0.6941389999993589
+  },
+  "samples": 200
+}

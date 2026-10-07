@@ -1,6 +1,7 @@
+import { registerStaticWorldColliderIndex } from './StaticWorldColliderIndex';
 import * as THREE from 'three';
 import { CRIMSON_CAPE_PALETTE } from './CapeAppearance';
-import { CAPE_PROFILE_PHASES } from './CapePerformanceProfiler';
+import { workerStepTiming } from './WorkerStepTiming';
 import { CapeSimulation } from './CapeSimulation';
 import {
   applySerializedCapsuleEndpoints,
@@ -43,7 +44,10 @@ function handleMessage(message: CapeWorkerRequest): void {
       capes.forEach(cape => cape.simulation.resetPerformanceDiagnostics());
       return;
     case 'initialize':
+      workerStepTiming.isWorker = true;
+      workerStepTiming.enabled = message.profiling !== false;
       worldColliders = deserializeWorldColliders(message.worldColliders);
+      registerStaticWorldColliderIndex(worldColliders);
       return;
     case 'add-cape': {
       capes.get(message.capeId)?.simulation.dispose();
@@ -87,6 +91,7 @@ function handleMessage(message: CapeWorkerRequest): void {
       return;
     case 'step-batch': {
       const touchedCapeIds = new Set<number>();
+      workerStepTiming.beginBatch();
       const simulationStart = performance.now();
       for (const frame of message.frames) {
         for (const input of frame.capes) {
@@ -123,6 +128,7 @@ function handleMessage(message: CapeWorkerRequest): void {
       }
       const simulationStepMilliseconds = (performance.now() - simulationStart)
         / Math.max(1, message.frames.length);
+      const stepPhases = workerStepTiming.finishBatch(simulationStepMilliseconds, message.frames.length);
       const states = [...touchedCapeIds].flatMap((capeId) => {
         const cape = capes.get(capeId);
         if (!cape) return [];
@@ -138,19 +144,11 @@ function handleMessage(message: CapeWorkerRequest): void {
           previous: state.previous,
         }];
       });
-      const profiles = [...capes.values()].map(cape => cape.simulation.getPerformanceDiagnostics());
-      const count = profiles.reduce((sum, profile) => sum + profile.sampledActiveSteps, 0);
-      const profile = profiles[0] && {
-        ...profiles[0], sampledActiveSteps: count, sufficientSamples: count >= 30,
-        averageStepMilliseconds: profiles.reduce((sum, item) => sum + item.averageStepMilliseconds * item.sampledActiveSteps, 0) / Math.max(1, count),
-        phases: Object.fromEntries(CAPE_PROFILE_PHASES.map(phase => [phase,
-          profiles.reduce((sum, item) => sum + item.phases[phase] * item.sampledActiveSteps, 0) / Math.max(1, count)])) as typeof profiles[number]['phases'],
-      };
       const response: CapeWorkerBatchResult = {
         type: 'batch-result',
         simulationStepMilliseconds,
         measurementEpoch: message.measurementEpoch,
-        profile,
+        stepPhases,
         requestId: message.requestId,
         states,
       };

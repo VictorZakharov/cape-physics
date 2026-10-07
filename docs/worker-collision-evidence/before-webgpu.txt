@@ -1,0 +1,28 @@
+Cape Physics performance report
+Captured: 2026-10-07T13:58:23.895Z
+Warm-up excluded: 3.00 s | 229 frames | bot population change | measuring steady state; subsequent stalls retained
+Window: last 15.00 s of 15 s | 1825 frames
+Rendered FPS: 121.65 average | 69.62 1% low | 144 callback/s estimate
+Frame interval: 8.22 ms average | p50 7.00 ms | p95 13.90 ms | p99 14.00 ms | worst 20.80 ms
+Long frames: 0 at or above 50 ms
+Renderer: WebGPU | nvidia | lovelace
+Renderer selection: requested WEBGPU | active WEBGPU | no fallback
+Canvas: 1582x748 drawing buffer / 1582x748 CSS px
+GPU frame execution: 2.97 ms average | 934 samples, last 15s | timestamp-query (render + compute passes) | render 0.40 ms / compute 2.57 ms
+Quality: ADAPTIVE ULTRA | 1.000 resolution scale | CPU-bound: held | 2 render-target resizes
+Main thread: 7.12 ms average | p95 11.30 ms | physics 2.13 ms | scene 0.62 ms | render submission 4.38 ms | 0.99 physics steps/callback average, 2 maximum
+Cape solver: packed WebGPU compute PBD, frame-coalesced steps (at most 33.3 ms), scene at nominal 120 Hz | 11934 active GPU-resident particles across 51 of 51 preallocated capes | 10 PBD iterations with 17 constraint colors across packed lanes | 46 dispatches in at most 1 compute submission/rendered frame
+Cape timing: no animation-loop particle readback or GPU fence; main-thread physics above measures command preparation/submission, not GPU completion
+Cloth workload: 11,934 sim particles (51 × 234) | 82,926 distance constraints × 10 iterations | main-thread simulation phase 2.13 ms average / 3.80 ms p95 (excludes asynchronous worker and GPU execution)
+Collider inventory per cape: 2062 static world proxies (formation 1835, rock 78, torch 77, mineral 72) | 15 animated body capsules | cave floor/ceiling/sides sampled analytically, not included in proxy count
+Constraints by type: structural 22287 (437/cape) | shear 20808 (408/cape) | bending 39831 (781/cape) | excludes collision and shape guards
+Simulation delivery: 1265907 submitted particle-steps/s | packed GPU 106.08 submissions/s | simulated timestep 9.43 ms
+Main-thread physics wall cost: 259.06 ms/s (per-callback measured physics x callback rate); worker wall cost above is separate and executes in parallel
+Execution timers measure elapsed time inside solving, exclude idle/message waits, and may include OS preemption; utilisation is measured solve wall time / observation time, not an OS CPU counter.
+Hardware: 24 logical cores | navigator.deviceMemory 32 GiB (browser approximation)
+Scene: 19.01 s simulated | 50 performance bots | 51 simulated capes | 82 draw calls | 187197 triangles | 681 programs | 2062 cape colliders/cape | 16 active ripples | player cape active
+Page state: visible | focused | DPR 1.00 | single screen reported
+Timing caveat: display FPS is refresh/vsync capped and therefore cannot compare backend headroom; main-thread render submission is not GPU completion
+Page: http://127.0.0.1:52426/?harness=1
+Runtime: Win32
+User agent (raw): Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/149.0.0.0 Safari/537.36

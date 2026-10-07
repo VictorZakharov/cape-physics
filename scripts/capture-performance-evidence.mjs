@@ -32,11 +32,11 @@ try {
   const port = await listen(server), debug = await reservePort();
   browser = spawn(process.env.CAPE_BROWSER_PATH ?? 'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe', [
     '--headless=new', '--no-sandbox', '--disable-gpu-sandbox', '--no-first-run', '--no-default-browser-check',
-    '--disable-background-networking', '--disable-breakpad', '--disable-crash-reporter', '--disable-gpu-shader-disk-cache',
+    '--disable-background-networking', '--disable-component-update', '--disable-breakpad', '--disable-crash-reporter', '--disable-gpu-shader-disk-cache',
     '--disable-skia-graphite', '--disable-features=AutoDeElevate,CalculateNativeWinOcclusion,AutofillAiServerModel,WebGPUBlobCache',
     '--enable-webgl', '--enable-gpu', '--ignore-gpu-blocklist', '--use-angle=d3d11', '--window-size=1600,900',
     `--user-data-dir=${join(root, 'profile')}`, `--remote-debugging-port=${debug}`,
-    `http://127.0.0.1:${port}/?harness=1&renderer=${renderer}`,
+    `http://127.0.0.1:${port}/?harness=1&renderer=${renderer}${process.env.CAPE_PROFILE_WORKERS ? `&workers=${Number(process.env.CAPE_PROFILE_WORKERS)}` : ''}`,
   ], { windowsHide: true, stdio: 'ignore', env: { ...process.env, TEMP: root, TMP: root } });
   const targets = await fetchJsonWithRetry(`http://127.0.0.1:${debug}/json/list`, 40000);
   connection = await connectDebugger(targets.find((target) => target.type === 'page').webSocketDebuggerUrl);
@@ -45,7 +45,9 @@ try {
     await connection.command('Page.addScriptToEvaluateOnNewDocument',{source:`Object.defineProperty(navigator,'hardwareConcurrency',{value:${Number(process.env.CAPE_PROFILE_THREADS)}})`});
     await connection.command('Page.reload');
   }
-  await waitForExpression(connection.command, 'window.__CAPE_DEMO__?.ready === true', 180000);
+  console.log(`Waiting for ${renderer} scene (${process.env.CAPE_PROFILE_WORKERS ?? 'automatic'} workers)`);
+  await waitForExpression(connection.command, `window.__CAPE_DEMO__?.ready === true || document.querySelector('[data-loading-error]')?.hidden === false`, 90000);
+  if (!await evaluate(connection.command, 'window.__CAPE_DEMO__?.ready === true')) throw Error(await evaluate(connection.command, `document.querySelector('[data-loading-error-detail]')?.textContent ?? 'Scene startup failed'`));
   await evaluate(connection.command, `(async()=>{
     const demo=window.__CAPE_INTERNAL__;
     await window.__CAPE_DEMO__.setBotCount(50);
@@ -63,24 +65,26 @@ try {
     Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text=>{report=text;}}});
     await demo.performance.copyPerformanceReport();
     const row = document.querySelector('[data-sim-workers]');
-    const original = row.textContent;
+    const original = row.innerHTML;
+    const workerWidth = {scroll:row.scrollWidth,client:row.clientWidth};
+    const numericColors = [...document.querySelectorAll('[data-worker-phases] b')].slice(0,2).map(node=>getComputedStyle(node).color);
     const heights = [];
     try {
-      for (const text of ['SIM WORKERS: 10 / COMPUTE\\n9.99 MS/STEP @ 9.9 HZ\\nDT 9.99 MS / 9.9% BUSY\\n5 CAPES / 1,170 PTCL PER WORKER',
-        'SIM WORKERS: 10 / COMPUTE\\n100.00 MS/STEP @ 100.0 HZ\\nDT 33.33 MS / 100.0% BUSY\\n5 CAPES / 1,170 PTCL PER WORKER']) {
+      for (const text of ['SIM WORKERS: 10 / COMPUTE\\n9.99 MS/STEP @ 9.9 HZ\\nDT 9.99 MS / 9.9% BUSY\\n16-17 CAPES PER WORKER\\n3,744-3,978 PTCL PER WORKER',
+        'SIM WORKERS: 10 / COMPUTE\\n100.00 MS/STEP @ 100.0 HZ\\nDT 33.33 MS / 100.0% BUSY\\n16-17 CAPES PER WORKER\\n3,744-3,978 PTCL PER WORKER']) {
         row.textContent = text;
         heights.push(row.getBoundingClientRect().height);
       }
-    } finally { row.textContent = original; }
+    } finally { row.innerHTML = original; }
     return {report,diagnostics:demo.getPerformanceReportDetails(),
-      warmupReset:window.__CAPE_WARMUP_EVIDENCE__, workerRowHeights:heights};
+      warmupReset:window.__CAPE_WARMUP_EVIDENCE__, workerRowHeights:heights, workerWidth, numericColors, panelBounds: (()=>{const panel=document.querySelector('[data-performance-panel]');const box=panel.getBoundingClientRect();return {width:box.width,height:box.height,viewportHeight:innerHeight,phaseScrollWidth:document.querySelector('[data-worker-phases]').scrollWidth,phaseClientWidth:document.querySelector('[data-worker-phases]').clientWidth};})()};
   })()`);
   await evaluate(connection.command, 'window.__CAPE_INTERNAL__.pipeline.synchronizeForLocalProfile()');
   const output=resolve('artifacts/performance-instrumentation');mkdirSync(output,{recursive:true});
-  const stage=(process.env.CAPE_EVIDENCE_STAGE??'before')+(process.env.CAPE_PROFILE_THREADS?'-'+process.env.CAPE_PROFILE_THREADS+'threads':'');
+  const stage=(process.env.CAPE_EVIDENCE_STAGE??'before')+(process.env.CAPE_PROFILE_THREADS?'-'+process.env.CAPE_PROFILE_THREADS+'threads':'')+(process.env.CAPE_PROFILE_WORKERS?'-'+process.env.CAPE_PROFILE_WORKERS+'workers':'');
   if (!/^[a-z0-9-]+$/.test(stage)) throw Error('Invalid evidence stage');
   writeFileSync(join(output,`${stage}-${renderer}.txt`),result.report+'\n');
-  writeFileSync(join(output,`${stage}-${renderer}.json`),JSON.stringify({ ...result.diagnostics, measurementChecks: { warmupReset: result.warmupReset, workerRowHeights: result.workerRowHeights } },null,2)+'\n');
+  writeFileSync(join(output,`${stage}-${renderer}.json`),JSON.stringify({ ...result.diagnostics, measurementChecks: { warmupReset: result.warmupReset, workerRowHeights: result.workerRowHeights, panelBounds:result.panelBounds, workerWidth:result.workerWidth, numericColors:result.numericColors } },null,2)+'\n');
   console.log(result.report);
 } catch (error) {
   console.error(error);

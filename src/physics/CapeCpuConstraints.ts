@@ -1,3 +1,4 @@
+import { workerStepTiming } from './WorkerStepTiming';
 import * as THREE from 'three';
 import { CAPE } from '../config';
 import { CAPE_DISTANCE_CONSTRAINTS } from './CapeConstraintTopology';
@@ -35,6 +36,7 @@ export class CapeCpuConstraints {
   }
 
   public solve(stiffnessScale: number): void {
+    const phaseStart = workerStepTiming.start();
     for (const constraint of this.constraints) {
       const first = this.positions[constraint.first];
       const second = this.positions[constraint.second];
@@ -53,6 +55,7 @@ export class CapeCpuConstraints {
       if (firstWeight > 0) first.addScaledVector(this.correction, firstWeight / totalWeight);
       if (secondWeight > 0) second.addScaledVector(this.correction, -secondWeight / totalWeight);
     }
+    workerStepTiming.end(0, phaseStart);
   }
 
   public getMaximumStructuralError(): number {

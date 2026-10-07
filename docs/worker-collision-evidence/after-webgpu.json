@@ -1,0 +1,139 @@
+{
+  "gpu": {
+    "source": "timestamp-query (render + compute passes)",
+    "sampleCount": 908,
+    "averageMilliseconds": 2.9542631894273153,
+    "renderMilliseconds": 0.39795344493392015,
+    "computeMilliseconds": 2.556309744493393
+  },
+  "gpuSimulation": {
+    "stepHz": 101.30178461866277,
+    "capeStepsPerSecond": 5166.3910155518015,
+    "simulatedStepMilliseconds": 9.873903508772194
+  },
+  "rendererStartup": {
+    "current": null,
+    "failures": [],
+    "automaticReloads": 0,
+    "recoveryPending": false
+  },
+  "renderer": {
+    "backend": "WebGPU",
+    "vendor": "nvidia",
+    "device": "lovelace",
+    "preference": "webgpu",
+    "actual": "webgpu",
+    "fallback": false,
+    "drawCalls": 80,
+    "triangles": 187051,
+    "programs": 681
+  },
+  "canvas": {
+    "drawingBufferWidth": 1582,
+    "drawingBufferHeight": 748,
+    "cssWidth": 1582,
+    "cssHeight": 748
+  },
+  "quality": {
+    "label": "ADAPTIVE ULTRA",
+    "scale": 1,
+    "targetResizes": 2,
+    "reason": "CPU-bound: held"
+  },
+  "workload": {
+    "averageMainThreadMilliseconds": 7.5329077190757925,
+    "p95MainThreadMilliseconds": 12.800000000745058,
+    "averagePhysicsMilliseconds": 2.244341265231812,
+    "p95PhysicsMilliseconds": 4,
+    "averageSceneMilliseconds": 0.633023795705814,
+    "averageRenderMilliseconds": 4.655542658138166,
+    "averagePhysicsSteps": 1.0452698781195588,
+    "maximumPhysicsSteps": 3,
+    "sampleCount": 1723
+  },
+  "capeSolver": {
+    "implementation": "webgpu-compute",
+    "sampleIntervalSteps": 16,
+    "totalSteps": 1804,
+    "activeSteps": 1804,
+    "sampledActiveSteps": 0,
+    "sufficientSamples": false,
+    "windowTotalSteps": 0,
+    "windowActiveSteps": 0,
+    "windowElapsedMilliseconds": 0,
+    "averageStepMilliseconds": 0,
+    "phases": {
+      "prediction": 0,
+      "constraints": 0,
+      "selfCollision": 0,
+      "foldGuard": 0,
+      "bodyCollision": 0,
+      "worldCollision": 0,
+      "caveCollision": 0,
+      "reconciliation": 0,
+      "anchors": 0,
+      "finalization": 0
+    },
+    "dispatchesPerStep": 46,
+    "constraintColorBatches": 17
+  },
+  "capeWorkers": null,
+  "scene": {
+    "simulationSeconds": 19.033333333332894,
+    "capeSleeping": false,
+    "worldColliders": 2062,
+    "bodyColliders": 15,
+    "worldColliderKinds": {
+      "formation": 1835,
+      "rock": 78,
+      "torch": 77,
+      "mineral": 72
+    },
+    "activeRipples": 16,
+    "botCount": 50,
+    "simulatedCapes": 51
+  },
+  "page": {
+    "visibility": "visible",
+    "focused": true,
+    "devicePixelRatio": 1,
+    "multipleScreens": false,
+    "url": "http://127.0.0.1:63813/?harness=1"
+  },
+  "runtime": {
+    "hardwareThreads": 24,
+    "deviceMemory": 32,
+    "platform": "Win32",
+    "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/149.0.0.0 Safari/537.36"
+  },
+  "measurementChecks": {
+    "warmupReset": {
+      "averageFps": 0,
+      "onePercentLow": 0,
+      "averageFrameTime": 0,
+      "medianFrameTime": 0,
+      "p95FrameTime": 0,
+      "p99FrameTime": 0,
+      "refreshEstimate": 60,
+      "longFrameCount": 0,
+      "longestFrameTime": 0,
+      "sampleCount": 0,
+      "windowElapsedMilliseconds": 0,
+      "warmupExcludedMilliseconds": 7.199999999254942,
+      "warmupExcludedFrames": 0,
+      "warmupReason": "bot population change",
+      "warmingUp": true
+    },
+    "workerRowHeights": [
+      0,
+      0
+    ],
+    "panelBounds": {
+      "width": 240,
+      "height": 286.4375,
+      "viewportHeight": 748,
+      "phaseScrollWidth": 0,
+      "phaseClientWidth": 0
+    }
+  }
+}

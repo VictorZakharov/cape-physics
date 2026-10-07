@@ -1,3 +1,4 @@
+import { workerStepTiming } from './WorkerStepTiming';
 export const CAPE_PROFILE_PHASES = [
   'prediction',
   'constraints',
@@ -67,6 +68,7 @@ export class CapePerformanceProfiler {
   }
   public beginStep(active: boolean): boolean {
     this.totalSteps++; if (active) this.activeSteps++;
+    if (workerStepTiming.isWorker) return false;
     const now = performance.now();
     if (now >= this.acceptAfter) this.steps.push({ time: now, active });
     this.trim(now);
@@ -98,7 +100,7 @@ export class CapePerformanceProfiler {
     const elapsed = this.steps.length > 1 ? now - this.steps[0]!.time : 0;
     return { implementation: 'cpu-pbd', sampleIntervalSteps: this.sampleIntervalSteps,
       totalSteps: this.totalSteps, activeSteps: this.activeSteps, sampledActiveSteps: count,
-      sufficientSamples: count >= 30, windowTotalSteps: this.steps.length,
+      sufficientSamples: count >= 30, windowTotalSteps: Math.max(0, this.steps.length - 1),
       windowActiveSteps: this.steps.slice(1).filter(step => step.active).length, windowElapsedMilliseconds: elapsed,
       averageStepMilliseconds: this.samples.reduce((sum, sample) => sum + sample.milliseconds, 0) / Math.max(1, count), phases };
   }

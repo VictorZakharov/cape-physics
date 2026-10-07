@@ -27,7 +27,7 @@ The raw reports are preserved verbatim. After those captures, the final implemen
 
 During fullscreen/resize warm-up, the HUD retains its previous values and graph, dims them, and labels them `WARMING UP / PREVIOUS STATS` until fresh frame samples arrive. Repeated resize events retain the same display; measurement windows and copied reports still reset and contain no previous samples. Numeric values in particle, constraint, worker, throughput, and hardware rows use the same brighter bold style as the original FPS and timing values. The follow-up passed fourteen focused tests, TypeScript checking, and a production build.
 
-The worker HUD uses four explicit non-wrapping lines with reserved height and tabular numerals, separating compute/rate, timestep/utilization, and assignments. Number updates cannot add a wrapped line. Existing ANGLE identification, hardware fields, particle/constraint totals, and the Timing caveat are retained.
+The worker HUD uses five explicit non-wrapping lines with reserved height and tabular numerals, separating compute/rate, timestep/utilization, and assignments. Number updates cannot add a wrapped line. Existing ANGLE identification, hardware fields, particle/constraint totals, and the Timing caveat are retained.
 
 ## Validation and limitations
 
@@ -35,3 +35,6 @@ The worker HUD uses four explicit non-wrapping lines with reserved height and ta
 - Final targeted check after label/accounting changes: 26 passed, zero failures; TypeScript and source-size budgets passed. Four-thread parameterization adds one test relative to the full run.
 - Both backend report captures exercised actual NVIDIA rendering and measured GPU timestamps. WebGL capture cleanup succeeded.
 - Windows rejected removal of several dedicated WebGPU audit profiles under `artifacts/.tmp/` with EPERM. Cleanup errors were surfaced as failures; these runs are not marked clean successes. No further browser retries were performed. The capture utility keeps temporary data on G:, cleans in finally, and preserves primary capture errors before reporting cleanup errors. No physical four-thread benchmark or final clean WebGPU recapture is claimed.
+
+
+Worker collision follow-up: see [measured candidate search, worker phase cost, overhead proof and exact regression](worker-collision-investigation.md). The archived follow-up includes both rendering backends, before/after three-worker reports, and recurrent steady-window stalls; severe lows are not all attributed to warm-up.
