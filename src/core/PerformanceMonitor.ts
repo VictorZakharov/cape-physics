@@ -81,6 +81,7 @@ export class PerformanceMonitor {
   private readonly particlesLabel: HTMLElement;
   private readonly simulationLabel: HTMLElement;
   private readonly simulationP95Label: HTMLElement;
+  private readonly workersLabel: HTMLElement;
   private readonly constraintsLabel: HTMLElement;
   private readonly hardwareLabel: HTMLElement;
   private readonly averageHistoryPath: SVGPathElement;
@@ -138,6 +139,7 @@ export class PerformanceMonitor {
     this.particlesLabel = invariant(root.querySelector<HTMLElement>('[data-sim-particles]'), 'Particle label is missing.');
     this.simulationLabel = invariant(root.querySelector<HTMLElement>('[data-sim-time]'), 'Simulation-time label is missing.');
     this.simulationP95Label = invariant(root.querySelector<HTMLElement>('[data-sim-p95]'), 'Simulation p95 label is missing.');
+    this.workersLabel = invariant(root.querySelector<HTMLElement>('[data-sim-workers]'), 'Worker simulation label is missing.');
     this.constraintsLabel = invariant(root.querySelector<HTMLElement>('[data-sim-constraints]'), 'Constraint label is missing.');
     this.hardwareLabel = invariant(root.querySelector<HTMLElement>('[data-sim-hardware]'), 'Simulation hardware label is missing.');
     this.averageHistoryPath = invariant(root.querySelector<SVGPathElement>('[data-fps-average-line]'), 'Average-FPS history path is missing.');
@@ -401,6 +403,13 @@ export class PerformanceMonitor {
       ? this.workloadSnapshot.averagePhysicsMilliseconds.toFixed(2) : '--';
     this.simulationP95Label.textContent = workloadSampleCount > 0
       ? this.workloadSnapshot.p95PhysicsMilliseconds.toFixed(2) : '--';
+    const workers = details.capeWorkers;
+    this.workersLabel.hidden = !workers?.active && !workers?.failure;
+    const workerTime = workers?.averageStepMilliseconds;
+    const workerHz = workers?.capeResultHz;
+    this.workersLabel.textContent = workers?.failure
+      ? 'SIM WORKERS: FAILED / MAIN FALLBACK'
+      : `SIM WORKERS: ${workers?.workers ?? 0} \u00d7 ${workerTime != null ? workerTime.toFixed(2) : '--'} MS/STEP @ ${workerHz && workerHz > 0 ? workerHz.toFixed(1) : '--'} HZ`;
     this.triangleLabel.textContent = count(details.renderer.triangles);
     const threads = details.runtime.hardwareThreads;
     const implementation = details.capeSolver?.implementation;

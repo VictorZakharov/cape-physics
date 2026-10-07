@@ -219,6 +219,7 @@ describe('performance report', () => {
         queuedSteps: 2,
         capeResultHz: 32.5,
         averageBatchMilliseconds: 27,
+        averageStepMilliseconds: 19.25,
         failure: null,
       },
       scene: {
@@ -240,6 +241,7 @@ describe('performance report', () => {
     });
 
     expect(report).toContain('player at 120 Hz on main thread, bots on adaptive worker steps (at most 33.3 ms) across 8 workers');
+    expect(report).toContain('19.25 ms/step/worker average');
     expect(report).toContain('32.50 results/s/cape | 27.00 ms average batch latency');
     expect(report).toContain('Cape workers: 8 active | 6 busy | 2 queued fixed steps | healthy');
   });

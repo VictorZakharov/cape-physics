@@ -89,6 +89,7 @@ describe('WebGlCapeWorkerPool', () => {
     pool.enqueueStep(1 / 120, 1 / 120, inputs);
     pool.flush();
     expect(pool.getDiagnostics().busyWorkers).toBe(2);
+    expect(pool.getDiagnostics().averageStepMilliseconds).toBeNull();
 
     pool.enqueueStep(1 / 120, 2 / 120, inputs);
     pool.enqueueStep(1 / 120, 3 / 120, inputs);
@@ -98,7 +99,7 @@ describe('WebGlCapeWorkerPool', () => {
       expect(worker.posted.filter((message) => message.type === 'step-batch')).toHaveLength(1);
     });
 
-    FakeWorker.instances.forEach((worker) => {
+    FakeWorker.instances.forEach((worker, workerIndex) => {
       const add = worker.posted.find((message) => message.type === 'add-cape');
       const firstBatch = worker.posted.find((message) => message.type === 'step-batch');
       if (!add || add.type !== 'add-cape' || !firstBatch || firstBatch.type !== 'step-batch') {
@@ -106,6 +107,7 @@ describe('WebGlCapeWorkerPool', () => {
       }
       const response: CapeWorkerBatchResult = {
         type: 'batch-result',
+        simulationStepMilliseconds: 4 + workerIndex * 4,
         requestId: firstBatch.requestId,
         states: [{
           capeId: add.capeId,
@@ -124,8 +126,16 @@ describe('WebGlCapeWorkerPool', () => {
       expect(batches[1]?.frames).toHaveLength(1);
       expect(batches[1]?.frames[0]?.time).toBe(3 / 120);
     });
+    expect(pool.getDiagnostics().averageStepMilliseconds).toBe(6);
     expect(pool.consumeLatestState(1)).not.toBeNull();
+    pool.unregisterCape(1);
+    expect(pool.getDiagnostics().workers).toBe(1);
+    expect(pool.getDiagnostics().averageStepMilliseconds).toBe(8);
     expect(pool.consumeLatestState(2)).not.toBeNull();
+
+    pool.unregisterCape(2);
+    expect(pool.getDiagnostics().workers).toBe(0);
+    expect(pool.getDiagnostics().averageStepMilliseconds).toBeNull();
 
     pool.dispose();
     expect(FakeWorker.instances.every((worker) => worker.terminated)).toBe(true);
@@ -151,7 +161,7 @@ describe('WebGlCapeWorkerPool', () => {
       for (const worker of FakeWorker.instances) {
         const batch = worker.posted.find((message) => message.type === 'step-batch');
         if (!batch || batch.type !== 'step-batch') throw new Error('Missing first batch.');
-        worker.emit({ type: 'batch-result', requestId: batch.requestId, states: [] });
+        worker.emit({ type: 'batch-result', simulationStepMilliseconds: 4, requestId: batch.requestId, states: [] });
         const batches = worker.posted.filter((message) => message.type === 'step-batch');
         expect(batches).toHaveLength(2);
         expect(batches[1]!.frames.map((frame) => frame.time)).toEqual([

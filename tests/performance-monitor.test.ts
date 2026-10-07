@@ -5,6 +5,7 @@ import type { PerformanceReportDetails } from '../src/core/PerformanceReport';
 class FakeHudElement {
   public textContent = '';
   public title = '';
+  public hidden = false;
   public readonly dataset: Record<string, string> = {};
   public readonly classList = { toggle: (): void => undefined };
   private readonly attributes = new Map<string, string>();
@@ -251,6 +252,30 @@ describe('PerformanceMonitor', () => {
     monitor.recordFrame(1000);
     expect(elements.get('[data-sim-time]')?.textContent).toBe('--');
     expect(elements.get('[data-sim-p95]')?.textContent).toBe('--');
+  });
+
+  test('shows worker compute cost and delivery rate beside main timing', () => {
+    let details: PerformanceReportDetails = { ...reportDetails, capeWorkers: {
+      active: true, workers: 10, busyWorkers: 8, queuedSteps: 2,
+      averageStepMilliseconds: 27.35, averageBatchMilliseconds: 40.6,
+      capeResultHz: 24.6, failure: null,
+    } };
+    const { monitor, elements } = createMonitorHarness(() => details);
+    monitor.recordFrame(0);
+    monitor.recordFrame(250);
+    const label = elements.get('[data-sim-workers]')!;
+    expect(label.hidden).toBe(false);
+    expect(label.textContent).toBe('SIM WORKERS: 10 \u00d7 27.35 MS/STEP @ 24.6 HZ');
+    details = { ...details, capeWorkers: { ...details.capeWorkers!, averageStepMilliseconds: null, capeResultHz: 0 } };
+    monitor.recordFrame(500);
+    expect(label.textContent).toBe('SIM WORKERS: 10 \u00d7 -- MS/STEP @ -- HZ');
+    details = { ...details, capeWorkers: { ...details.capeWorkers!, active: false, failure: 'solver failed' } };
+    monitor.recordFrame(750);
+    expect(label.hidden).toBe(false);
+    expect(label.textContent).toBe('SIM WORKERS: FAILED / MAIN FALLBACK');
+    details = { ...details, capeWorkers: null };
+    monitor.recordFrame(1000);
+    expect(label.hidden).toBe(true);
   });
 
 });

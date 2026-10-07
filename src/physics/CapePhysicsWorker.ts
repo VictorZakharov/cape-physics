@@ -81,6 +81,7 @@ function handleMessage(message: CapeWorkerRequest): void {
       return;
     case 'step-batch': {
       const touchedCapeIds = new Set<number>();
+      const simulationStart = performance.now();
       for (const frame of message.frames) {
         for (const input of frame.capes) {
           const cape = capes.get(input.capeId);
@@ -114,6 +115,8 @@ function handleMessage(message: CapeWorkerRequest): void {
           cape.deltaTime = deltaTime;
         }
       }
+      const simulationStepMilliseconds = (performance.now() - simulationStart)
+        / Math.max(1, message.frames.length);
       const states = [...touchedCapeIds].flatMap((capeId) => {
         const cape = capes.get(capeId);
         if (!cape) return [];
@@ -131,6 +134,7 @@ function handleMessage(message: CapeWorkerRequest): void {
       });
       const response: CapeWorkerBatchResult = {
         type: 'batch-result',
+        simulationStepMilliseconds,
         requestId: message.requestId,
         states,
       };

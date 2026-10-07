@@ -41,6 +41,7 @@ export interface PerformanceReportDetails {
     readonly queuedSteps: number;
     readonly capeResultHz?: number;
     readonly averageBatchMilliseconds?: number;
+    readonly averageStepMilliseconds?: number | null;
     readonly failure: string | null;
   } | null;
   readonly scene: {
@@ -106,6 +107,7 @@ export function formatPerformanceReport(input: PerformanceReportInput): string {
         `Cape step sampled average: ${metric(capeSolver.averageStepMilliseconds)} ms | prediction ${metric(capeSolver.phases.prediction)} | constraints ${metric(capeSolver.phases.constraints)} | self ${metric(capeSolver.phases.selfCollision)} | fold ${metric(capeSolver.phases.foldGuard)} | body ${metric(capeSolver.phases.bodyCollision)} | world ${metric(capeSolver.phases.worldCollision)} | cave ${metric(capeSolver.phases.caveCollision)} | reconcile ${metric(capeSolver.phases.reconciliation)}`,
         ...(capeWorkers?.active ? [
           `Cape workers: ${capeWorkers.workers} active | ${capeWorkers.busyWorkers} busy | ${capeWorkers.queuedSteps} queued fixed steps | ${capeWorkers.failure ?? 'healthy'}`,
+          ...(capeWorkers.averageStepMilliseconds != null ? [`Cape worker execution: ${capeWorkers.workers} workers | ${metric(capeWorkers.averageStepMilliseconds)} ms/step/worker average across each worker's assigned capes (excludes result packing and message latency)`] : []),
           ...(capeWorkers.capeResultHz !== undefined ? [`Cape worker delivery: ${metric(capeWorkers.capeResultHz)} results/s/cape | ${metric(capeWorkers.averageBatchMilliseconds ?? 0)} ms average batch latency`] : []),
         ] : []),
       ]
