@@ -1,0 +1,24 @@
+{
+  "capes": 1,
+  "steps": 5,
+  "colliders": 45,
+  "samples": 150,
+  "coordinatesCompared": 3510,
+  "bitIdentical": true,
+  "maximumDeviation": 0,
+  "candidates": {
+    "vertexBuilds": 0,
+    "vertexRebuilds": 0,
+    "vertexCandidates": 0,
+    "vertexWorst": 0,
+    "triangleBuilds": 0,
+    "triangleRebuilds": 0,
+    "triangleCandidates": 0,
+    "triangleWorst": 0,
+    "overflows": 2713,
+    "vertexRebuildWorst": 0,
+    "triangleRebuildWorst": 0,
+    "vertexSkippedAssertions": 0,
+    "triangleSkippedAssertions": 0
+  }
+}

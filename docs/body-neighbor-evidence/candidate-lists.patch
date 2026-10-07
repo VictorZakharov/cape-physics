@@ -1,0 +1,200 @@
+diff --git a/src/physics/CapeContactSolver.ts b/src/physics/CapeContactSolver.ts
+--- a/src/physics/CapeContactSolver.ts
++++ b/src/physics/CapeContactSolver.ts
+@@ -0,0 +1 @@
++import { VertexBodyCandidates, bodyCandidateDebug, bodyCandidateMetrics } from './BodyCandidateLists';
+@@ -96,0 +98 @@
++  private readonly bodyCandidates: VertexBodyCandidates;
+@@ -131,0 +134 @@
++    this.bodyCandidates = new VertexBodyCandidates(inverseMass.length);
+@@ -186,0 +190 @@
++    this.bodyCandidates.beginStep();
+@@ -209 +213,14 @@
+-      for (const collider of this.preparedBodyColliders) {
++      let mask = bodyCandidateDebug.enabled ? this.bodyCandidates.mask(index, position, this.preparedBodyColliders) : 0xffffffff;
++      const listed = bodyCandidateDebug.enabled && this.preparedBodyColliders.length <= 32;
++      for (let candidate = 0; candidate < this.preparedBodyColliders.length; candidate++) {
++        if (listed && !bodyCandidateDebug.assertions) {
++          const remaining = (mask & (0xffffffff << candidate)) >>> 0;
++          if (!remaining) break;
++          candidate = 31 - Math.clz32(remaining & -remaining);
++        }
++        const collider = this.preparedBodyColliders[candidate]!;
++        if (listed && !(mask & (1 << candidate))) {
++          if (bodyCandidateDebug.assertions) bodyCandidateMetrics.vertexSkippedAssertions++;
++          if (bodyCandidateDebug.assertions && this.getCapsulePenetration(position, collider, back, previous, index % CAPE.columns / (CAPE.columns - 1) - 0.5) > 0) throw Error('Skipped correcting vertex/body pair');
++          continue;
++        }
+@@ -224,0 +242,2 @@
++        // A correction can exhaust the skin inside this very collider sweep.
++        if (bodyCandidateDebug.enabled) mask = this.bodyCandidates.mask(index, position, this.preparedBodyColliders);
+diff --git a/src/physics/ClothBodyCollision.ts b/src/physics/ClothBodyCollision.ts
+--- a/src/physics/ClothBodyCollision.ts
++++ b/src/physics/ClothBodyCollision.ts
+@@ -0,0 +1 @@
++import { TriangleBodyCandidates, bodyCandidateDebug, bodyCandidateMetrics } from './BodyCandidateLists';
+@@ -34,0 +36 @@
++  private readonly candidates: TriangleBodyCandidates;
+@@ -42,0 +45 @@
++    this.candidates = new TriangleBodyCandidates((rows - 1) * (columns - 1) * 2);
+@@ -50,0 +54 @@
++    this.candidates.beginStep();
+@@ -62,0 +67,5 @@
++    if (bodyCandidateDebug.enabled && this.candidates.sampleCount === 0) {
++      this.forEachCapsuleSample(colliders, this.collectCandidateSample);
++    }
++    this.candidates.beginRun();
++    let sample = -1;
+@@ -63,0 +73 @@
++      sample++;
+@@ -66,0 +77,9 @@
++        const row = Math.floor(first / this.columns), column = first % this.columns;
++        const triangle = second === first + 1
++          ? ((row - 1) * (this.columns - 1) + column) * 2 + 1
++          : (row * (this.columns - 1) + column) * 2;
++        if (bodyCandidateDebug.enabled && !this.candidates.includes(triangle, sample, this.positions[first]!, this.positions[second]!, this.positions[third]!)) {
++          if (bodyCandidateDebug.assertions) bodyCandidateMetrics.triangleSkippedAssertions++;
++          if (bodyCandidateDebug.assertions) this.solveTriangle(first, second, third, center, lateralRadius, depthRadius, back, sideOrigin, true);
++          return;
++        }
+@@ -70,0 +90,8 @@
++
++  private readonly collectCandidateSample = (center: THREE.Vector3, lateralRadius: number, depthRadius: number): void => {
++    const offset = this.candidates.sampleCount++ * 4;
++    if (offset < this.candidates.samples.length) {
++      this.candidates.samples[offset] = center.x; this.candidates.samples[offset + 1] = center.y; this.candidates.samples[offset + 2] = center.z;
++      this.candidates.samples[offset + 3] = Math.max(lateralRadius, depthRadius);
++    }
++  };
+@@ -142,0 +170 @@
++    assertNoCorrection = false,
+@@ -144 +172 @@
+-    if (workerStepTiming.sampling) workerStepTiming.bodyTests.triangleTests++;
++    if (workerStepTiming.sampling && !assertNoCorrection) workerStepTiming.bodyTests.triangleTests++;
+@@ -186,0 +215 @@
++    if (assertNoCorrection) throw Error('Skipped correcting triangle/body pair');
+@@ -364,0 +394,9 @@
++    if (bodyCandidateDebug.enabled) {
++      const row = Math.floor(index / this.columns), column = index % this.columns;
++      for (let cellRow = Math.max(0, row - 1); cellRow <= Math.min(this.rows - 2, row); cellRow++) {
++        for (let cellColumn = Math.max(0, column - 1); cellColumn <= Math.min(this.columns - 2, column); cellColumn++) {
++          const triangle = (cellRow * (this.columns - 1) + cellColumn) * 2;
++          this.candidates.changed(triangle); this.candidates.changed(triangle + 1);
++        }
++      }
++    }
+diff --git a/src/physics/BodyCandidateLists.ts b/src/physics/BodyCandidateLists.ts
+new file mode 100644
+--- /dev/null
++++ b/src/physics/BodyCandidateLists.ts
+@@ -0,0 +1,110 @@
++import type { Vector3 } from 'three';
++import type { PreparedBodyCollider } from './CapeBodyColliderPreparation';
++
++// One-step neighbour lists. Bounds are necessary conditions of the unchanged
++// narrowphase, expanded by skin; they also cover its one-sided front contacts.
++export const BODY_CANDIDATE_SKIN = 0.026;
++export const bodyCandidateMetrics = { vertexBuilds: 0, vertexRebuilds: 0, vertexCandidates: 0, vertexWorst: 0, triangleBuilds: 0, triangleRebuilds: 0, triangleCandidates: 0, triangleWorst: 0, overflows: 0, vertexRebuildWorst: 0, triangleRebuildWorst: 0, vertexSkippedAssertions: 0, triangleSkippedAssertions: 0 };
++export const bodyCandidateDebug = { enabled: true, assertions: false, skin: BODY_CANDIDATE_SKIN };
++export class VertexBodyCandidates {
++  private readonly reference: Float64Array;
++  private readonly masks: Uint32Array;
++  private readonly valid: Uint8Array;
++  private readonly builds: Uint16Array;
++  public constructor(particles: number) {
++    this.builds = new Uint16Array(particles);
++    this.reference = new Float64Array(particles * 3);
++    this.masks = new Uint32Array(particles);
++    this.valid = new Uint8Array(particles);
++  }
++  public beginStep(): void { this.valid.fill(0); this.builds.fill(0); }
++  public mask(index: number, point: Vector3, colliders: readonly PreparedBodyCollider[]): number {
++    if (colliders.length > 32) {
++      if (!this.valid[index]) { bodyCandidateMetrics.overflows++; this.valid[index] = 1; }
++      return 0xffffffff;
++    }
++    const offset = index * 3, skin = bodyCandidateDebug.skin;
++    const dx = point.x - this.reference[offset]!, dy = point.y - this.reference[offset + 1]!, dz = point.z - this.reference[offset + 2]!;
++    if (this.valid[index] && dx * dx + dy * dy + dz * dz < skin * skin) return this.masks[index]!;
++    let mask = 0;
++    for (let candidate = 0; candidate < colliders.length; candidate++) {
++      const collider = colliders[candidate]!, radius = Math.max(collider.lateralRadius, collider.depthRadius) + 1e-7 + skin;
++      const x = point.x - collider.startX, z = point.z - collider.startZ;
++      if (point.y >= collider.minimumY - skin && point.y <= collider.maximumY + skin
++        && x >= Math.min(0, collider.axisX) - radius && x <= Math.max(0, collider.axisX) + radius
++        && z >= Math.min(0, collider.axisZ) - radius && z <= Math.max(0, collider.axisZ) + radius) mask |= 1 << candidate;
++    }
++    bodyCandidateMetrics.vertexBuilds++;
++    if (this.valid[index]) bodyCandidateMetrics.vertexRebuilds++;
++    this.builds[index] = this.builds[index]! + 1; bodyCandidateMetrics.vertexRebuildWorst = Math.max(bodyCandidateMetrics.vertexRebuildWorst, this.builds[index]!);
++    let count = 0; for (let bits = mask >>> 0; bits; bits = (bits & (bits - 1)) >>> 0) count++;
++    bodyCandidateMetrics.vertexCandidates += count; bodyCandidateMetrics.vertexWorst = Math.max(bodyCandidateMetrics.vertexWorst, count);
++    this.reference[offset] = point.x; this.reference[offset + 1] = point.y; this.reference[offset + 2] = point.z;
++    this.valid[index] = 1; this.masks[index] = mask;
++    return mask;
++  }
++}
++
++export class TriangleBodyCandidates {
++  public readonly samples = new Float64Array(128 * 4);
++  public sampleCount = 0;
++  private readonly references: Float64Array;
++  private readonly masks: Uint32Array;
++  private readonly dirty: Uint8Array;
++  private readonly valid: Uint8Array;
++  private readonly builds: Uint16Array;
++  public constructor(triangles: number) {
++    this.builds = new Uint16Array(triangles);
++    this.references = new Float64Array(triangles * 9);
++    this.masks = new Uint32Array(triangles * 4);
++    this.dirty = new Uint8Array(triangles);
++    this.valid = new Uint8Array(triangles);
++  }
++  public beginStep(): void { this.valid.fill(0); this.builds.fill(0); this.sampleCount = 0; }
++  public beginRun(): void { this.dirty.fill(1); }
++  public changed(triangle: number): void { this.dirty[triangle] = 1; }
++  public includes(triangle: number, sample: number, a: Vector3, b: Vector3, c: Vector3): boolean {
++    if (this.sampleCount > 128) {
++      if (!this.valid[triangle]) { bodyCandidateMetrics.overflows++; this.valid[triangle] = 1; }
++      return true;
++    }
++    if (this.dirty[triangle]) {
++      this.dirty[triangle] = 0;
++      const base = triangle * 9, skin = bodyCandidateDebug.skin, squared = skin * skin;
++      let moved = !this.valid[triangle];
++      for (let vertex = 0; vertex < 3 && !moved; vertex++) {
++        const point = vertex === 0 ? a : vertex === 1 ? b : c, offset = base + vertex * 3;
++        const x = point.x - this.references[offset]!, y = point.y - this.references[offset + 1]!, z = point.z - this.references[offset + 2]!;
++        moved = x * x + y * y + z * z >= squared;
++      }
++      if (moved) {
++        bodyCandidateMetrics.triangleBuilds++;
++        if (this.valid[triangle]) bodyCandidateMetrics.triangleRebuilds++;
++        this.builds[triangle] = this.builds[triangle]! + 1; bodyCandidateMetrics.triangleRebuildWorst = Math.max(bodyCandidateMetrics.triangleRebuildWorst, this.builds[triangle]!);
++        let count = 0;
++        const maskBase = triangle * 4;
++        this.masks.fill(0, maskBase, maskBase + 4);
++        const minX = Math.min(a.x, b.x, c.x) - skin - 1e-7, maxX = Math.max(a.x, b.x, c.x) + skin + 1e-7;
++        const minY = Math.min(a.y, b.y, c.y) - skin - 1e-7, maxY = Math.max(a.y, b.y, c.y) + skin + 1e-7;
++        const minZ = Math.min(a.z, b.z, c.z) - skin - 1e-7, maxZ = Math.max(a.z, b.z, c.z) + skin + 1e-7;
++        for (let candidate = 0; candidate < this.sampleCount; candidate++) {
++          const offset = candidate * 4, x = this.samples[offset]!, y = this.samples[offset + 1]!, z = this.samples[offset + 2]!, radius = this.samples[offset + 3]!;
++          if (x + radius >= minX && x - radius <= maxX
++            && y + radius >= minY && y - radius <= maxY
++            && z + radius >= minZ && z - radius <= maxZ) {
++            count++;
++            const word = maskBase + (candidate >>> 5);
++            this.masks[word] = this.masks[word]! | (1 << (candidate & 31));
++          }
++        }
++        for (let vertex = 0; vertex < 3; vertex++) {
++          const point = vertex === 0 ? a : vertex === 1 ? b : c, offset = base + vertex * 3;
++          this.references[offset] = point.x; this.references[offset + 1] = point.y; this.references[offset + 2] = point.z;
++        }
++        bodyCandidateMetrics.triangleCandidates += count; bodyCandidateMetrics.triangleWorst = Math.max(bodyCandidateMetrics.triangleWorst, count);
++        this.valid[triangle] = 1;
++      }
++    }
++    return (this.masks[triangle * 4 + (sample >>> 5)]! & (1 << (sample & 31))) !== 0;
++  }
++}

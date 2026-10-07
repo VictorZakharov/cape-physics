@@ -1,0 +1,56 @@
+Cape Physics performance report
+Captured: 2026-10-07T16:59:52.272Z
+Warm-up excluded: 3.00 s | 133 frames | bot population change | measuring steady state; subsequent stalls retained
+Window: last 15.00 s of 15 s | 675 frames
+Rendered FPS: 44.95 average | 27.83 1% low | 60 callback/s estimate
+Frame interval: 22.25 ms average | p50 16.70 ms | p95 33.40 ms | p99 33.60 ms | worst 49.80 ms
+Long frames: 0 at or above 50 ms
+Renderer: WebGL 2.0 (OpenGL ES 3.0 Chromium) | Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 4070 Ti (0x00002782) Direct3D11 vs_5_0 ps_5_0, D3D11)
+Renderer selection: requested WEBGL | active WEBGL | no fallback
+Canvas: 1582x748 drawing buffer / 1582x748 CSS px
+GPU frame execution: 6.87 ms average | 675 samples, last 15s | EXT_disjoint_timer_query_webgl2 (all render passes)
+Quality: ADAPTIVE ULTRA | 1.000 resolution scale | CPU-bound: held | 2 render-target resizes
+Main thread: 20.62 ms average | p95 26.80 ms | physics 15.57 ms | scene 0.69 ms | render submission 4.36 ms | 2.00 physics steps/callback average, 2 maximum
+Cape solver: CPU PBD Gauss-Seidel | player at nominal 120 Hz on main thread, bots on adaptive worker steps (at most 33.3 ms) across 10 workers | 10 projection passes | sampled 1/16 player steps (84 samples)
+Player cape only, awake CPU steps, last 15s: 4.07 ms/step | 84 samples | phase sum 4.07 ms | prediction 0.05 | constraints 0.45 | self 0.80 | fold 0.08 | body 1.07 | world 0.43 | cave 0.53 | reconcile 0.64 | anchors 0.01 | finalization 0.02
+Scope: physics is main-thread work per rendered callback (player cape, controllers, worker scheduling/result reconciliation, and geometry sync); awake player ms/step excludes those other costs and sleeping steps, so multiplying it by all steps/callback does not estimate total main-thread physics.
+Cape workers: 10 active | 10 busy | 10 queued fixed steps | healthy
+Cape worker execution: 10 workers | 24.35 ms/step/worker average across each worker's assigned capes (excludes result packing and message latency)
+Worker selection: 24 logical cores | 10 chosen | limit 10 | min(10, max(1, logical cores - 2)); unknown cores: assume 4 | override none
+Worker simulated timestep: 27.92 ms (elapsed simulation time, separately from execution wall time) | utilisation 65.2% average | worker execution 6516.19 ms/s summed across workers
+Worker 1: 5 capes / 1170 particles per step | compute 26.99 ms/step | delivered 23.76 steps/s | busy 64.1%
+Worker 1 phases (ms/step, 89 measured worker steps): constraints 2.29 ms (8.5%) | body 10.74 ms (39.8%) | selfFold 4.27 ms (15.8%) | worldCave 8.51 ms (31.5%) | other 1.19 ms (4.4%)
+Worker 2: 5 capes / 1170 particles per step | compute 23.29 ms/step | delivered 28.16 steps/s | busy 65.6%
+Worker 2 phases (ms/step, 106 measured worker steps): constraints 2.29 ms (9.8%) | body 10.23 ms (43.9%) | selfFold 4.19 ms (18.0%) | worldCave 5.51 ms (23.7%) | other 1.07 ms (4.6%)
+Worker 3: 5 capes / 1170 particles per step | compute 24.32 ms/step | delivered 27.43 steps/s | busy 66.7%
+Worker 3 phases (ms/step, 103 measured worker steps): constraints 2.28 ms (9.4%) | body 10.47 ms (43.1%) | selfFold 4.05 ms (16.7%) | worldCave 6.66 ms (27.4%) | other 0.86 ms (3.5%)
+Worker 4: 5 capes / 1170 particles per step | compute 24.53 ms/step | delivered 25.89 steps/s | busy 63.5%
+Worker 4 phases (ms/step, 97 measured worker steps): constraints 2.31 ms (9.4%) | body 10.27 ms (41.9%) | selfFold 3.97 ms (16.2%) | worldCave 6.82 ms (27.8%) | other 1.16 ms (4.7%)
+Worker 5: 5 capes / 1170 particles per step | compute 23.00 ms/step | delivered 28.43 steps/s | busy 65.4%
+Worker 5 phases (ms/step, 107 measured worker steps): constraints 2.24 ms (9.7%) | body 10.08 ms (43.8%) | selfFold 3.94 ms (17.1%) | worldCave 5.68 ms (24.7%) | other 1.06 ms (4.6%)
+Worker 6: 5 capes / 1170 particles per step | compute 23.43 ms/step | delivered 28.29 steps/s | busy 66.3%
+Worker 6 phases (ms/step, 106 measured worker steps): constraints 2.28 ms (9.7%) | body 10.02 ms (42.7%) | selfFold 3.96 ms (16.9%) | worldCave 6.33 ms (27.0%) | other 0.85 ms (3.6%)
+Worker 7: 5 capes / 1170 particles per step | compute 23.59 ms/step | delivered 27.36 steps/s | busy 64.5%
+Worker 7 phases (ms/step, 103 measured worker steps): constraints 2.23 ms (9.5%) | body 10.30 ms (43.7%) | selfFold 4.05 ms (17.2%) | worldCave 5.91 ms (25.1%) | other 1.09 ms (4.6%)
+Worker 8: 5 capes / 1170 particles per step | compute 23.83 ms/step | delivered 27.29 steps/s | busy 65.0%
+Worker 8 phases (ms/step, 103 measured worker steps): constraints 2.36 ms (9.9%) | body 10.48 ms (44.0%) | selfFold 4.01 ms (16.8%) | worldCave 5.76 ms (24.2%) | other 1.22 ms (5.1%)
+Worker 9: 5 capes / 1170 particles per step | compute 27.29 ms/step | delivered 24.16 steps/s | busy 65.9%
+Worker 9 phases (ms/step, 91 measured worker steps): constraints 2.33 ms (8.5%) | body 10.99 ms (40.3%) | selfFold 4.26 ms (15.6%) | worldCave 8.70 ms (31.9%) | other 1.01 ms (3.7%)
+Worker 10: 5 capes / 1170 particles per step | compute 23.24 ms/step | delivered 27.83 steps/s | busy 64.7%
+Worker 10 phases (ms/step, 105 measured worker steps): constraints 2.34 ms (10.1%) | body 10.32 ms (44.4%) | selfFold 3.98 ms (17.1%) | worldCave 5.60 ms (24.1%) | other 0.99 ms (4.2%)
+Worker body candidates: 432.11 tests/particle/step | vertex 170.66 (0.228% correcting) | triangle incidence 261.45 (0.703% correcting triangle/sample tests) | counts sampled every fourth batch; vertex/capsule calls plus 3 incident particles per triangle/sample call, including existing narrowphase bounds checks; corrections mean an applied projection; denominator includes every delivered cape step, including sleeping capes
+Worker phase mean: 1010 phase samples | constraints 2.29 ms (9.4%) | body 10.39 ms (42.7%) | selfFold 4.07 ms (16.7%) | worldCave 6.55 ms (26.9%) | other 1.05 ms (4.3%) | sum 24.35 ms / compute 24.35 ms | phase shares sampled every fourth worker batch, apportioned to all-step compute; includes reconciliation collision calls; other includes input updates, prefilter/preparation and sleeping step updates
+Cape worker delivery: 26.86 results/s/cape | 37.28 ms average batch latency
+Cloth workload: 11,934 sim particles (51 × 234) | 82,926 distance constraints × 10 iterations | main-thread simulation phase 15.57 ms average / 21.10 ms p95 (excludes asynchronous worker and GPU execution)
+Collider inventory per cape: 2062 static world proxies (formation 1835, rock 78, torch 77, mineral 72) | 15 animated body capsules | cave floor/ceiling/sides sampled analytically, not included in proxy count
+Constraints by type: structural 22287 (437/cape) | shear 20808 (408/cape) | bending 39831 (781/cape) | excludes collision and shape guards
+Simulation delivery: 335292 particle-steps/s | player 89.90 step calls/s (includes sleeping updates; awake 89.90/s) x 234 particles | bot delivery 314254 particle-steps/s
+Main-thread physics wall cost: 699.80 ms/s (per-callback measured physics x callback rate); worker wall cost above is separate and executes in parallel
+Execution timers measure elapsed time inside solving, exclude idle/message waits, and may include OS preemption; utilisation is measured solve wall time / observation time, not an OS CPU counter.
+Hardware: 24 logical cores | navigator.deviceMemory 32 GiB (browser approximation)
+Scene: 14.17 s simulated | 50 performance bots | 51 simulated capes | 187 draw calls | 164062 triangles | 47 programs | 2062 cape colliders/cape | 16 active ripples | player cape active
+Page state: visible | focused | DPR 1.00 | single screen reported
+Timing caveat: display FPS is refresh/vsync capped and therefore cannot compare backend headroom; main-thread render submission is not GPU completion
+Page: http://127.0.0.1:59516/?harness=1
+Runtime: Win32
+User agent (raw): Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/149.0.0.0 Safari/537.36
