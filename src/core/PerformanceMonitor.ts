@@ -408,8 +408,8 @@ export class PerformanceMonitor {
     const workerTime = workers?.averageStepMilliseconds;
     const workerHz = workers?.capeResultHz;
     this.workersLabel.textContent = workers?.failure
-      ? 'SIM WORKERS: FAILED / MAIN FALLBACK'
-      : `SIM WORKERS: ${workers?.workers ?? 0} \u00d7 ${workerTime != null ? workerTime.toFixed(2) : '--'} MS/STEP @ ${workerHz && workerHz > 0 ? workerHz.toFixed(1) : '--'} HZ`;
+      ? 'SIM WORKERS: FAILED\nMAIN FALLBACK'
+      : `SIM WORKERS: ${workers?.workers ?? 0}\n${workerTime != null ? workerTime.toFixed(2) : '--'} MS/STEP @ ${workerHz && workerHz > 0 ? workerHz.toFixed(1) : '--'} HZ`;
     this.triangleLabel.textContent = count(details.renderer.triangles);
     const threads = details.runtime.hardwareThreads;
     const implementation = details.capeSolver?.implementation;

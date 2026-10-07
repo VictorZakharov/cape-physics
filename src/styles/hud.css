@@ -90,6 +90,13 @@
   display: none;
 }
 
+.performance-panel [data-sim-workers] {
+  white-space: pre;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+  min-height: 2.8em;
+}
+
 .performance-panel__hardware {
   white-space: pre-line;
   overflow-wrap: anywhere;
