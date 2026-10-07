@@ -1,3 +1,4 @@
+import type { MainThreadPhaseTelemetry } from './MainThreadPhaseTelemetry';
 import type { WorldCollider } from '../physics/colliders';
 import type { SimulationTelemetry } from './SimulationTelemetry';
 import type { PerformanceReportDetails } from './PerformanceReport';
@@ -9,6 +10,7 @@ import type { CapePerformanceDiagnostics } from '../physics/CapePerformanceProfi
 import type { WebGlCapeWorkerPool } from '../physics/WebGlCapeWorkerPool';
 interface ReportSource {
   simulationTelemetry: SimulationTelemetry;
+  mainThreadPhases: MainThreadPhaseTelemetry;
   pipeline: RenderPipeline; startupRecovery: RendererStartupRecovery; quality: AdaptiveQuality;
   performance: PerformanceMonitor; ready: boolean;
   cape: { getPerformanceDiagnostics(): CapePerformanceDiagnostics; isSleeping(): boolean };
@@ -54,6 +56,8 @@ export function buildPerformanceReportDetails(source: ReportSource): Performance
         reason: source.quality.getState().reason,
       },
       workload: source.performance.getWorkloadSnapshot(),
+      mainThreadPhases: source.mainThreadPhases.getSnapshot(),
+      mainThreadProfilingEnabled: source.mainThreadPhases.enabled,
       capeSolver: source.ready ? source.cape.getPerformanceDiagnostics() : null,
       capeWorkers: source.webGlCapeWorkers?.getDiagnostics() ?? null,
       scene: {

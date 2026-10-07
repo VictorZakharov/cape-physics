@@ -1,0 +1,38 @@
+{
+  "baseline": "15f268a",
+  "capes": 5,
+  "warmup": 90,
+  "measured": 600,
+  "delta": 0.03333333333333333,
+  "before": {
+    "compute": 13.720333333350718,
+    "body": 6.256666666766008,
+    "triangle": 4.477333333939314,
+    "vertex": 1.7793333328266938
+  },
+  "after": {
+    "compute": 12.571666666778425,
+    "body": 5.281999998788039,
+    "triangle": 4.577333332300186,
+    "vertex": 0.7046666664878527
+  },
+  "skin": 0.026,
+  "counts": {
+    "before": {
+      "particles": 175500,
+      "vertexTests": 29848260,
+      "vertexCorrections": 104153,
+      "triangleTests": 15478080,
+      "triangleCorrections": 150977
+    },
+    "after": {
+      "particles": 175500,
+      "vertexTests": 1812485,
+      "vertexCorrections": 104153,
+      "triangleTests": 15478080,
+      "triangleCorrections": 150977
+    }
+  },
+  "method": "same-state paired ABBA ordering in a dedicated Chromium worker",
+  "runtime": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/149.0.0.0 Safari/537.36"
+}
