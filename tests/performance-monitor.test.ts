@@ -96,11 +96,11 @@ function createMonitor(): PerformanceMonitor {
 }
 
 describe('PerformanceMonitor', () => {
-  test('shows the GPU model without ANGLE, device IDs, or shader/API diagnostics', () => {
+  test('keeps the ANGLE backend and GPU model without device IDs or shader/API diagnostics', () => {
     expect(formatRendererDevice('ANGLE (NVIDIA, NVIDIA GeForce RTX 4070 Ti (0x00002782) Direct3D11 vs_5_0 ps_5_0, D3D11)'))
-      .toBe('NVIDIA GeForce RTX 4070 Ti');
+      .toBe('ANGLE / NVIDIA GeForce RTX 4070 Ti');
     expect(formatRendererDevice('ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)'))
-      .toBe('Apple M1');
+      .toBe('ANGLE / Apple M1');
     expect(formatRendererDevice('AMD Radeon RX 7900 XTX')).toBe('AMD Radeon RX 7900 XTX');
     expect(formatRendererDevice('')).toBe('GPU unavailable');
   });
@@ -224,11 +224,11 @@ describe('PerformanceMonitor', () => {
     monitor.recordFrame(500);
     expect(elements.get('[data-sim-particles]')?.textContent).toBe('11,934 SIM PARTICLES (51 \u00d7 234)');
     expect(elements.get('[data-sim-constraints]')?.textContent).toBe('82,926 CONSTRAINTS \u00d7 10 ITER');
-    expect(elements.get('[data-sim-hardware]')?.textContent).toBe('NVIDIA GeForce RTX 4070 Ti / 24 THREADS / SIM: GPU');
+    expect(elements.get('[data-sim-hardware]')?.textContent).toBe('ANGLE / NVIDIA GeForce RTX 4070 Ti / 24 THREADS / SIM: GPU');
     expect(elements.get('[data-sim-hardware]')?.title).toContain('Direct3D11 vs_5_0 ps_5_0');
     details = { ...details, capeSolver: { implementation: 'cpu-pbd' } as NonNullable<PerformanceReportDetails['capeSolver']> };
     monitor.recordFrame(750);
-    expect(elements.get('[data-sim-hardware]')?.textContent).toBe('NVIDIA GeForce RTX 4070 Ti / 24 THREADS / SIM: CPU');
+    expect(elements.get('[data-sim-hardware]')?.textContent).toBe('ANGLE / NVIDIA GeForce RTX 4070 Ti / 24 THREADS / SIM: CPU');
   });
 
   test('uses simulation durations for simulation p95 independently of rendering', () => {

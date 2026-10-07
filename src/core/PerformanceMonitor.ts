@@ -11,11 +11,12 @@ export function formatRendererDevice(device: string): string {
   // ANGLE reports vendor, model, and graphics API in a diagnostic wrapper.
   const angle = /^ANGLE\s*\((.*)\)$/i.exec(device.trim());
   const model = angle ? angle[1]!.split(',')[1]?.trim() ?? device : device;
-  return model
+  const label = model
     .replace(/^ANGLE Metal Renderer:\s*/i, '')
     .replace(/\s*\(0x[\da-f]+\)/gi, '')
     .replace(/\s+(?:Direct3D\d*|D3D\d*|OpenGL(?: ES)?|Vulkan)\b.*$/i, '')
     .trim() || 'GPU unavailable';
+  return angle ? `ANGLE / ${label}` : label;
 }
 
 export const PERFORMANCE_WINDOW_MS = 15_000;
