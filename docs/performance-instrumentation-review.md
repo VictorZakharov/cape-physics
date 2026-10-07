@@ -38,3 +38,11 @@ The worker HUD uses five explicit non-wrapping lines with reserved height and ta
 
 
 Worker collision follow-up: see [measured candidate search, worker phase cost, overhead proof and exact regression](worker-collision-investigation.md). The archived follow-up includes both rendering backends, before/after three-worker reports, and recurrent steady-window stalls; severe lows are not all attributed to warm-up.
+
+## Loading-time fullscreen resize and CI follow-up
+
+The camera captured the initial viewport aspect before asynchronous renderer startup. The resize listener was registered only after startup rendering, so entering fullscreen during loading could resize the canvas without updating the camera. Startup now installs the listener and synchronizes camera projection, renderer sizing and atmosphere sizing before the final loading frames and reveal. Cloth parameters and simulation are unchanged.
+
+A deterministic browser check pauses startup after camera construction, changes the viewport from 1582 x 698 to 1600 x 1000, then resumes. This reproduces the fullscreen viewport race without automating the native fullscreen button. The baseline camera incorrectly retained aspect 2.266476 against a 1.600000 canvas. Both updated backends use aspect 1.600000 and a 1600 x 1000 canvas, with no backend fallback. [Raw measurements](startup-resize-evidence.json) preserve all three cases. Run `node scripts/verify-startup-resize.mjs` with `CAPE_BROWSER_PATH` selecting a GPU-capable Chromium executable; this capture used Chromium 149 on the same RTX 4070 Ti. Temporary builds and profiles are removed in finally; this run cleaned successfully.
+
+CI's two player-profiler failures were test state leakage: the in-process worker test set the shared worker timing singleton to worker mode and did not restore it. Production workers have separate JavaScript realms. The test now restores worker mode, profiling enablement and batch timing state. Running the worker test before both profiler tests with `bun test tests/cape-worker-timing.test.ts tests/cape-performance-profiler.test.ts --randomize --seed=1` passes all three tests (63 assertions). Full checks pass 266 tests with six existing skips, and the deterministic scene harness passes.

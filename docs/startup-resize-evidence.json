@@ -1,0 +1,62 @@
+[
+  {
+    "stage": "before",
+    "requestedBackend": "webgl",
+    "initial": {
+      "width": 1582,
+      "height": 698,
+      "aspect": 2.2664756446991405
+    },
+    "actual": {
+      "backend": "webgl",
+      "aspect": 2.2664756446991405,
+      "viewportAspect": 1.6,
+      "canvasWidth": 1600,
+      "canvasHeight": 1000,
+      "cssWidth": 1600,
+      "cssHeight": 1000
+    },
+    "matches": false,
+    "sizingMatches": true
+  },
+  {
+    "stage": "after",
+    "requestedBackend": "webgl",
+    "initial": {
+      "width": 1582,
+      "height": 698,
+      "aspect": 2.2664756446991405
+    },
+    "actual": {
+      "backend": "webgl",
+      "aspect": 1.6,
+      "viewportAspect": 1.6,
+      "canvasWidth": 1600,
+      "canvasHeight": 1000,
+      "cssWidth": 1600,
+      "cssHeight": 1000
+    },
+    "matches": true,
+    "sizingMatches": true
+  },
+  {
+    "stage": "after",
+    "requestedBackend": "webgpu",
+    "initial": {
+      "width": 1582,
+      "height": 698,
+      "aspect": 2.2664756446991405
+    },
+    "actual": {
+      "backend": "webgpu",
+      "aspect": 1.6,
+      "viewportAspect": 1.6,
+      "canvasWidth": 1600,
+      "canvasHeight": 1000,
+      "cssWidth": 1600,
+      "cssHeight": 1000
+    },
+    "matches": true,
+    "sizingMatches": true
+  }
+]

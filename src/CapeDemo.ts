@@ -513,6 +513,9 @@ export class CapeDemo {
       this.pipeline.renderManual(0); // Include lazy shadow pipelines while loading is still visible.
       await this.pipeline.synchronizeForLocalProfile();
     } finally { finishBotWarmup(); }
+    window.addEventListener('resize', this.handleResize);
+    // Catch fullscreen/viewport changes that happened before the resize listener existed.
+    this.handleResize();
     await this.loading.update(0.96, 'Submitting the first rendered frame');
     this.startupRecovery.stage('submit-first-frame');
     this.pipeline.renderManual(0);
@@ -520,7 +523,6 @@ export class CapeDemo {
     this.pipeline.renderManual(0);
     await this.pipeline.synchronizeForLocalProfile();
 
-    window.addEventListener('resize', this.handleResize);
     window.addEventListener('focus', this.handleFocus);
     document.addEventListener('visibilitychange', this.handleVisibilityChange);
     window.addEventListener('beforeunload', this.dispose, { once: true });
