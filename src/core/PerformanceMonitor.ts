@@ -19,6 +19,12 @@ export function formatRendererDevice(device: string): string {
   return angle ? `ANGLE / ${label}` : label;
 }
 
+export function formatNumericHudText(text: string): string {
+  const escaped = text.replaceAll('&', '&amp;').replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&apos;');
+  return escaped.replace(/\d[\d,]*(?:\.\d+)?/g, '<b>$&</b>');
+}
+
 export const PERFORMANCE_WINDOW_MS = 15_000;
 const MAXIMUM_FRAME_SAMPLES = 8_192;
 
@@ -110,6 +116,8 @@ export class PerformanceMonitor {
   private sampleCount = 0;
   private workloadStart = 0;
   private workloadCount = 0;
+  private retainDisplay = false;
+  private hasDisplayedSamples = false;
   private warmupUntil = 0;
   private warmupStarted = 0;
   private excludedFrames = 0;
@@ -162,7 +170,16 @@ export class PerformanceMonitor {
   }
 
   public restartMeasurement(timestamp = performance.now(), reason = 'reset', warmup = 3000): void {
-    this.reset(); this.warmupStarted = timestamp; this.warmupUntil = timestamp + warmup;
+    const retainDisplay = this.retainDisplay || this.hasDisplayedSamples;
+    const averagePath = this.averageHistoryPath.getAttribute('d') ?? '';
+    const lowPath = this.lowHistoryPath.getAttribute('d') ?? '';
+    this.reset();
+    this.retainDisplay = retainDisplay;
+    if (retainDisplay) {
+      this.averageHistoryPath.setAttribute('d', averagePath);
+      this.lowHistoryPath.setAttribute('d', lowPath);
+    }
+    this.warmupStarted = timestamp; this.warmupUntil = timestamp + warmup;
     this.excludedFrames = 0; this.warmupReason = reason; this.paint();
   }
 
@@ -236,6 +253,9 @@ export class PerformanceMonitor {
   }
 
   public readonly reset = (): void => {
+    this.retainDisplay = false;
+    this.hasDisplayedSamples = false;
+    this.panel.classList.toggle('is-warming-up', false);
     this.warmupUntil = 0; this.warmupStarted = 0; this.excludedFrames = 0; this.warmupReason = 'none';
     this.sampleStart = 0;
     this.sampleCount = 0;
@@ -391,6 +411,16 @@ export class PerformanceMonitor {
   }
 
   private paint(): void {
+    const warmingUp = this.warmupUntil > 0
+      && (performance.now() < this.warmupUntil || this.snapshot.sampleCount === 0);
+    this.panel.classList.toggle('is-warming-up', warmingUp);
+    this.panel.dataset.measurementState = warmingUp ? 'warming-up' : 'measuring';
+    if (warmingUp && this.retainDisplay) {
+      this.fpsCaption.textContent = 'WARMING UP / PREVIOUS STATS';
+      return;
+    }
+    this.retainDisplay = false;
+    this.hasDisplayedSamples = this.snapshot.sampleCount > 0;
     const {
       averageFps,
       onePercentLow,
@@ -408,9 +438,8 @@ export class PerformanceMonitor {
     this.fpsLabel.textContent = averageFps > 0 ? averageFps.toFixed(2) : '--';
     this.averageLabel.textContent = averageFps > 0 ? averageFps.toFixed(2) : '--';
     this.lowLabel.textContent = onePercentLow > 0 ? onePercentLow.toFixed(2) : '--';
-    this.fpsCaption.textContent = refreshCapped
-      ? 'DISPLAY FPS / VSYNC-CAPPED'
-      : performance.now() < this.warmupUntil ? 'WARMING UP / STATS PAUSED' : 'DISPLAY FPS / LAST 15S';
+    this.fpsCaption.textContent = warmingUp ? 'WARMING UP / STATS PAUSED'
+      : refreshCapped ? 'DISPLAY FPS / VSYNC-CAPPED' : 'DISPLAY FPS / LAST 15S';
     this.frameTimeLabel.textContent = averageFrameTime > 0
       ? averageFrameTime.toFixed(2)
       : '--';
@@ -427,8 +456,8 @@ export class PerformanceMonitor {
     const capes = details.scene.simulatedCapes;
     const particlesPerCape = CAPE.columns * CAPE.rows;
     const count = (value: number): string => value.toLocaleString('en-US');
-    this.particlesLabel.textContent = `${count(capes * particlesPerCape)} SIM PARTICLES (${capes} \u00d7 ${particlesPerCape})`;
-    this.constraintsLabel.textContent = `${count(capes * CAPE_DISTANCE_CONSTRAINTS.length)} CONSTRAINTS \u00d7 ${CAPE.solverIterations} ITER`;
+    this.particlesLabel.innerHTML = formatNumericHudText(`${count(capes * particlesPerCape)} SIM PARTICLES (${capes} \u00d7 ${particlesPerCape})`);
+    this.constraintsLabel.innerHTML = formatNumericHudText(`${count(capes * CAPE_DISTANCE_CONSTRAINTS.length)} CONSTRAINTS \u00d7 ${CAPE.solverIterations} ITER`);
     this.constraintsLabel.title = 'Distance constraints across all capes per solver iteration; excludes collision and shape guards.';
     this.simulationLabel.textContent = workloadSampleCount > 0
       ? this.workloadSnapshot.averagePhysicsMilliseconds.toFixed(2) : '--';
@@ -438,16 +467,16 @@ export class PerformanceMonitor {
     this.workersLabel.hidden = !workers?.active && !workers?.failure;
     const workerTime = workers?.averageStepMilliseconds;
     const workerHz = workers?.workerStepHz ?? workers?.capeResultHz;
-    this.workersLabel.textContent = workers?.failure
+    this.workersLabel.innerHTML = formatNumericHudText(workers?.failure
       ? 'SIM WORKERS: FAILED\nMAIN FALLBACK\nDT -- MS / BUSY --%\nASSIGNMENTS UNAVAILABLE'
-      : `SIM WORKERS: ${workers?.workers ?? 0} / COMPUTE\n${workerTime != null ? workerTime.toFixed(2) : '--'} MS/STEP @ ${workerHz && workerHz > 0 ? workerHz.toFixed(1) : '--'} HZ\nDT ${workers?.simulatedStepMilliseconds != null ? workers.simulatedStepMilliseconds.toFixed(2) : '--'} MS / ${workers?.utilisationPercent != null ? workers.utilisationPercent.toFixed(1) : '--'}% BUSY\n${this.workerAssignmentSummary(workers?.assignments)}`;
+      : `SIM WORKERS: ${workers?.workers ?? 0} / COMPUTE\n${workerTime != null ? workerTime.toFixed(2) : '--'} MS/STEP @ ${workerHz && workerHz > 0 ? workerHz.toFixed(1) : '--'} HZ\nDT ${workers?.simulatedStepMilliseconds != null ? workers.simulatedStepMilliseconds.toFixed(2) : '--'} MS / ${workers?.utilisationPercent != null ? workers.utilisationPercent.toFixed(1) : '--'}% BUSY\n${this.workerAssignmentSummary(workers?.assignments)}`);
     this.scopeLabel.textContent = details.capeSolver?.implementation === 'webgpu-compute' ? 'MAIN: GPU PREP + CTRL + SYNC' : 'MAIN: PLAYER + CTRL + SYNC';
-    this.throughputLabel.textContent = this.deliverySummary(details);
+    this.throughputLabel.innerHTML = formatNumericHudText(this.deliverySummary(details));
     this.triangleLabel.textContent = count(details.renderer.triangles);
     const threads = details.runtime.hardwareThreads;
     const implementation = details.capeSolver?.implementation;
     const backend = implementation ? (implementation === 'webgpu-compute' ? 'GPU' : 'CPU') : '--';
-    this.hardwareLabel.textContent = `${formatRendererDevice(details.renderer.device)}\n${threads ? count(threads) : '--'} THREADS / SIM: ${backend}`;
+    this.hardwareLabel.innerHTML = formatNumericHudText(`${formatRendererDevice(details.renderer.device)}\n${threads ? count(threads) : '--'} THREADS / SIM: ${backend}`);
     this.hardwareLabel.title = `${details.renderer.device}; hardware logical threads reported by the browser. Cloth workers: ${details.capeWorkers?.active ? details.capeWorkers.workers : 0}.`;
 
     this.historyGraphic.setAttribute(

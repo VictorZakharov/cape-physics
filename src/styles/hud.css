@@ -102,6 +102,12 @@
   overflow-wrap: anywhere;
 }
 
+.performance-panel.is-warming-up > strong,
+.performance-panel.is-warming-up > small,
+.performance-panel.is-warming-up > svg {
+  opacity: 0.55;
+}
+
 .performance-panel small b {
   color: rgb(220 244 237 / 70%);
   font-variant-numeric: tabular-nums;

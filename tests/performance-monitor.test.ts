@@ -1,9 +1,16 @@
-import { describe, expect, test } from 'bun:test';
-import { formatRendererDevice, PerformanceMonitor } from '../src/core/PerformanceMonitor';
+import { describe, expect, test, spyOn } from 'bun:test';
+import { formatNumericHudText, formatRendererDevice, PerformanceMonitor } from '../src/core/PerformanceMonitor';
 import type { PerformanceReportDetails } from '../src/core/PerformanceReport';
 
 class FakeHudElement {
   public textContent = '';
+  private markup = '';
+  public set innerHTML(value: string) {
+    this.markup = value;
+    this.textContent = value.replace(/<[^>]*>/g, '').replaceAll('&amp;', '&')
+      .replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&quot;', '"').replaceAll('&apos;', "'");
+  }
+  public get innerHTML(): string { return this.markup; }
   public title = '';
   public hidden = false;
   public readonly dataset: Record<string, string> = {};
@@ -97,6 +104,45 @@ function createMonitor(): PerformanceMonitor {
 }
 
 describe('PerformanceMonitor', () => {
+  test('emphasizes numeric HUD values and escapes renderer text', () => {
+    expect(formatNumericHudText('11,934 SIM PARTICLES (51 x 234)')).toBe('<b>11,934</b> SIM PARTICLES (<b>51</b> x <b>234</b>)');
+    expect(formatNumericHudText('27.35 MS/STEP @ 24.6 HZ')).toBe('<b>27.35</b> MS/STEP @ <b>24.6</b> HZ');
+    expect(formatNumericHudText('<GPU> & 24 THREADS')).toBe('&lt;GPU&gt; &amp; <b>24</b> THREADS');
+  });
+  test('keeps previous display through repeated resizes without reusing measurement samples', () => {
+    let now = 0;
+    const clock = spyOn(performance, 'now').mockImplementation(() => now);
+    try {
+      const { monitor, elements } = createMonitorHarness();
+      monitor.recordFrame(0);
+      monitor.recordWorkload(250, { physicsMilliseconds: 2, sceneMilliseconds: 1, renderMilliseconds: 3, physicsSteps: 1 });
+      now = 250; monitor.recordFrame(now);
+      const fps = elements.get('[data-fps]')!;
+      const caption = elements.get('[data-fps-caption]')!;
+      const panel = elements.get('[data-performance-panel]')!;
+      const graph = elements.get('[data-fps-average-line]')!;
+      const previousGraph = graph.getAttribute('d');
+      now = 1000; monitor.restartMeasurement(now, 'canvas resized');
+      expect(fps.textContent).toBe('4.00');
+      expect(caption.textContent).toBe('WARMING UP / PREVIOUS STATS');
+      expect(panel.dataset.measurementState).toBe('warming-up');
+      expect(monitor.getSnapshot().sampleCount).toBe(0);
+      expect(monitor.getWorkloadSnapshot().sampleCount).toBe(0);
+      now = 1500; monitor.recordFrame(now); monitor.restartMeasurement(now, 'canvas resized');
+      expect(fps.textContent).toBe('4.00');
+      expect(graph.getAttribute('d')).toBe(previousGraph);
+      now = 4500; monitor.recordFrame(now);
+      expect(fps.textContent).toBe('4.00');
+      now = 4510;
+      monitor.recordWorkload(now, { physicsMilliseconds: 1, sceneMilliseconds: 0, renderMilliseconds: 0, physicsSteps: 1 });
+      monitor.recordFrame(now);
+      expect(fps.textContent).toBe('100.00');
+      expect(panel.dataset.measurementState).toBe('measuring');
+      expect(caption.textContent).not.toContain('WARMING UP');
+      expect(monitor.getSnapshot().sampleCount).toBe(1);
+      expect(monitor.getWorkloadSnapshot().averagePhysicsMilliseconds).toBe(1);
+    } finally { clock.mockRestore(); }
+  });
   test('keeps the ANGLE backend and GPU model without device IDs or shader/API diagnostics', () => {
     expect(formatRendererDevice('ANGLE (NVIDIA, NVIDIA GeForce RTX 4070 Ti (0x00002782) Direct3D11 vs_5_0 ps_5_0, D3D11)'))
       .toBe('ANGLE / NVIDIA GeForce RTX 4070 Ti');
