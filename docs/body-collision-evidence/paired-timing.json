@@ -1,0 +1,16 @@
+{
+  "baseline": "2432d53",
+  "capes": 5,
+  "delta": 0.03333333333333333,
+  "warmup": 90,
+  "measured": 300,
+  "before": {
+    "compute": 15.513813333333353,
+    "body": 7.424168000000124
+  },
+  "after": {
+    "compute": 15.602113666666682,
+    "body": 7.401300000000483
+  },
+  "caveat": "Bun matched-state ABBA ordering; live Chrome reports remain required"
+}

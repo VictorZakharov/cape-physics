@@ -1,0 +1,23 @@
+{
+  "baseline": "2432d53",
+  "runtime": "Bun 1.3.11",
+  "isolatedTypeMicrobench": {
+    "sphere": {
+      "colliders": 7,
+      "calls": 11200000,
+      "nanosecondsPerCall": 40.015973214285715,
+      "correctionPercent": 50,
+      "scope": "isolated paired ABBA microbenchmark: equal numbers of an actual hem particle and an interior point for each collider; primed before timing; not the live contact distribution"
+    },
+    "capsule": {
+      "colliders": 8,
+      "calls": 12800000,
+      "nanosecondsPerCall": 42.87320312499998,
+      "correctionPercent": 50,
+      "scope": "isolated paired ABBA microbenchmark: equal numbers of an actual hem particle and an interior point for each collider; primed before timing; not the live contact distribution"
+    }
+  },
+  "endpointCopyMilliseconds": 0.00020253400000000055,
+  "endpointPackingMilliseconds": 0.00028438599999999954,
+  "endpointBytes": 360
+}

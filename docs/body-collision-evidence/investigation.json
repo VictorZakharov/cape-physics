@@ -1,0 +1,30 @@
+{
+  "baseline": "2432d53",
+  "runtime": "Bun 1.3.11",
+  "capes": 50,
+  "particles": 234,
+  "warmup": 90,
+  "measured": 60,
+  "delta": 0.03333333333333333,
+  "inventory": "15 anisotropic capsules, including degenerate sphere endpoints; no boxes",
+  "bodyCallsPerCapeStep": 12.144333333333334,
+  "faceCallsPerCapeStep": 5.144333333333333,
+  "vertex": {
+    "testsPerParticleStep": 172.04472222222222,
+    "worstPerParticleStep": 240,
+    "correctionPercent": 0.2948216397884685,
+    "millisecondsPerCapeStep": 0.6931701333337017
+  },
+  "faces": {
+    "triangleSampleTestsPerCapeStep": 21165.224,
+    "incidentTestsPerParticleStep": 271.34902564102566,
+    "worstIncidentPerParticleStep": 1242,
+    "correctionPercent": 0.7614755223001656,
+    "millisecondsPerCapeStep": 1.501147366666691
+  },
+  "bodyMillisecondsPerCapeStep": 2.1943175000003925,
+  "preparationMillisecondsPerCapeStep": 0.0027627666663902345,
+  "workerInputUpdateMillisecondsPerCapeStep": 0.018490366666621412,
+  "characterColliderAccessMillisecondsPerCapeStep": 0.003788633333160154,
+  "caveat": "Counts and coarse timings use separate deterministic replays. Input time includes anchor rebase/copies plus body endpoint copies; body-only endpoint serialization is not isolated here. No clocks per particle, collider or triangle."
+}

@@ -1,0 +1,17 @@
+{
+  "baseline": "2432d53",
+  "capes": 5,
+  "warmup": 90,
+  "measured": 600,
+  "delta": 0.03333333333333333,
+  "before": {
+    "compute": 14.22516666666915,
+    "body": 6.483999999860923
+  },
+  "after": {
+    "compute": 14.17166666664804,
+    "body": 6.508666667565703
+  },
+  "method": "same-state paired ABBA ordering in a dedicated Chromium worker",
+  "runtime": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/149.0.0.0 Safari/537.36"
+}

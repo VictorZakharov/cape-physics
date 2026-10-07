@@ -10,11 +10,13 @@ const root = mkdtempSync(join(parent, 'live-cape-profile-'));
 const renderer = process.env.CAPE_PROFILE_RENDERER ?? 'webgl';
 const duration = Number(process.env.CAPE_PROFILE_LIVE_SECONDS ?? 8);
 const warmup = Number(process.env.CAPE_PROFILE_LIVE_WARMUP_SECONDS ?? 3);
+const startupSeconds = Number(process.env.CAPE_PROFILE_STARTUP_SECONDS ?? 90);
 let browser, connection, server;
 try {
   if (!['webgl', 'webgpu'].includes(renderer)) throw Error('CAPE_PROFILE_RENDERER must be webgl or webgpu.');
   if (!Number.isFinite(duration) || duration < 1 || duration > 30) throw Error('CAPE_PROFILE_LIVE_SECONDS must be between 1 and 30.');
   if (!Number.isFinite(warmup) || warmup < 0 || warmup > 60) throw Error('CAPE_PROFILE_LIVE_WARMUP_SECONDS must be between 0 and 60.');
+  if (!Number.isFinite(startupSeconds) || startupSeconds < 1 || startupSeconds > 300) throw Error('Invalid startup observation timeout');
   cpSync(resolve(process.env.CAPE_PROFILE_DIST_ROOT ?? 'dist'), join(root, 'dist'), { recursive: true });
   const assets = join(root, 'dist', 'assets');
   // The disposable fixture can serve either production or Pages output locally.
@@ -46,7 +48,15 @@ try {
     await connection.command('Page.reload');
   }
   console.log(`Waiting for ${renderer} scene (${process.env.CAPE_PROFILE_WORKERS ?? 'automatic'} workers)`);
-  await waitForExpression(connection.command, `window.__CAPE_DEMO__?.ready === true || document.querySelector('[data-loading-error]')?.hidden === false`, 90000);
+  let lastStartupStatus = '';
+  const startupLog = setInterval(async () => {
+    try {
+      const status = await evaluate(connection.command, `document.querySelector('[data-loading-status]')?.textContent`);
+      if (status && status !== lastStartupStatus) { lastStartupStatus = status; console.log(`Startup: ${status}`); }
+    } catch { /* The authoritative readiness wait surfaces debugger errors. */ }
+  }, 15000);
+  try { await waitForExpression(connection.command, `window.__CAPE_DEMO__?.ready === true || document.querySelector('[data-loading-error]')?.hidden === false`, startupSeconds * 1000); }
+  finally { clearInterval(startupLog); }
   if (!await evaluate(connection.command, 'window.__CAPE_DEMO__?.ready === true')) throw Error(await evaluate(connection.command, `document.querySelector('[data-loading-error-detail]')?.textContent ?? 'Scene startup failed'`));
   await evaluate(connection.command, `(async()=>{
     const demo=window.__CAPE_INTERNAL__;
@@ -68,6 +78,16 @@ try {
     const original = row.innerHTML;
     const workerWidth = {scroll:row.scrollWidth,client:row.clientWidth};
     const numericColors = [...document.querySelectorAll('[data-worker-phases] b')].slice(0,2).map(node=>getComputedStyle(node).color);
+    const phaseRow = document.querySelector('[data-worker-phases]'), originalPhases = phaseRow.innerHTML;
+    const bodyWidths = [];
+    if (!phaseRow.hidden) {
+      try {
+        for (const line of ['BODY <b>9.99</b>MS/<b>9.9</b>%/<b>99</b> TESTS/PTCL', 'BODY <b>199.99</b>MS/<b>99.9</b>%/<b>2999</b> TESTS/PTCL']) {
+          phaseRow.innerHTML = line;
+          bodyWidths.push({scroll:phaseRow.scrollWidth,client:phaseRow.clientWidth});
+        }
+      } finally { phaseRow.innerHTML = originalPhases; }
+    }
     const heights = [];
     try {
       for (const text of ['SIM WORKERS: 10 / COMPUTE\\n9.99 MS/STEP @ 9.9 HZ\\nDT 9.99 MS / 9.9% BUSY\\n16-17 CAPES PER WORKER\\n3,744-3,978 PTCL PER WORKER',
@@ -77,14 +97,14 @@ try {
       }
     } finally { row.innerHTML = original; }
     return {report,diagnostics:demo.getPerformanceReportDetails(),
-      warmupReset:window.__CAPE_WARMUP_EVIDENCE__, workerRowHeights:heights, workerWidth, numericColors, panelBounds: (()=>{const panel=document.querySelector('[data-performance-panel]');const box=panel.getBoundingClientRect();return {width:box.width,height:box.height,viewportHeight:innerHeight,phaseScrollWidth:document.querySelector('[data-worker-phases]').scrollWidth,phaseClientWidth:document.querySelector('[data-worker-phases]').clientWidth};})()};
+      warmupReset:window.__CAPE_WARMUP_EVIDENCE__, workerRowHeights:heights, workerWidth, numericColors, bodyWidths, panelBounds: (()=>{const panel=document.querySelector('[data-performance-panel]');const box=panel.getBoundingClientRect();return {width:box.width,height:box.height,viewportHeight:innerHeight,phaseScrollWidth:document.querySelector('[data-worker-phases]').scrollWidth,phaseClientWidth:document.querySelector('[data-worker-phases]').clientWidth};})()};
   })()`);
   await evaluate(connection.command, 'window.__CAPE_INTERNAL__.pipeline.synchronizeForLocalProfile()');
   const output=resolve('artifacts/performance-instrumentation');mkdirSync(output,{recursive:true});
   const stage=(process.env.CAPE_EVIDENCE_STAGE??'before')+(process.env.CAPE_PROFILE_THREADS?'-'+process.env.CAPE_PROFILE_THREADS+'threads':'')+(process.env.CAPE_PROFILE_WORKERS?'-'+process.env.CAPE_PROFILE_WORKERS+'workers':'');
   if (!/^[a-z0-9-]+$/.test(stage)) throw Error('Invalid evidence stage');
   writeFileSync(join(output,`${stage}-${renderer}.txt`),result.report+'\n');
-  writeFileSync(join(output,`${stage}-${renderer}.json`),JSON.stringify({ ...result.diagnostics, measurementChecks: { warmupReset: result.warmupReset, workerRowHeights: result.workerRowHeights, panelBounds:result.panelBounds, workerWidth:result.workerWidth, numericColors:result.numericColors } },null,2)+'\n');
+  writeFileSync(join(output,`${stage}-${renderer}.json`),JSON.stringify({ ...result.diagnostics, measurementChecks: { warmupReset: result.warmupReset, workerRowHeights: result.workerRowHeights, panelBounds:result.panelBounds, workerWidth:result.workerWidth, numericColors:result.numericColors, bodyWidths:result.bodyWidths } },null,2)+'\n');
   console.log(result.report);
 } catch (error) {
   console.error(error);

@@ -475,8 +475,15 @@ export class PerformanceMonitor {
     this.workerCollidersLabel.innerHTML = formatNumericHudText(`${count(details.scene.worldColliders)} WORLD + ${details.scene.bodyColliders ?? '--'} BODY / CAPE`);
     const split = workers?.stepPhases;
     const phaseLabels = ['CONSTRAINTS', 'BODY', 'SELF + FOLD', 'WORLD + CAVE', 'OTHER'];
-    this.workerPhasesLabel.innerHTML = formatNumericHudText(WORKER_PHASES.map((phase, index) => `${phaseLabels[index]} ${split ? split.phases[phase].toFixed(2) : '--'} MS / ${split ? (split.phases[phase] / Math.max(1e-9, split.computeMilliseconds) * 100).toFixed(1) : '--'}%`).join('\n'));
-    this.workerPhasesLabel.title = 'Measured inside workers across assigned capes per worker step, including reconciliation collision calls. Other includes input updates, broadphase preparation and sleeping updates. Phase shares sampled every fourth batch and apportioned to all-step compute. Requires 30 samples across workers and at least 8 per worker; phases sum to compute time.';
+    this.workerPhasesLabel.innerHTML = formatNumericHudText(WORKER_PHASES.map((phase, index) => {
+      const milliseconds = split ? split.phases[phase].toFixed(2) : '--';
+      const percent = split ? (split.phases[phase] / Math.max(1e-9, split.computeMilliseconds) * 100).toFixed(1) : '--';
+      if (phase !== 'body') return `${phaseLabels[index]} ${milliseconds} MS / ${percent}%`;
+      const counts = split?.bodyTests;
+      const tests = counts && counts.particles > 0 ? ((counts.vertexTests + 3 * counts.triangleTests) / counts.particles).toFixed(0) : '--';
+      return `BODY ${milliseconds}MS/${percent}%/${tests} TESTS/PTCL`;
+    }).join('\n'));
+    this.workerPhasesLabel.title = 'Measured inside workers across assigned capes per worker step, including reconciliation collision calls. Other includes input updates, broadphase preparation and sleeping updates. Phase shares sampled every fourth batch and apportioned to all-step compute. Body tests are remaining vertex/capsule calls plus three incident particles per triangle/sample candidate, including existing bounds checks; corrections are reported separately. Requires 30 samples across workers and at least 8 per worker; phases sum to compute time.';
     const workerTime = workers?.averageStepMilliseconds;
     const workerHz = workers?.workerStepHz ?? workers?.capeResultHz;
     this.workersLabel.innerHTML = formatNumericHudText(workers?.failure
