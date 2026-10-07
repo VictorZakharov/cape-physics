@@ -227,6 +227,12 @@ export class WebGlCapeWorkerPool {
       assignments.length && assignments.every(item => get(item) !== null)
         ? assignments.reduce((sum, item) => sum + get(item)!, 0) / assignments.length : null;
     const stepPhases = assignments.length && assignments.every(item => item.timing.stepPhases !== null) && assignments.reduce((sum, item) => sum + item.timing.stepPhases!.sampleCount, 0) >= 30 ? {
+      bodyTests: assignments.every(item => item.timing.stepPhases!.bodyTests !== undefined)
+        ? assignments.reduce((sum, item) => {
+          const counts = item.timing.stepPhases!.bodyTests!;
+          for (const key of ['particles', 'vertexTests', 'vertexCorrections', 'triangleTests', 'triangleCorrections'] as const) sum[key] += counts[key];
+          return sum;
+        }, { particles: 0, vertexTests: 0, vertexCorrections: 0, triangleTests: 0, triangleCorrections: 0 }) : undefined,
       sampleCount: assignments.reduce((sum, item) => sum + item.timing.stepPhases!.sampleCount, 0),
       computeMilliseconds: mean(item => item.timing.stepPhases?.computeMilliseconds ?? null)!,
       phases: Object.fromEntries(WORKER_PHASES.map(phase => [phase,

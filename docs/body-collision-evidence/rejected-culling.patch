@@ -1,0 +1,166 @@
+diff --git a/src/core/PerformanceMonitor.ts b/src/core/PerformanceMonitor.ts
+--- a/src/core/PerformanceMonitor.ts
++++ b/src/core/PerformanceMonitor.ts
+@@ -478,2 +478,2 @@
+-    this.workerPhasesLabel.innerHTML = formatNumericHudText(WORKER_PHASES.map((phase, index) => `${phaseLabels[index]} ${split ? split.phases[phase].toFixed(2) : '--'} MS / ${split ? (split.phases[phase] / Math.max(1e-9, split.computeMilliseconds) * 100).toFixed(1) : '--'}%`).join('\n'));
+-    this.workerPhasesLabel.title = 'Measured inside workers across assigned capes per worker step, including reconciliation collision calls. Other includes input updates, broadphase preparation and sleeping updates. Phase shares sampled every fourth batch and apportioned to all-step compute. Requires 30 samples across workers and at least 8 per worker; phases sum to compute time.';
++    this.workerPhasesLabel.innerHTML = formatNumericHudText(WORKER_PHASES.map((phase, index) => `${phaseLabels[index]} ${split ? split.phases[phase].toFixed(2) : '--'} MS / ${split ? (split.phases[phase] / Math.max(1e-9, split.computeMilliseconds) * 100).toFixed(1) : '--'}%${phase === 'body' ? ` / ${split?.bodyTests && split.bodyTests.particles > 0 ? ((split.bodyTests.vertexTests + 3 * split.bodyTests.triangleTests) / split.bodyTests.particles).toFixed(0) : '--'} TESTS/PTCL` : ''}`).join('\n'));
++    this.workerPhasesLabel.title = 'Measured inside workers across assigned capes per worker step, including reconciliation collision calls. Other includes input updates, broadphase preparation and sleeping updates. Phase shares sampled every fourth batch and apportioned to all-step compute. Body tests are remaining vertex/capsule calls plus three incident particles per triangle/sample candidate, including existing bounds checks; corrections are reported separately. Requires 30 samples across workers and at least 8 per worker; phases sum to compute time.';
+diff --git a/src/core/PerformanceReport.ts b/src/core/PerformanceReport.ts
+--- a/src/core/PerformanceReport.ts
++++ b/src/core/PerformanceReport.ts
+@@ -143,0 +144 @@
++          `Worker body candidates: ${formatBodyCandidates(capeWorkers.stepPhases)} | counts sampled every fourth batch; vertex/capsule calls plus 3 incident particles per triangle/sample call, including existing narrowphase bounds checks; corrections mean an applied projection`,
+@@ -206,0 +208,6 @@
++
++function formatBodyCandidates(split: WebGlCapeWorkerDiagnostics['stepPhases'] | undefined): string {
++  const counts = split?.bodyTests;
++  if (!counts || counts.particles <= 0) return 'insufficient samples';
++  return `${metric((counts.vertexTests + 3 * counts.triangleTests) / counts.particles)} tests/particle/step | vertex ${metric(counts.vertexTests / counts.particles)} (${metric(counts.vertexCorrections / Math.max(1, counts.vertexTests) * 100, 3)}% correcting) | triangle incidence ${metric(3 * counts.triangleTests / counts.particles)} (${metric(counts.triangleCorrections / Math.max(1, counts.triangleTests) * 100, 3)}% correcting triangle/sample tests)`;
++}
+diff --git a/src/physics/CapeBodyColliderPreparation.ts b/src/physics/CapeBodyColliderPreparation.ts
+--- a/src/physics/CapeBodyColliderPreparation.ts
++++ b/src/physics/CapeBodyColliderPreparation.ts
+@@ -18,0 +19,4 @@
++  centerX: number;
++  centerY: number;
++  centerZ: number;
++  boundsRadiusSquared: number;
+@@ -44,0 +49 @@
++      centerX: 0, centerY: 0, centerZ: 0, boundsRadiusSquared: 0,
+@@ -76,0 +82,9 @@
++    prepared.centerX = collider.start.x + axisX * 0.5;
++    prepared.centerY = collider.start.y + axisY * 0.5;
++    prepared.centerZ = collider.start.z + axisZ * 0.5;
++    // Enclose the existing narrowphase AABB, including its numerical skin.
++    // Tilted back vectors disable the old Y bound, so retain every such pair.
++    const skin = verticalRadius + 1e-7;
++    prepared.boundsRadiusSquared = Math.abs(back.y) < 0.000_1
++      ? (Math.abs(axisX) * 0.5 + skin) ** 2 + (Math.abs(axisY) * 0.5 + skin) ** 2
++        + (Math.abs(axisZ) * 0.5 + skin) ** 2 : Infinity;
+diff --git a/src/physics/CapeContactSolver.ts b/src/physics/CapeContactSolver.ts
+--- a/src/physics/CapeContactSolver.ts
++++ b/src/physics/CapeContactSolver.ts
+@@ -0,0 +1 @@
++import { bodyCollisionCulling } from './BodyCollisionCulling';
+@@ -179,0 +181 @@
++    if (workerStepTiming.sampling) workerStepTiming.bodyTests.particles += this.positions.length;
+@@ -208,0 +211,8 @@
++        const dx = position.x - collider.centerX, dy = position.y - collider.centerY, dz = position.z - collider.centerZ;
++        if (bodyCollisionCulling.enabled && dx * dx + dy * dy + dz * dz > collider.boundsRadiusSquared) {
++          if (bodyCollisionCulling.assertSkipped) {
++            bodyCollisionCulling.checkedPairs++;
++            if (this.getCapsulePenetration(position, collider, back, previous, index % CAPE.columns / (CAPE.columns - 1) - 0.5) > 0) throw Error('Body sphere culled a correcting pair');
++          }
++          continue;
++        }
+@@ -209,0 +220 @@
++        if (workerStepTiming.sampling) workerStepTiming.bodyTests.vertexTests++;
+@@ -217,0 +229 @@
++        if (workerStepTiming.sampling) workerStepTiming.bodyTests.vertexCorrections++;
+diff --git a/src/physics/ClothBodyCollision.ts b/src/physics/ClothBodyCollision.ts
+--- a/src/physics/ClothBodyCollision.ts
++++ b/src/physics/ClothBodyCollision.ts
+@@ -0,0 +1,2 @@
++import { workerStepTiming } from './WorkerStepTiming';
++import { bodyCollisionCulling } from './BodyCollisionCulling';
+@@ -29,0 +32 @@
++  private readonly triangleBounds: Float64Array;
+@@ -41,0 +45 @@
++    this.triangleBounds = new Float64Array((rows - 1) * (columns - 1) * 2 * 6);
+@@ -61,0 +66 @@
++    if (bodyCollisionCulling.enabled) this.updateTriangleBounds();
+@@ -65,0 +71,17 @@
++        if (!bodyCollisionCulling.enabled) { this.solveTriangle(first, second, third, center, lateralRadius, depthRadius, back, sideOrigin); return; }
++        const row = Math.floor(first / this.columns), column = first % this.columns;
++        const triangle = first + 1 === third ? (row * (this.columns - 1) + column) * 2
++          : ((row - 1) * (this.columns - 1) + column) * 2 + 1;
++        const offset = triangle * 6, bounds = this.triangleBounds;
++        if (bodyCollisionCulling.enabled && (center.x + boundsRadius < bounds[offset]! || center.x - boundsRadius > bounds[offset + 1]!
++          || center.y + boundsRadius < bounds[offset + 2]! || center.y - boundsRadius > bounds[offset + 3]!
++          || center.z + boundsRadius < bounds[offset + 4]! || center.z - boundsRadius > bounds[offset + 5]!)) {
++          if (bodyCollisionCulling.assertSkipped) {
++            bodyCollisionCulling.checkedPairs++;
++            // Run the exact full test; a skipped no-op cannot mutate particle state.
++            const a = this.correctionUsed[first]!, b = this.correctionUsed[second]!, c = this.correctionUsed[third]!;
++            this.solveTriangle(first, second, third, center, lateralRadius, depthRadius, back, sideOrigin);
++            if (a !== this.correctionUsed[first] || b !== this.correctionUsed[second] || c !== this.correctionUsed[third]) throw Error('Body bounds culled a correcting triangle');
++          }
++          return;
++        }
+@@ -142,0 +165 @@
++    if (workerStepTiming.sampling) workerStepTiming.bodyTests.triangleTests++;
+@@ -184,0 +208 @@
++    if (workerStepTiming.sampling) workerStepTiming.bodyTests.triangleCorrections++;
+@@ -362,0 +387 @@
++    if (bodyCollisionCulling.enabled) this.expandTriangleBounds(index, position);
+@@ -366,0 +392,24 @@
++  }
++
++  private updateTriangleBounds(): void {
++    this.triangleBounds.fill(Infinity);
++    for (let offset = 1; offset < this.triangleBounds.length; offset += 2) this.triangleBounds[offset] = -Infinity;
++    for (let index = 0; index < this.positions.length; index++) this.expandTriangleBounds(index, this.positions[index]!);
++  }
++
++  private expandTriangleBounds(index: number, point: THREE.Vector3): void {
++    const row = Math.floor(index / this.columns), column = index % this.columns;
++    // Update every incident triangle. Bounds only grow during this face pass.
++    for (let r = Math.max(0, row - 1); r <= Math.min(this.rows - 2, row); r++) {
++      for (let c = Math.max(0, column - 1); c <= Math.min(this.columns - 2, column); c++) {
++        const top = r * this.columns + c, bottom = top + this.columns;
++        for (let half = 0; half < 2; half++) {
++          if (half === 0 ? index !== top && index !== bottom && index !== top + 1
++            : index !== bottom && index !== bottom + 1 && index !== top + 1) continue;
++          const offset = ((r * (this.columns - 1) + c) * 2 + half) * 6, bounds = this.triangleBounds;
++          bounds[offset] = Math.min(bounds[offset]!, point.x); bounds[offset + 1] = Math.max(bounds[offset + 1]!, point.x);
++          bounds[offset + 2] = Math.min(bounds[offset + 2]!, point.y); bounds[offset + 3] = Math.max(bounds[offset + 3]!, point.y);
++          bounds[offset + 4] = Math.min(bounds[offset + 4]!, point.z); bounds[offset + 5] = Math.max(bounds[offset + 5]!, point.z);
++        }
++      }
++    }
+diff --git a/src/physics/WebGlCapeWorkerPool.ts b/src/physics/WebGlCapeWorkerPool.ts
+--- a/src/physics/WebGlCapeWorkerPool.ts
++++ b/src/physics/WebGlCapeWorkerPool.ts
+@@ -229,0 +230,6 @@
++      bodyTests: assignments.every(item => item.timing.stepPhases!.bodyTests !== undefined)
++        ? assignments.reduce((sum, item) => {
++          const counts = item.timing.stepPhases!.bodyTests!;
++          for (const key of ['particles', 'vertexTests', 'vertexCorrections', 'triangleTests', 'triangleCorrections'] as const) sum[key] += counts[key];
++          return sum;
++        }, { particles: 0, vertexTests: 0, vertexCorrections: 0, triangleTests: 0, triangleCorrections: 0 }) : undefined,
+diff --git a/src/physics/WorkerStepTiming.ts b/src/physics/WorkerStepTiming.ts
+--- a/src/physics/WorkerStepTiming.ts
++++ b/src/physics/WorkerStepTiming.ts
+@@ -2,0 +3 @@
++export interface BodyTestCounts { particles: number; vertexTests: number; vertexCorrections: number; triangleTests: number; triangleCorrections: number; }
+@@ -3,0 +5 @@
++  readonly bodyTests?: Readonly<BodyTestCounts>;
+@@ -13 +15,2 @@
+-  private sampling = false;
++  public sampling = false;
++  public readonly bodyTests: BodyTestCounts = { particles: 0, vertexTests: 0, vertexCorrections: 0, triangleTests: 0, triangleCorrections: 0 };
+@@ -15 +18,2 @@
+-  public beginBatch(): void { this.sampling = this.enabled && ++this.batches % 4 === 0; this.milliseconds.fill(0); }
++  public beginBatch(): void { this.sampling = this.enabled && ++this.batches % 4 === 0; this.milliseconds.fill(0);
++    this.bodyTests.particles = this.bodyTests.vertexTests = this.bodyTests.vertexCorrections = this.bodyTests.triangleTests = this.bodyTests.triangleCorrections = 0; }
+@@ -28 +32 @@
+-    return { computeMilliseconds, collisionDetail: { self: this.milliseconds[5]!, fold: this.milliseconds[6]!, world: this.milliseconds[7]!, cave: this.milliseconds[8]! }, phases: Object.fromEntries(WORKER_PHASES.map((phase, index) => [phase, this.milliseconds[index]!])) as Record<WorkerPhase, number> };
++    return { computeMilliseconds, bodyTests: { ...this.bodyTests }, collisionDetail: { self: this.milliseconds[5]!, fold: this.milliseconds[6]!, world: this.milliseconds[7]!, cave: this.milliseconds[8]! }, phases: Object.fromEntries(WORKER_PHASES.map((phase, index) => [phase, this.milliseconds[index]!])) as Record<WorkerPhase, number> };
+diff --git a/src/physics/WorkerTelemetry.ts b/src/physics/WorkerTelemetry.ts
+--- a/src/physics/WorkerTelemetry.ts
++++ b/src/physics/WorkerTelemetry.ts
+@@ -1 +1 @@
+-import { WORKER_PHASES, type WorkerStepPhases } from './WorkerStepTiming';
++import { WORKER_PHASES, type BodyTestCounts, type WorkerStepPhases } from './WorkerStepTiming';
+@@ -26,0 +27,3 @@
++      bodyTests: phaseSamples.every(sample => sample.stepPhases!.bodyTests !== undefined)
++        ? Object.fromEntries(['particles', 'vertexTests', 'vertexCorrections', 'triangleTests', 'triangleCorrections'].map(key => [key,
++          phaseSamples.reduce((sum, sample) => sum + sample.stepPhases!.bodyTests![key as keyof BodyTestCounts], 0) / phaseSamples.length])) as unknown as BodyTestCounts : undefined,
+diff --git a/src/physics/BodyCollisionCulling.ts b/src/physics/BodyCollisionCulling.ts
+new file mode 100644
+--- /dev/null
++++ b/src/physics/BodyCollisionCulling.ts
+@@ -0,0 +1,2 @@
++/** Audit switches are off the UI path; assertions never run by default. */
++export const bodyCollisionCulling = { enabled: true, assertSkipped: false, checkedPairs: 0 };

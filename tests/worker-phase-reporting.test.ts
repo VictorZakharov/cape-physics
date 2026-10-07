@@ -4,7 +4,7 @@ import { chooseWorkerConfiguration } from '../src/physics/WorkerConfiguration';
 import { StaticWorldColliderIndex } from '../src/physics/StaticWorldColliderIndex';
 import type { WorldCollider } from '../src/physics/colliders';
 import { WorkerTelemetry } from '../src/physics/WorkerTelemetry';
-import { formatWorkerPhaseSplit } from '../src/core/PerformanceReport';
+import { formatBodyCandidates, formatWorkerPhaseSplit } from '../src/core/PerformanceReport';
 
 test('worker override is bounded and explicitly preserves the actual CPU', () => {
   const override=chooseWorkerConfiguration(24,'?workers=3');
@@ -36,4 +36,22 @@ test('static grid conservatively includes every legacy hit and retains collider 
     expect(candidates).toEqual([...candidates].sort((a,b)=>a-b));
     colliders.forEach((collider,index)=>{if(collider.center.distanceToSquared(center)<=(radius+collider.radius)**2)expect(candidates).toContain(index);});
   }
+});
+
+test('body counts retain particle weighting and are not rescaled with phase time', () => {
+  const telemetry = new WorkerTelemetry(); telemetry.reset(0, 0);
+  const phases = { constraints: 1, body: 4, selfFold: 2, worldCave: 2, other: 1 };
+  for (let index = 0; index < 8; index++) telemetry.record({ time: index * 40, compute: 10, latency: 40, simulatedStep: 33, capes: 5,
+    stepPhases: { computeMilliseconds: 10, phases, bodyTests: { particles: 1170, vertexTests: 11700, vertexCorrections: 117,
+      triangleTests: 3900, triangleCorrections: 39 } } });
+  for (let index = 8; index < 16; index++) telemetry.record({ time: index * 40, compute: 30, latency: 40, simulatedStep: 33, capes: 5 });
+  const split = telemetry.getSnapshot(600).stepPhases!;
+  expect(split.phases.body).toBe(8);
+  expect(split.bodyTests!.vertexTests).toBe(11700);
+  expect(formatBodyCandidates(split)).toContain('20.00 tests/particle/step');
+  expect(formatBodyCandidates(split)).toContain('vertex 10.00 (1.000% correcting)');
+  expect(formatBodyCandidates(split)).toContain('triangle incidence 10.00 (1.000% correcting');
+  expect(formatBodyCandidates({ ...split, bodyTests: undefined })).toBe('insufficient samples');
+  telemetry.reset(700, 0);
+  expect(telemetry.getSnapshot(700).stepPhases).toBeNull();
 });

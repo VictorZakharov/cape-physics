@@ -177,6 +177,7 @@ export class CapeContactSolver {
     back: THREE.Vector3,
   ): void {
     this.worldContactsLastStep = 0;
+    if (workerStepTiming.sampling) workerStepTiming.bodyTests.particles += this.positions.length;
     this.bodySolvePass = 0;
     this.caveSolvePass = 0;
     this.prepareBodyColliders(bodyColliders, back);
@@ -207,6 +208,7 @@ export class CapeContactSolver {
       if (!position || !previous) continue;
       for (const collider of this.preparedBodyColliders) {
         const topologySide = index % CAPE.columns / (CAPE.columns - 1) - 0.5;
+        if (workerStepTiming.sampling) workerStepTiming.bodyTests.vertexTests++;
         const penetration = this.getCapsulePenetration(
           position,
           collider,
@@ -215,6 +217,7 @@ export class CapeContactSolver {
           topologySide,
         );
         if (penetration <= 0) continue;
+        if (workerStepTiming.sampling) workerStepTiming.bodyTests.vertexCorrections++;
         position.addScaledVector(this.contactNormal, penetration);
         previous.addScaledVector(this.contactNormal, penetration);
         this.removeInwardMotion(position, previous, this.contactNormal);

@@ -1,6 +1,8 @@
 export const WORKER_PHASES = ['constraints', 'body', 'selfFold', 'worldCave', 'other'] as const;
 export type WorkerPhase = typeof WORKER_PHASES[number];
+export interface BodyTestCounts { particles: number; vertexTests: number; vertexCorrections: number; triangleTests: number; triangleCorrections: number; }
 export interface WorkerStepPhases {
+  readonly bodyTests?: Readonly<BodyTestCounts>;
   readonly computeMilliseconds: number;
   readonly collisionDetail?: Readonly<Record<'self' | 'fold' | 'world' | 'cave', number>>;
   readonly phases: Readonly<Record<WorkerPhase, number>>;
@@ -10,9 +12,14 @@ class WorkerStepTiming {
   public isWorker = false;
   public enabled = false;
   private batches = 0;
-  private sampling = false;
+  public sampling = false;
+  public readonly bodyTests: BodyTestCounts = { particles: 0, vertexTests: 0, vertexCorrections: 0, triangleTests: 0, triangleCorrections: 0 };
   private readonly milliseconds = new Float64Array(9);
-  public beginBatch(): void { this.sampling = this.enabled && ++this.batches % 4 === 0; this.milliseconds.fill(0); }
+  public beginBatch(): void {
+    this.sampling = this.enabled && ++this.batches % 4 === 0;
+    this.milliseconds.fill(0);
+    this.bodyTests.particles = this.bodyTests.vertexTests = this.bodyTests.vertexCorrections = this.bodyTests.triangleTests = this.bodyTests.triangleCorrections = 0;
+  }
   public start(): number { return this.sampling ? performance.now() : 0; }
   public end(phase: number, start: number, detail?: number): void {
     if (this.sampling) {
@@ -25,7 +32,7 @@ class WorkerStepTiming {
     if (!this.sampling) return undefined;
     for (let index = 0; index < 9; index++) this.milliseconds[index] = this.milliseconds[index]! / Math.max(1, steps);
     this.milliseconds[4] = Math.max(0, computeMilliseconds - this.milliseconds[0]! - this.milliseconds[1]! - this.milliseconds[2]! - this.milliseconds[3]!);
-    return { computeMilliseconds, collisionDetail: { self: this.milliseconds[5]!, fold: this.milliseconds[6]!, world: this.milliseconds[7]!, cave: this.milliseconds[8]! }, phases: Object.fromEntries(WORKER_PHASES.map((phase, index) => [phase, this.milliseconds[index]!])) as Record<WorkerPhase, number> };
+    return { computeMilliseconds, bodyTests: { ...this.bodyTests }, collisionDetail: { self: this.milliseconds[5]!, fold: this.milliseconds[6]!, world: this.milliseconds[7]!, cave: this.milliseconds[8]! }, phases: Object.fromEntries(WORKER_PHASES.map((phase, index) => [phase, this.milliseconds[index]!])) as Record<WorkerPhase, number> };
   }
 }
 export const workerStepTiming = new WorkerStepTiming();

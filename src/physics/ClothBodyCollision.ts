@@ -1,3 +1,4 @@
+import { workerStepTiming } from './WorkerStepTiming';
 import * as THREE from 'three';
 import type { CapsuleCollider } from './colliders';
 
@@ -140,6 +141,7 @@ export class ClothBodyCollision {
     back: THREE.Vector3,
     sideOrigin?: THREE.Vector3,
   ): void {
+    if (workerStepTiming.sampling) workerStepTiming.bodyTests.triangleTests++;
     const first = this.positions[firstIndex];
     const second = this.positions[secondIndex];
     const third = this.positions[thirdIndex];
@@ -182,6 +184,7 @@ export class ClothBodyCollision {
       + thirdWeight * this.barycentric.z * this.barycentric.z;
     if (denominator < 0.000_001) return;
 
+    if (workerStepTiming.sampling) workerStepTiming.bodyTests.triangleCorrections++;
     const lambda = penetration / denominator;
     this.applyCorrection(
       firstIndex,

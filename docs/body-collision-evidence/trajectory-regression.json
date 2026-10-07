@@ -1,0 +1,24 @@
+{
+  "baseline": "2432d53",
+  "steps": 600,
+  "capes": 50,
+  "particles": 234,
+  "delta": 0.03333333333333333,
+  "coordinatesCompared": 21060000,
+  "maximumDeviation": 0,
+  "bitIdentical": true,
+  "stress": "steps 181-240: all 50 capes driven 0.22 scene units into the body every five steps; same fixed bot paths",
+  "contact": {
+    "normal": {
+      "steps": 6750,
+      "vertexCorrections": 858314,
+      "triangleCorrections": 1238826
+    },
+    "stress": {
+      "steps": 750,
+      "vertexCorrections": 287729,
+      "triangleCorrections": 257820
+    }
+  },
+  "assertionMode": "not applicable: rejected culling is absent from production; no pairs are skipped by this change"
+}

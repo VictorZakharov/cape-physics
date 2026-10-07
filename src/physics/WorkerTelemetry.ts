@@ -1,4 +1,4 @@
-import { WORKER_PHASES, type WorkerStepPhases } from './WorkerStepTiming';
+import { WORKER_PHASES, type BodyTestCounts, type WorkerStepPhases } from './WorkerStepTiming';
 import type { CapePerformanceDiagnostics } from './CapePerformanceProfiler';
 export interface WorkerTimingSample {
   time: number; compute: number; latency: number; simulatedStep: number;
@@ -24,6 +24,9 @@ export class WorkerTelemetry {
     const sampledCompute = phaseSamples.reduce((sum, sample) => sum + sample.compute, 0) / Math.max(1, phaseSamples.length);
     const normalization = (averageCompute ?? 0) / Math.max(1e-9, sampledCompute);
     const stepPhases = phaseSamples.length >= 8 ? {
+      bodyTests: phaseSamples.every(sample => sample.stepPhases!.bodyTests !== undefined)
+        ? Object.fromEntries(['particles', 'vertexTests', 'vertexCorrections', 'triangleTests', 'triangleCorrections'].map(key => [key,
+          phaseSamples.reduce((sum, sample) => sum + sample.stepPhases!.bodyTests![key as keyof BodyTestCounts], 0) / phaseSamples.length])) as unknown as BodyTestCounts : undefined,
       sampleCount: phaseSamples.length,
       computeMilliseconds: averageCompute!,
       phases: Object.fromEntries(WORKER_PHASES.map(phase => [phase,

@@ -141,6 +141,7 @@ export function formatPerformanceReport(input: PerformanceReportInput): string {
             item.timing.stepPhases ? `Worker ${item.worker} phases (ms/step, ${item.timing.stepPhases.sampleCount} measured worker steps): ${WORKER_PHASES.map(phase => `${phase} ${metric(item.timing.stepPhases!.phases[phase])} ms (${metric(item.timing.stepPhases!.phases[phase] / Math.max(1e-9, item.timing.stepPhases!.computeMilliseconds) * 100, 1)}%)`).join(' | ')}`
               : `Worker ${item.worker} phases: ${capeWorkers.profilingEnabled === false ? 'disabled for overhead comparison' : 'insufficient samples (minimum 8/worker; 30 pooled)'}`,
           ]),
+          `Worker body candidates: ${formatBodyCandidates(capeWorkers.stepPhases)} | counts sampled every fourth batch; vertex/capsule calls plus 3 incident particles per triangle/sample call, including existing narrowphase bounds checks; corrections mean an applied projection; denominator includes every delivered cape step, including sleeping capes`,
           `Worker phase mean: ${formatWorkerPhaseSplit(capeWorkers.stepPhases)} | phase shares sampled every fourth worker batch, apportioned to all-step compute; includes reconciliation collision calls; other includes input updates, prefilter/preparation and sleeping step updates`,
           ...(capeWorkers.capeResultHz !== undefined ? [`Cape worker delivery: ${metric(capeWorkers.capeResultHz)} results/s/cape | ${metric(capeWorkers.averageBatchMilliseconds ?? 0)} ms average batch latency`] : []),
         ] : []),
@@ -203,4 +204,10 @@ export function formatWorkerPhaseSplit(split: WebGlCapeWorkerDiagnostics['stepPh
   if (!split) return 'insufficient samples (minimum 8/worker; 30 pooled), or profiling disabled';
   return `${split.sampleCount} phase samples | ` + WORKER_PHASES.map(phase => `${phase} ${metric(split.phases[phase])} ms (${metric(split.phases[phase] / Math.max(1e-9, split.computeMilliseconds) * 100, 1)}%)`).join(' | ')
     + ` | sum ${metric(Object.values(split.phases).reduce((sum, value) => sum + value, 0))} ms / compute ${metric(split.computeMilliseconds)} ms`;
+}
+
+export function formatBodyCandidates(split: WebGlCapeWorkerDiagnostics['stepPhases'] | undefined): string {
+  const counts = split?.bodyTests;
+  if (!counts || counts.particles <= 0) return 'insufficient samples';
+  return `${metric((counts.vertexTests + 3 * counts.triangleTests) / counts.particles)} tests/particle/step | vertex ${metric(counts.vertexTests / counts.particles)} (${metric(counts.vertexCorrections / Math.max(1, counts.vertexTests) * 100, 3)}% correcting) | triangle incidence ${metric(3 * counts.triangleTests / counts.particles)} (${metric(counts.triangleCorrections / Math.max(1, counts.triangleTests) * 100, 3)}% correcting triangle/sample tests)`;
 }
