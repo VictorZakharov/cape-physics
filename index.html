@@ -46,7 +46,12 @@
         <small><b data-fps-average>--</b> AVG / <b data-fps-low>--</b> 1% LOW</small>
         <small><b data-frame-time>--</b> MS FRAME / <b data-frame-p95>--</b> P95</small>
         <small><b data-main-work>--</b> MS MAIN / <b data-main-p95>--</b> P95</small>
+        <small data-sim-particles>-- SIM PARTICLES</small>
+        <small title="Main-thread simulation phase per rendered frame over the last 15 seconds, including character updates, cloth scheduling and geometry sync. Excludes asynchronous worker execution and GPU execution."><b data-sim-time>--</b> MS SIM MAIN / <b data-sim-p95>--</b> P95</small>
+        <small data-sim-workers hidden title="Smoothed worker execution time per step per worker, across its assigned capes. Excludes result packing, transfer and main-thread reconciliation. Hz is the average delivered update rate per worker; workers execute in parallel.">SIM WORKERS: --</small>
+        <small data-sim-constraints>-- CONSTRAINTS</small>
         <small><b data-triangles>--</b> TRIANGLES</small>
+        <small class="performance-panel__hardware" data-sim-hardware>--&#10;-- THREADS / SIM: --</small>
         <span class="performance-panel__copy" data-performance-copy aria-live="polite">
           CLICK TO COPY 15S REPORT
         </span>
@@ -67,8 +72,7 @@
           aria-expanded="true"
           aria-label="Collapse cape customization"
         >
-          <span>CUSTOMIZE</span>
-          <strong>CAPE &amp; SCENE</strong>
+          <strong>CUSTOMIZE</strong>
           <i aria-hidden="true"></i>
         </button>
         <div

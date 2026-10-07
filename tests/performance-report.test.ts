@@ -59,6 +59,7 @@ describe('performance report', () => {
         averageMainThreadMilliseconds: 5.4,
         p95MainThreadMilliseconds: 8.2,
         averagePhysicsMilliseconds: 2.7,
+        p95PhysicsMilliseconds: 2.7,
         averageSceneMilliseconds: 0.4,
         averageRenderMilliseconds: 2.3,
         averagePhysicsSteps: 1.98,
@@ -108,6 +109,7 @@ describe('performance report', () => {
     const report = formatPerformanceReport(input);
 
     expect(report).toContain('Cape Physics performance report');
+    expect(report).toContain('Cloth workload:');
     expect(report).toContain('Rendered FPS: 143.20 average | 118.40 1% low');
     expect(report).toContain('Frame interval: 6.98 ms average | p50 6.82 ms');
     expect(report).toContain('Renderer: WebGL 2.0 | Example Vendor | Example GPU');
@@ -183,6 +185,7 @@ describe('performance report', () => {
         averageMainThreadMilliseconds: 3,
         p95MainThreadMilliseconds: 4,
         averagePhysicsMilliseconds: 1.2,
+        p95PhysicsMilliseconds: 1.2,
         averageSceneMilliseconds: 0.3,
         averageRenderMilliseconds: 1.5,
         averagePhysicsSteps: 1,
@@ -216,6 +219,7 @@ describe('performance report', () => {
         queuedSteps: 2,
         capeResultHz: 32.5,
         averageBatchMilliseconds: 27,
+        averageStepMilliseconds: 19.25,
         failure: null,
       },
       scene: {
@@ -237,6 +241,7 @@ describe('performance report', () => {
     });
 
     expect(report).toContain('player at 120 Hz on main thread, bots on adaptive worker steps (at most 33.3 ms) across 8 workers');
+    expect(report).toContain('19.25 ms/step/worker average');
     expect(report).toContain('32.50 results/s/cape | 27.00 ms average batch latency');
     expect(report).toContain('Cape workers: 8 active | 6 busy | 2 queued fixed steps | healthy');
   });

@@ -135,6 +135,8 @@ export interface CapeWorkerResultState {
 
 export interface CapeWorkerBatchResult {
   readonly type: 'batch-result';
+  /** Worker-local solve/input-update time per step across its assigned capes. */
+  readonly simulationStepMilliseconds: number;
   readonly requestId: number;
   readonly states: readonly CapeWorkerResultState[];
 }

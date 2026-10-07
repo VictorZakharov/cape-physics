@@ -1,9 +1,23 @@
+import { CAPE } from '../config';
+import { CAPE_DISTANCE_CONSTRAINTS } from '../physics/CapeConstraintTopology';
 import { invariant } from '../utils/assert';
 import { copyText } from './clipboard';
 import {
   formatPerformanceReport,
   type PerformanceReportDetails,
 } from './PerformanceReport';
+
+export function formatRendererDevice(device: string): string {
+  // ANGLE reports vendor, model, and graphics API in a diagnostic wrapper.
+  const angle = /^ANGLE\s*\((.*)\)$/i.exec(device.trim());
+  const model = angle ? angle[1]!.split(',')[1]?.trim() ?? device : device;
+  const label = model
+    .replace(/^ANGLE Metal Renderer:\s*/i, '')
+    .replace(/\s*\(0x[\da-f]+\)/gi, '')
+    .replace(/\s+(?:Direct3D\d*|D3D\d*|OpenGL(?: ES)?|Vulkan)\b.*$/i, '')
+    .trim() || 'GPU unavailable';
+  return angle ? `ANGLE / ${label}` : label;
+}
 
 export const PERFORMANCE_WINDOW_MS = 15_000;
 const MAXIMUM_FRAME_SAMPLES = 8_192;
@@ -33,6 +47,7 @@ export interface WorkloadSnapshot {
   readonly averageMainThreadMilliseconds: number;
   readonly p95MainThreadMilliseconds: number;
   readonly averagePhysicsMilliseconds: number;
+  readonly p95PhysicsMilliseconds: number;
   readonly averageSceneMilliseconds: number;
   readonly averageRenderMilliseconds: number;
   readonly averagePhysicsSteps: number;
@@ -44,6 +59,7 @@ export const EMPTY_WORKLOAD_SNAPSHOT: WorkloadSnapshot = Object.freeze({
   averageMainThreadMilliseconds: 0,
   p95MainThreadMilliseconds: 0,
   averagePhysicsMilliseconds: 0,
+  p95PhysicsMilliseconds: 0,
   averageSceneMilliseconds: 0,
   averageRenderMilliseconds: 0,
   averagePhysicsSteps: 0,
@@ -62,6 +78,12 @@ export class PerformanceMonitor {
   private readonly mainP95Label: HTMLElement;
   private readonly lowLabel: HTMLElement;
   private readonly triangleLabel: HTMLElement;
+  private readonly particlesLabel: HTMLElement;
+  private readonly simulationLabel: HTMLElement;
+  private readonly simulationP95Label: HTMLElement;
+  private readonly workersLabel: HTMLElement;
+  private readonly constraintsLabel: HTMLElement;
+  private readonly hardwareLabel: HTMLElement;
   private readonly averageHistoryPath: SVGPathElement;
   private readonly lowHistoryPath: SVGPathElement;
   private readonly historyGraphic: SVGElement;
@@ -75,6 +97,7 @@ export class PerformanceMonitor {
   private readonly physicsStepCounts = new Uint8Array(MAXIMUM_FRAME_SAMPLES);
   private readonly durationScratch: number[] = [];
   private readonly workloadScratch: number[] = [];
+  private readonly physicsScratch: number[] = [];
   private readonly averageFpsHistory: number[] = [];
   private readonly onePercentLowHistory: number[] = [];
   private sampleStart = 0;
@@ -113,6 +136,12 @@ export class PerformanceMonitor {
     this.mainP95Label = invariant(root.querySelector<HTMLElement>('[data-main-p95]'), 'Main-work p95 label is missing.');
     this.lowLabel = invariant(root.querySelector<HTMLElement>('[data-fps-low]'), 'Low-FPS label is missing.');
     this.triangleLabel = invariant(root.querySelector<HTMLElement>('[data-triangles]'), 'Triangle label is missing.');
+    this.particlesLabel = invariant(root.querySelector<HTMLElement>('[data-sim-particles]'), 'Particle label is missing.');
+    this.simulationLabel = invariant(root.querySelector<HTMLElement>('[data-sim-time]'), 'Simulation-time label is missing.');
+    this.simulationP95Label = invariant(root.querySelector<HTMLElement>('[data-sim-p95]'), 'Simulation p95 label is missing.');
+    this.workersLabel = invariant(root.querySelector<HTMLElement>('[data-sim-workers]'), 'Worker simulation label is missing.');
+    this.constraintsLabel = invariant(root.querySelector<HTMLElement>('[data-sim-constraints]'), 'Constraint label is missing.');
+    this.hardwareLabel = invariant(root.querySelector<HTMLElement>('[data-sim-hardware]'), 'Simulation hardware label is missing.');
     this.averageHistoryPath = invariant(root.querySelector<SVGPathElement>('[data-fps-average-line]'), 'Average-FPS history path is missing.');
     this.lowHistoryPath = invariant(root.querySelector<SVGPathElement>('[data-fps-low-line]'), 'Low-FPS history path is missing.');
     this.historyGraphic = invariant(root.querySelector<SVGElement>('[data-fps-history]'), 'FPS history graphic is missing.');
@@ -270,6 +299,7 @@ export class PerformanceMonitor {
 
   private recalculateWorkload(): void {
     this.workloadScratch.length = this.workloadCount;
+    this.physicsScratch.length = this.workloadCount;
     let physicsTotal = 0;
     let sceneTotal = 0;
     let renderTotal = 0;
@@ -287,8 +317,10 @@ export class PerformanceMonitor {
       stepTotal += physicsSteps;
       maximumPhysicsSteps = Math.max(maximumPhysicsSteps, physicsSteps);
       this.workloadScratch[index] = physics + scene + render;
+      this.physicsScratch[index] = physics;
     }
     this.workloadScratch.sort((first, second) => first - second);
+    this.physicsScratch.sort((first, second) => first - second);
     const count = this.workloadCount;
     const total = physicsTotal + sceneTotal + renderTotal;
     const p95Index = Math.min(
@@ -299,6 +331,7 @@ export class PerformanceMonitor {
       averageMainThreadMilliseconds: count > 0 ? total / count : 0,
       p95MainThreadMilliseconds: count > 0 ? this.workloadScratch[p95Index] ?? 0 : 0,
       averagePhysicsMilliseconds: count > 0 ? physicsTotal / count : 0,
+      p95PhysicsMilliseconds: count > 0 ? this.physicsScratch[p95Index] ?? 0 : 0,
       averageSceneMilliseconds: count > 0 ? sceneTotal / count : 0,
       averageRenderMilliseconds: count > 0 ? renderTotal / count : 0,
       averagePhysicsSteps: count > 0 ? stepTotal / count : 0,
@@ -359,8 +392,31 @@ export class PerformanceMonitor {
     this.mainP95Label.textContent = workloadSampleCount > 0
       ? p95MainThreadMilliseconds.toFixed(2)
       : '--';
-    this.triangleLabel.textContent = this.getReportDetails().renderer.triangles
-      .toLocaleString('en-US');
+    const details = this.getReportDetails();
+    const capes = details.scene.simulatedCapes;
+    const particlesPerCape = CAPE.columns * CAPE.rows;
+    const count = (value: number): string => value.toLocaleString('en-US');
+    this.particlesLabel.textContent = `${count(capes * particlesPerCape)} SIM PARTICLES (${capes} \u00d7 ${particlesPerCape})`;
+    this.constraintsLabel.textContent = `${count(capes * CAPE_DISTANCE_CONSTRAINTS.length)} CONSTRAINTS \u00d7 ${CAPE.solverIterations} ITER`;
+    this.constraintsLabel.title = 'Distance constraints across all capes per solver iteration; excludes collision and shape guards.';
+    this.simulationLabel.textContent = workloadSampleCount > 0
+      ? this.workloadSnapshot.averagePhysicsMilliseconds.toFixed(2) : '--';
+    this.simulationP95Label.textContent = workloadSampleCount > 0
+      ? this.workloadSnapshot.p95PhysicsMilliseconds.toFixed(2) : '--';
+    const workers = details.capeWorkers;
+    this.workersLabel.hidden = !workers?.active && !workers?.failure;
+    const workerTime = workers?.averageStepMilliseconds;
+    const workerHz = workers?.capeResultHz;
+    this.workersLabel.textContent = workers?.failure
+      ? 'SIM WORKERS: FAILED / MAIN FALLBACK'
+      : `SIM WORKERS: ${workers?.workers ?? 0} \u00d7 ${workerTime != null ? workerTime.toFixed(2) : '--'} MS/STEP @ ${workerHz && workerHz > 0 ? workerHz.toFixed(1) : '--'} HZ`;
+    this.triangleLabel.textContent = count(details.renderer.triangles);
+    const threads = details.runtime.hardwareThreads;
+    const implementation = details.capeSolver?.implementation;
+    const backend = implementation ? (implementation === 'webgpu-compute' ? 'GPU' : 'CPU') : '--';
+    this.hardwareLabel.textContent = `${formatRendererDevice(details.renderer.device)}\n${threads ? count(threads) : '--'} THREADS / SIM: ${backend}`;
+    this.hardwareLabel.title = `${details.renderer.device}; hardware logical threads reported by the browser. Cloth workers: ${details.capeWorkers?.active ? details.capeWorkers.workers : 0}.`;
+
     this.historyGraphic.setAttribute(
       'aria-label',
       `Display cadence over the last ${(this.snapshot.windowElapsedMilliseconds / 1_000).toFixed(1)} seconds: ${averageFps.toFixed(2)} average FPS, ${onePercentLow.toFixed(2)} one-percent low; main-thread work ${averageMainThreadMilliseconds.toFixed(2)} milliseconds average and ${p95MainThreadMilliseconds.toFixed(2)} milliseconds p95`,

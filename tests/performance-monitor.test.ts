@@ -1,9 +1,11 @@
 import { describe, expect, test } from 'bun:test';
-import { PerformanceMonitor } from '../src/core/PerformanceMonitor';
+import { formatRendererDevice, PerformanceMonitor } from '../src/core/PerformanceMonitor';
 import type { PerformanceReportDetails } from '../src/core/PerformanceReport';
 
 class FakeHudElement {
   public textContent = '';
+  public title = '';
+  public hidden = false;
   public readonly dataset: Record<string, string> = {};
   public readonly classList = { toggle: (): void => undefined };
   private readonly attributes = new Map<string, string>();
@@ -43,6 +45,7 @@ const reportDetails: PerformanceReportDetails = {
     averageMainThreadMilliseconds: 0,
     p95MainThreadMilliseconds: 0,
     averagePhysicsMilliseconds: 0,
+    p95PhysicsMilliseconds: 0,
     averageSceneMilliseconds: 0,
     averageRenderMilliseconds: 0,
     averagePhysicsSteps: 0,
@@ -68,7 +71,7 @@ const reportDetails: PerformanceReportDetails = {
   runtime: { platform: 'test', userAgent: 'test' },
 };
 
-function createMonitorHarness(): {
+function createMonitorHarness(details: () => PerformanceReportDetails = () => reportDetails): {
   readonly monitor: PerformanceMonitor;
   readonly elements: Map<string, FakeHudElement>;
 } {
@@ -84,7 +87,7 @@ function createMonitorHarness(): {
     },
   } as unknown as ParentNode;
   return {
-    monitor: new PerformanceMonitor(() => reportDetails, root),
+    monitor: new PerformanceMonitor(details, root),
     elements,
   };
 }
@@ -94,6 +97,15 @@ function createMonitor(): PerformanceMonitor {
 }
 
 describe('PerformanceMonitor', () => {
+  test('keeps the ANGLE backend and GPU model without device IDs or shader/API diagnostics', () => {
+    expect(formatRendererDevice('ANGLE (NVIDIA, NVIDIA GeForce RTX 4070 Ti (0x00002782) Direct3D11 vs_5_0 ps_5_0, D3D11)'))
+      .toBe('ANGLE / NVIDIA GeForce RTX 4070 Ti');
+    expect(formatRendererDevice('ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)'))
+      .toBe('ANGLE / Apple M1');
+    expect(formatRendererDevice('AMD Radeon RX 7900 XTX')).toBe('AMD Radeon RX 7900 XTX');
+    expect(formatRendererDevice('')).toBe('GPU unavailable');
+  });
+
   test('keeps a stable 15-second window during a sustained 144 Hz stream', () => {
     const monitor = createMonitor();
     const frameTime = 1_000 / 144;
@@ -149,6 +161,7 @@ describe('PerformanceMonitor', () => {
       averageMainThreadMilliseconds: 6,
       p95MainThreadMilliseconds: 6,
       averagePhysicsMilliseconds: 2,
+    p95PhysicsMilliseconds: 2,
       averageSceneMilliseconds: 1,
       averageRenderMilliseconds: 3,
       averagePhysicsSteps: 2,
@@ -196,4 +209,73 @@ describe('PerformanceMonitor', () => {
     expect(elements.get('[data-fps-average-line]')?.getAttribute('d')).not.toBe('');
     expect(elements.get('[data-fps-low-line]')?.getAttribute('d')).not.toBe('');
   });
+  test('updates cloth totals and backend when the crowd or solver changes', () => {
+    let details = reportDetails;
+    const { monitor, elements } = createMonitorHarness(() => details);
+    monitor.recordFrame(0);
+    monitor.recordFrame(250);
+    expect(elements.get('[data-sim-particles]')?.textContent).toBe('234 SIM PARTICLES (1 \u00d7 234)');
+    details = {
+      ...reportDetails,
+      renderer: { ...reportDetails.renderer, device: 'ANGLE (NVIDIA, NVIDIA GeForce RTX 4070 Ti (0x00002782) Direct3D11 vs_5_0 ps_5_0, D3D11)' },
+      scene: { ...reportDetails.scene, botCount: 50, simulatedCapes: 51 },
+      runtime: { ...reportDetails.runtime, hardwareThreads: 24 },
+      capeSolver: { implementation: 'webgpu-compute' } as NonNullable<PerformanceReportDetails['capeSolver']>,
+    };
+    monitor.recordFrame(500);
+    expect(elements.get('[data-sim-particles]')?.textContent).toBe('11,934 SIM PARTICLES (51 \u00d7 234)');
+    expect(elements.get('[data-sim-constraints]')?.textContent).toBe('82,926 CONSTRAINTS \u00d7 10 ITER');
+    expect(elements.get('[data-sim-hardware]')?.textContent).toBe('ANGLE / NVIDIA GeForce RTX 4070 Ti\n24 THREADS / SIM: GPU');
+    expect(elements.get('[data-sim-hardware]')?.title).toContain('Direct3D11 vs_5_0 ps_5_0');
+    details = { ...details, capeSolver: { implementation: 'cpu-pbd' } as NonNullable<PerformanceReportDetails['capeSolver']> };
+    monitor.recordFrame(750);
+    expect(elements.get('[data-sim-hardware]')?.textContent).toBe('ANGLE / NVIDIA GeForce RTX 4070 Ti\n24 THREADS / SIM: CPU');
+  });
+
+  test('uses simulation durations for simulation p95 independently of rendering', () => {
+    const { monitor, elements } = createMonitorHarness();
+    monitor.recordFrame(0);
+    for (let frame = 1; frame <= 20; frame += 1) {
+      monitor.recordWorkload(frame * 16, {
+        physicsMilliseconds: frame === 20 ? 10 : 1,
+        sceneMilliseconds: 2,
+        renderMilliseconds: 100,
+        physicsSteps: 1,
+      });
+    }
+    monitor.recordFrame(500);
+    expect(monitor.getWorkloadSnapshot().p95PhysicsMilliseconds).toBe(10);
+    expect(elements.get('[data-sim-time]')?.textContent).toBe('1.45');
+    expect(elements.get('[data-sim-p95]')?.textContent).toBe('10.00');
+    monitor.reset();
+    monitor.recordFrame(750);
+    monitor.recordFrame(1000);
+    expect(elements.get('[data-sim-time]')?.textContent).toBe('--');
+    expect(elements.get('[data-sim-p95]')?.textContent).toBe('--');
+  });
+
+  test('shows worker compute cost and delivery rate beside main timing', () => {
+    let details: PerformanceReportDetails = { ...reportDetails, capeWorkers: {
+      active: true, workers: 10, busyWorkers: 8, queuedSteps: 2,
+      averageStepMilliseconds: 27.35, averageBatchMilliseconds: 40.6,
+      capeResultHz: 24.6, failure: null,
+    } };
+    const { monitor, elements } = createMonitorHarness(() => details);
+    monitor.recordFrame(0);
+    monitor.recordFrame(250);
+    const label = elements.get('[data-sim-workers]')!;
+    expect(label.hidden).toBe(false);
+    expect(label.textContent).toBe('SIM WORKERS: 10 \u00d7 27.35 MS/STEP @ 24.6 HZ');
+    details = { ...details, capeWorkers: { ...details.capeWorkers!, averageStepMilliseconds: null, capeResultHz: 0 } };
+    monitor.recordFrame(500);
+    expect(label.textContent).toBe('SIM WORKERS: 10 \u00d7 -- MS/STEP @ -- HZ');
+    details = { ...details, capeWorkers: { ...details.capeWorkers!, active: false, failure: 'solver failed' } };
+    monitor.recordFrame(750);
+    expect(label.hidden).toBe(false);
+    expect(label.textContent).toBe('SIM WORKERS: FAILED / MAIN FALLBACK');
+    details = { ...details, capeWorkers: null };
+    monitor.recordFrame(1000);
+    expect(label.hidden).toBe(true);
+  });
+
 });
