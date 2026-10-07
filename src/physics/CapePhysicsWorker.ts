@@ -1,5 +1,7 @@
+import { registerStaticWorldColliderIndex } from './StaticWorldColliderIndex';
 import * as THREE from 'three';
 import { CRIMSON_CAPE_PALETTE } from './CapeAppearance';
+import { workerStepTiming } from './WorkerStepTiming';
 import { CapeSimulation } from './CapeSimulation';
 import {
   applySerializedCapsuleEndpoints,
@@ -38,8 +40,14 @@ function postFailure(error: unknown): void {
 
 function handleMessage(message: CapeWorkerRequest): void {
   switch (message.type) {
+    case 'reset-performance':
+      capes.forEach(cape => cape.simulation.resetPerformanceDiagnostics());
+      return;
     case 'initialize':
+      workerStepTiming.isWorker = true;
+      workerStepTiming.enabled = message.profiling !== false;
       worldColliders = deserializeWorldColliders(message.worldColliders);
+      registerStaticWorldColliderIndex(worldColliders);
       return;
     case 'add-cape': {
       capes.get(message.capeId)?.simulation.dispose();
@@ -51,6 +59,7 @@ function handleMessage(message: CapeWorkerRequest): void {
         { renderResources: false },
       );
       simulation.overwriteStateForHarness(message.positions, message.previous);
+      simulation.resetPerformanceDiagnostics();
       capes.set(message.capeId, {
         simulation,
         anchors,
@@ -70,6 +79,7 @@ function handleMessage(message: CapeWorkerRequest): void {
       copySerializedCapeAnchors(message.anchors, cape.previousAnchors);
       cape.simulation.updateSettings(message.settings, cape.anchors);
       cape.simulation.overwriteStateForHarness(message.positions, message.previous);
+      cape.simulation.resetPerformanceDiagnostics();
       cape.revision = message.revision;
       cape.time = null;
       cape.deltaTime = 0;
@@ -81,6 +91,7 @@ function handleMessage(message: CapeWorkerRequest): void {
       return;
     case 'step-batch': {
       const touchedCapeIds = new Set<number>();
+      workerStepTiming.beginBatch();
       const simulationStart = performance.now();
       for (const frame of message.frames) {
         for (const input of frame.capes) {
@@ -117,6 +128,7 @@ function handleMessage(message: CapeWorkerRequest): void {
       }
       const simulationStepMilliseconds = (performance.now() - simulationStart)
         / Math.max(1, message.frames.length);
+      const stepPhases = workerStepTiming.finishBatch(simulationStepMilliseconds, message.frames.length);
       const states = [...touchedCapeIds].flatMap((capeId) => {
         const cape = capes.get(capeId);
         if (!cape) return [];
@@ -135,6 +147,8 @@ function handleMessage(message: CapeWorkerRequest): void {
       const response: CapeWorkerBatchResult = {
         type: 'batch-result',
         simulationStepMilliseconds,
+        measurementEpoch: message.measurementEpoch,
+        stepPhases,
         requestId: message.requestId,
         states,
       };

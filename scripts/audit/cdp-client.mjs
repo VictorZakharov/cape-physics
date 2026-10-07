@@ -127,10 +127,15 @@ export function connectDebugger(webSocketUrl) {
     let nextId = 1;
     socket.addEventListener('error', reject, { once: true });
     socket.addEventListener('open', () => {
+      socket.addEventListener('close', () => {
+        for (const handler of pending.values()) { clearTimeout(handler.timeout); handler.rejectCommand(new Error('Debugger socket closed')); }
+        pending.clear();
+      });
       const command = (method, params = {}) => new Promise((resolveCommand, rejectCommand) => {
         const id = nextId;
         nextId += 1;
-        pending.set(id, { resolveCommand, rejectCommand });
+        const timeout = setTimeout(() => { pending.delete(id); rejectCommand(new Error(`Debugger command timed out: ${method}`)); }, 60000);
+        pending.set(id, { resolveCommand, rejectCommand, timeout });
         socket.send(JSON.stringify({ id, method, params }));
       });
       socket.addEventListener('message', ({ data }) => {
@@ -142,6 +147,7 @@ export function connectDebugger(webSocketUrl) {
         const handler = pending.get(message.id);
         pending.delete(message.id);
         if (!handler) return;
+        clearTimeout(handler.timeout);
         if (message.error) handler.rejectCommand(new Error(message.error.message));
         else handler.resolveCommand(message.result);
       });

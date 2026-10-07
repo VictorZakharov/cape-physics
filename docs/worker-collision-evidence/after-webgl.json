@@ -1,0 +1,428 @@
+{
+  "gpu": {
+    "source": "EXT_disjoint_timer_query_webgl2 (all render passes)",
+    "sampleCount": 1034,
+    "averageMilliseconds": 3.8454736402321066
+  },
+  "gpuSimulation": {
+    "stepHz": null,
+    "capeStepsPerSecond": null,
+    "simulatedStepMilliseconds": null
+  },
+  "rendererStartup": {
+    "current": null,
+    "failures": [],
+    "automaticReloads": 0,
+    "recoveryPending": false
+  },
+  "renderer": {
+    "backend": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+    "vendor": "Google Inc. (NVIDIA)",
+    "device": "ANGLE (NVIDIA, NVIDIA GeForce RTX 4070 Ti (0x00002782) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+    "preference": "webgl",
+    "actual": "webgl",
+    "fallback": false,
+    "drawCalls": 186,
+    "triangles": 164038,
+    "programs": 47
+  },
+  "canvas": {
+    "drawingBufferWidth": 1582,
+    "drawingBufferHeight": 748,
+    "cssWidth": 1582,
+    "cssHeight": 748
+  },
+  "quality": {
+    "label": "ADAPTIVE ULTRA",
+    "scale": 1,
+    "targetResizes": 2,
+    "reason": "CPU-bound: held"
+  },
+  "workload": {
+    "averageMainThreadMilliseconds": 13.451547388814216,
+    "p95MainThreadMilliseconds": 23.800000000745058,
+    "averagePhysicsMilliseconds": 10.521373307566579,
+    "p95PhysicsMilliseconds": 20.59999999962747,
+    "averageSceneMilliseconds": 0.3748549323013805,
+    "averageRenderMilliseconds": 2.555319148946258,
+    "averagePhysicsSteps": 1.5928433268858802,
+    "maximumPhysicsSteps": 2,
+    "sampleCount": 1034
+  },
+  "capeSolver": {
+    "implementation": "cpu-pbd",
+    "sampleIntervalSteps": 16,
+    "totalSteps": 2084,
+    "activeSteps": 2084,
+    "sampledActiveSteps": 103,
+    "sufficientSamples": true,
+    "windowTotalSteps": 1644,
+    "windowActiveSteps": 1644,
+    "windowElapsedMilliseconds": 14988.5,
+    "averageStepMilliseconds": 3.3233009709171877,
+    "phases": {
+      "prediction": 0.05728155341975902,
+      "constraints": 0.46990291249838845,
+      "selfCollision": 0.5213592232214014,
+      "foldGuard": 0.056310679618884085,
+      "bodyCollision": 0.781553398257176,
+      "worldCollision": 0.49126213595488116,
+      "caveCollision": 0.38543689314239815,
+      "reconciliation": 0.5378640776735196,
+      "anchors": 0.004854368968206702,
+      "finalization": 0.01747572816257338
+    }
+  },
+  "capeWorkers": {
+    "stepPhases": {
+      "sampleCount": 1437,
+      "computeMilliseconds": 18.268871181483387,
+      "phases": {
+        "constraints": 2.0980388875381246,
+        "body": 7.6467197850771695,
+        "selfFold": 3.0623679012063603,
+        "worldCave": 4.655136808850055,
+        "other": 0.8066077988116783
+      }
+    },
+    "active": true,
+    "workers": 10,
+    "busyWorkers": 10,
+    "queuedSteps": 10,
+    "failure": null,
+    "logicalCores": 24,
+    "workerLimit": 10,
+    "selectionRule": "min(10, max(1, logical cores - 2)); unknown cores: assume 4",
+    "overridden": false,
+    "requestedWorkers": null,
+    "profilingEnabled": true,
+    "assignments": [
+      {
+        "worker": 1,
+        "capes": 5,
+        "particles": 1170,
+        "timing": {
+          "stepPhases": {
+            "sampleCount": 142,
+            "computeMilliseconds": 18.74684210528146,
+            "phases": {
+              "constraints": 2.0238225542721193,
+              "body": 7.51023032611686,
+              "selfFold": 3.0533894848181844,
+              "worldCave": 5.382550987351591,
+              "other": 0.7768487527227028
+            }
+          },
+          "sampleCount": 570,
+          "windowMilliseconds": 14990.099999999627,
+          "computeMilliseconds": 18.74684210528146,
+          "simulatedStepMilliseconds": 23.903508771929236,
+          "batchLatencyMilliseconds": 26.288947368419745,
+          "stepHz": 37.95838586800716,
+          "utilisationPercent": 71.165635986499,
+          "capeStepsPerSecond": 189.7919293400358
+        }
+      },
+      {
+        "worker": 2,
+        "capes": 5,
+        "particles": 1170,
+        "timing": {
+          "stepPhases": {
+            "sampleCount": 148,
+            "computeMilliseconds": 17.531472081182976,
+            "phases": {
+              "constraints": 2.062723422521581,
+              "body": 7.492884757317509,
+              "selfFold": 3.0125824036860074,
+              "worldCave": 4.110689149566341,
+              "other": 0.8525923480915377
+            }
+          },
+          "sampleCount": 591,
+          "windowMilliseconds": 14974.5,
+          "computeMilliseconds": 17.531472081182976,
+          "simulatedStepMilliseconds": 23.124647490129195,
+          "batchLatencyMilliseconds": 25.35397631132285,
+          "stepHz": 39.40031386690708,
+          "utilisationPercent": 69.0687502085463,
+          "capeStepsPerSecond": 197.0015693345354
+        }
+      },
+      {
+        "worker": 3,
+        "capes": 5,
+        "particles": 1170,
+        "timing": {
+          "stepPhases": {
+            "sampleCount": 144,
+            "computeMilliseconds": 18.374870017338772,
+            "phases": {
+              "constraints": 2.099040695016956,
+              "body": 7.660672140742175,
+              "selfFold": 3.0645443213284826,
+              "worldCave": 4.742124088768615,
+              "other": 0.8084887714825407
+            }
+          },
+          "sampleCount": 577,
+          "windowMilliseconds": 14990.200000001118,
+          "computeMilliseconds": 18.374870017338772,
+          "simulatedStepMilliseconds": 23.685730791449448,
+          "batchLatencyMilliseconds": 25.934662045052267,
+          "stepHz": 38.42510440153948,
+          "utilisationPercent": 70.62747661808417,
+          "capeStepsPerSecond": 192.12552200769738
+        }
+      },
+      {
+        "worker": 4,
+        "capes": 5,
+        "particles": 1170,
+        "timing": {
+          "stepPhases": {
+            "sampleCount": 143,
+            "computeMilliseconds": 18.319580419588235,
+            "phases": {
+              "constraints": 2.0403928965231155,
+              "body": 7.728395748495782,
+              "selfFold": 3.003872377693065,
+              "worldCave": 4.8188153299067045,
+              "other": 0.7281040669695683
+            }
+          },
+          "sampleCount": 572,
+          "windowMilliseconds": 14990.699999999255,
+          "computeMilliseconds": 18.319580419588235,
+          "simulatedStepMilliseconds": 23.92191142191085,
+          "batchLatencyMilliseconds": 26.19055944056921,
+          "stepHz": 38.09028264190654,
+          "utilisationPercent": 69.76992401958711,
+          "capeStepsPerSecond": 190.45141320953272
+        }
+      },
+      {
+        "worker": 5,
+        "capes": 5,
+        "particles": 1170,
+        "timing": {
+          "stepPhases": {
+            "sampleCount": 145,
+            "computeMilliseconds": 17.963730569951405,
+            "phases": {
+              "constraints": 2.192256218753518,
+              "body": 7.499534819430311,
+              "selfFold": 3.077946955566574,
+              "worldCave": 4.402363568926118,
+              "other": 0.791629007274883
+            }
+          },
+          "sampleCount": 579,
+          "windowMilliseconds": 14974.599999999627,
+          "computeMilliseconds": 17.963730569951405,
+          "simulatedStepMilliseconds": 23.57512953367817,
+          "batchLatencyMilliseconds": 25.844386873921195,
+          "stepHz": 38.59869378814889,
+          "utilisationPercent": 69.33540795748385,
+          "capeStepsPerSecond": 192.99346894074446
+        }
+      },
+      {
+        "worker": 6,
+        "capes": 5,
+        "particles": 1170,
+        "timing": {
+          "stepPhases": {
+            "sampleCount": 138,
+            "computeMilliseconds": 18.896551724093985,
+            "phases": {
+              "constraints": 2.085057296218465,
+              "body": 7.929841526499169,
+              "selfFold": 3.0966268750122183,
+              "worldCave": 5.0081693889532355,
+              "other": 0.7768566374108988
+            }
+          },
+          "sampleCount": 551,
+          "windowMilliseconds": 14990.599999999627,
+          "computeMilliseconds": 18.896551724093985,
+          "simulatedStepMilliseconds": 24.788263762854793,
+          "batchLatencyMilliseconds": 27.160072595286717,
+          "stepHz": 36.68965885288205,
+          "utilisationPercent": 69.35746401063022,
+          "capeStepsPerSecond": 183.44829426441026
+        }
+      },
+      {
+        "worker": 7,
+        "capes": 5,
+        "particles": 1170,
+        "timing": {
+          "stepPhases": {
+            "sampleCount": 147,
+            "computeMilliseconds": 17.65921501699619,
+            "phases": {
+              "constraints": 2.0124287294688887,
+              "body": 7.625616459533118,
+              "selfFold": 3.093743861569367,
+              "worldCave": 4.142436036760478,
+              "other": 0.7849899296643369
+            }
+          },
+          "sampleCount": 586,
+          "windowMilliseconds": 14990.799999998882,
+          "computeMilliseconds": 17.65921501699619,
+          "simulatedStepMilliseconds": 23.407281001137093,
+          "batchLatencyMilliseconds": 25.599999999996186,
+          "stepHz": 39.023934679939934,
+          "utilisationPercent": 68.86290257999094,
+          "capeStepsPerSecond": 195.11967339969968
+        }
+      },
+      {
+        "worker": 8,
+        "capes": 5,
+        "particles": 1170,
+        "timing": {
+          "stepPhases": {
+            "sampleCount": 148,
+            "computeMilliseconds": 17.807470288586206,
+            "phases": {
+              "constraints": 2.2828358335561254,
+              "body": 7.54011220168891,
+              "selfFold": 3.1277552492092338,
+              "worldCave": 3.9713238750751763,
+              "other": 0.8854431290567617
+            }
+          },
+          "sampleCount": 589,
+          "windowMilliseconds": 14990.89999999851,
+          "computeMilliseconds": 17.807470288586206,
+          "simulatedStepMilliseconds": 23.20316921335542,
+          "batchLatencyMilliseconds": 25.43395585739109,
+          "stepHz": 39.22379576943735,
+          "utilisationPercent": 69.83903568150471,
+          "capeStepsPerSecond": 196.11897884718678
+        }
+      },
+      {
+        "worker": 9,
+        "capes": 5,
+        "particles": 1170,
+        "timing": {
+          "stepPhases": {
+            "sampleCount": 135,
+            "computeMilliseconds": 19.71499999995447,
+            "phases": {
+              "constraints": 2.08393523791895,
+              "body": 7.9466816392219055,
+              "selfFold": 3.0906987960196664,
+              "worldCave": 5.720478443424025,
+              "other": 0.8732058833699227
+            }
+          },
+          "sampleCount": 540,
+          "windowMilliseconds": 14991,
+          "computeMilliseconds": 19.71499999995447,
+          "simulatedStepMilliseconds": 25.277777777777143,
+          "batchLatencyMilliseconds": 27.742962962958135,
+          "stepHz": 35.954906277099596,
+          "utilisationPercent": 70.8978720563983,
+          "capeStepsPerSecond": 179.77453138549797
+        }
+      },
+      {
+        "worker": 10,
+        "capes": 5,
+        "particles": 1170,
+        "timing": {
+          "stepPhases": {
+            "sampleCount": 147,
+            "computeMilliseconds": 17.673979591860178,
+            "phases": {
+              "constraints": 2.0978959911315265,
+              "body": 7.533228231725959,
+              "selfFold": 3.0025186871608067,
+              "worldCave": 4.252417219768259,
+              "other": 0.7879194620736304
+            }
+          },
+          "sampleCount": 588,
+          "windowMilliseconds": 14990.900000000373,
+          "computeMilliseconds": 17.673979591860178,
+          "simulatedStepMilliseconds": 23.242630385486983,
+          "batchLatencyMilliseconds": 25.44693877550197,
+          "stepHz": 39.15708863377018,
+          "utilisationPercent": 69.22866539042207,
+          "capeStepsPerSecond": 195.78544316885092
+        }
+      }
+    ],
+    "workerStepHz": 38.25221647796383,
+    "capeResultHz": 38.25221647796383,
+    "averageStepMilliseconds": 18.268871181483387,
+    "simulatedStepMilliseconds": 23.81300501497083,
+    "utilisationPercent": 69.81531345091467,
+    "cpuMillisecondsPerSecond": 6981.531345091466,
+    "deliveredParticleStepsPerSecond": 447550.9327921768,
+    "averageBatchMilliseconds": 26.099646223041937
+  },
+  "scene": {
+    "simulationSeconds": 17.266666666666328,
+    "capeSleeping": false,
+    "worldColliders": 2062,
+    "bodyColliders": 15,
+    "worldColliderKinds": {
+      "formation": 1835,
+      "rock": 78,
+      "torch": 77,
+      "mineral": 72
+    },
+    "activeRipples": 16,
+    "botCount": 50,
+    "simulatedCapes": 51
+  },
+  "page": {
+    "visibility": "visible",
+    "focused": true,
+    "devicePixelRatio": 1,
+    "multipleScreens": false,
+    "url": "http://127.0.0.1:49612/?harness=1"
+  },
+  "runtime": {
+    "hardwareThreads": 24,
+    "deviceMemory": 32,
+    "platform": "Win32",
+    "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/149.0.0.0 Safari/537.36"
+  },
+  "measurementChecks": {
+    "warmupReset": {
+      "averageFps": 0,
+      "onePercentLow": 0,
+      "averageFrameTime": 0,
+      "medianFrameTime": 0,
+      "p95FrameTime": 0,
+      "p99FrameTime": 0,
+      "refreshEstimate": 60,
+      "longFrameCount": 0,
+      "longestFrameTime": 0,
+      "sampleCount": 0,
+      "windowElapsedMilliseconds": 0,
+      "warmupExcludedMilliseconds": 6.900000000372529,
+      "warmupExcludedFrames": 0,
+      "warmupReason": "bot population change",
+      "warmingUp": true
+    },
+    "workerRowHeights": [
+      44.796875,
+      44.796875
+    ],
+    "panelBounds": {
+      "width": 240,
+      "height": 415.234375,
+      "viewportHeight": 748,
+      "phaseScrollWidth": 212,
+      "phaseClientWidth": 212
+    }
+  }
+}

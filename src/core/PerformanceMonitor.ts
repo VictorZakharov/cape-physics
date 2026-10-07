@@ -1,3 +1,4 @@
+import { WORKER_PHASES } from '../physics/WorkerStepTiming';
 import { CAPE } from '../config';
 import { CAPE_DISTANCE_CONSTRAINTS } from '../physics/CapeConstraintTopology';
 import { invariant } from '../utils/assert';
@@ -19,10 +20,20 @@ export function formatRendererDevice(device: string): string {
   return angle ? `ANGLE / ${label}` : label;
 }
 
+export function formatNumericHudText(text: string): string {
+  const escaped = text.replaceAll('&', '&amp;').replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&apos;');
+  return escaped.replace(/\d[\d,]*(?:\.\d+)?/g, '<b>$&</b>');
+}
+
 export const PERFORMANCE_WINDOW_MS = 15_000;
 const MAXIMUM_FRAME_SAMPLES = 8_192;
 
 export interface PerformanceSnapshot {
+  readonly warmupExcludedMilliseconds?: number;
+  readonly warmupExcludedFrames?: number;
+  readonly warmupReason?: string;
+  readonly warmingUp?: boolean;
   readonly averageFps: number;
   readonly onePercentLow: number;
   readonly averageFrameTime: number;
@@ -81,7 +92,11 @@ export class PerformanceMonitor {
   private readonly particlesLabel: HTMLElement;
   private readonly simulationLabel: HTMLElement;
   private readonly simulationP95Label: HTMLElement;
+  private readonly workerCollidersLabel: HTMLElement;
+  private readonly workerPhasesLabel: HTMLElement;
   private readonly workersLabel: HTMLElement;
+  private readonly scopeLabel: HTMLElement;
+  private readonly throughputLabel: HTMLElement;
   private readonly constraintsLabel: HTMLElement;
   private readonly hardwareLabel: HTMLElement;
   private readonly averageHistoryPath: SVGPathElement;
@@ -104,6 +119,12 @@ export class PerformanceMonitor {
   private sampleCount = 0;
   private workloadStart = 0;
   private workloadCount = 0;
+  private retainDisplay = false;
+  private hasDisplayedSamples = false;
+  private warmupUntil = 0;
+  private warmupStarted = 0;
+  private excludedFrames = 0;
+  private warmupReason = 'none';
   private lastTimestamp: number | null = null;
   private lastPaint = 0;
   private copyFeedbackTimer: number | null = null;
@@ -139,7 +160,11 @@ export class PerformanceMonitor {
     this.particlesLabel = invariant(root.querySelector<HTMLElement>('[data-sim-particles]'), 'Particle label is missing.');
     this.simulationLabel = invariant(root.querySelector<HTMLElement>('[data-sim-time]'), 'Simulation-time label is missing.');
     this.simulationP95Label = invariant(root.querySelector<HTMLElement>('[data-sim-p95]'), 'Simulation p95 label is missing.');
+    this.workerCollidersLabel = invariant(root.querySelector<HTMLElement>('[data-worker-colliders]'), 'Worker collider label is missing.');
+    this.workerPhasesLabel = invariant(root.querySelector<HTMLElement>('[data-worker-phases]'), 'Worker phase label is missing.');
     this.workersLabel = invariant(root.querySelector<HTMLElement>('[data-sim-workers]'), 'Worker simulation label is missing.');
+    this.scopeLabel = invariant(root.querySelector<HTMLElement>('[data-sim-scope]'), 'Simulation scope label is missing.');
+    this.throughputLabel = invariant(root.querySelector<HTMLElement>('[data-sim-throughput]'), 'Simulation throughput label is missing.');
     this.constraintsLabel = invariant(root.querySelector<HTMLElement>('[data-sim-constraints]'), 'Constraint label is missing.');
     this.hardwareLabel = invariant(root.querySelector<HTMLElement>('[data-sim-hardware]'), 'Simulation hardware label is missing.');
     this.averageHistoryPath = invariant(root.querySelector<SVGPathElement>('[data-fps-average-line]'), 'Average-FPS history path is missing.');
@@ -149,7 +174,26 @@ export class PerformanceMonitor {
     this.panel.addEventListener('click', this.handleCopy);
   }
 
+  public restartMeasurement(timestamp = performance.now(), reason = 'reset', warmup = 3000): void {
+    const retainDisplay = this.retainDisplay || this.hasDisplayedSamples;
+    const averagePath = this.averageHistoryPath.getAttribute('d') ?? '';
+    const lowPath = this.lowHistoryPath.getAttribute('d') ?? '';
+    this.reset();
+    this.retainDisplay = retainDisplay;
+    if (retainDisplay) {
+      this.averageHistoryPath.setAttribute('d', averagePath);
+      this.lowHistoryPath.setAttribute('d', lowPath);
+    }
+    this.warmupStarted = timestamp; this.warmupUntil = timestamp + warmup;
+    this.excludedFrames = 0; this.warmupReason = reason; this.paint();
+  }
+
   public recordFrame(timestamp: number): void {
+    if (timestamp < this.warmupUntil) {
+      this.excludedFrames++; this.lastTimestamp = null;
+      if (timestamp - this.lastPaint >= 250) { this.lastPaint = timestamp; this.paint(); }
+      return;
+    }
     if (this.lastTimestamp === null) {
       this.lastTimestamp = timestamp;
       return;
@@ -180,10 +224,14 @@ export class PerformanceMonitor {
   }
 
   public getSnapshot(): PerformanceSnapshot {
-    return this.snapshot;
+    return { ...this.snapshot, warmupExcludedMilliseconds: this.warmupUntil > 0
+      ? Math.max(0, Math.min(performance.now(), this.warmupUntil) - this.warmupStarted) : 0,
+      warmupExcludedFrames: this.excludedFrames, warmupReason: this.warmupReason,
+      warmingUp: performance.now() < this.warmupUntil };
   }
 
   public recordWorkload(timestamp: number, sample: FrameWorkloadSample): void {
+    if (timestamp < this.warmupUntil) return;
     const writeIndex = (this.workloadStart + this.workloadCount) % MAXIMUM_FRAME_SAMPLES;
     this.workloadTimestamps[writeIndex] = timestamp;
     this.physicsDurations[writeIndex] = Math.max(0, sample.physicsMilliseconds);
@@ -210,6 +258,10 @@ export class PerformanceMonitor {
   }
 
   public readonly reset = (): void => {
+    this.retainDisplay = false;
+    this.hasDisplayedSamples = false;
+    this.panel.classList.toggle('is-warming-up', false);
+    this.warmupUntil = 0; this.warmupStarted = 0; this.excludedFrames = 0; this.warmupReason = 'none';
     this.sampleStart = 0;
     this.sampleCount = 0;
     this.workloadStart = 0;
@@ -218,6 +270,10 @@ export class PerformanceMonitor {
     this.averageFpsHistory.length = 0;
     this.onePercentLowHistory.length = 0;
     this.lastTimestamp = null;
+    this.lastPaint = 0;
+    this.snapshot = { averageFps: 0, onePercentLow: 0, averageFrameTime: 0, medianFrameTime: 0,
+      p95FrameTime: 0, p99FrameTime: 0, refreshEstimate: 60, longFrameCount: 0, longestFrameTime: 0,
+      sampleCount: 0, windowElapsedMilliseconds: 0 };
     this.averageHistoryPath.setAttribute('d', '');
     this.lowHistoryPath.setAttribute('d', '');
   };
@@ -235,7 +291,7 @@ export class PerformanceMonitor {
     for (let index = 0; index < this.sampleCount; index += 1) {
       const sampleIndex = (this.sampleStart + index) % MAXIMUM_FRAME_SAMPLES;
       const rawDuration = this.sampleDurations[sampleIndex]!;
-      const duration = Math.min(rawDuration, 250);
+      const duration = rawDuration;
       this.durationScratch[index] = duration;
       totalDuration += duration;
       if (rawDuration >= 50) longFrameCount += 1;
@@ -360,6 +416,16 @@ export class PerformanceMonitor {
   }
 
   private paint(): void {
+    const warmingUp = this.warmupUntil > 0
+      && (performance.now() < this.warmupUntil || this.snapshot.sampleCount === 0);
+    this.panel.classList.toggle('is-warming-up', warmingUp);
+    this.panel.dataset.measurementState = warmingUp ? 'warming-up' : 'measuring';
+    if (warmingUp && this.retainDisplay) {
+      this.fpsCaption.textContent = 'WARMING UP / PREVIOUS STATS';
+      return;
+    }
+    this.retainDisplay = false;
+    this.hasDisplayedSamples = this.snapshot.sampleCount > 0;
     const {
       averageFps,
       onePercentLow,
@@ -377,9 +443,8 @@ export class PerformanceMonitor {
     this.fpsLabel.textContent = averageFps > 0 ? averageFps.toFixed(2) : '--';
     this.averageLabel.textContent = averageFps > 0 ? averageFps.toFixed(2) : '--';
     this.lowLabel.textContent = onePercentLow > 0 ? onePercentLow.toFixed(2) : '--';
-    this.fpsCaption.textContent = refreshCapped
-      ? 'DISPLAY FPS / VSYNC-CAPPED'
-      : 'DISPLAY FPS / LAST 15S';
+    this.fpsCaption.textContent = warmingUp ? 'WARMING UP / STATS PAUSED'
+      : refreshCapped ? 'DISPLAY FPS / VSYNC-CAPPED' : 'DISPLAY FPS / LAST 15S';
     this.frameTimeLabel.textContent = averageFrameTime > 0
       ? averageFrameTime.toFixed(2)
       : '--';
@@ -396,8 +461,8 @@ export class PerformanceMonitor {
     const capes = details.scene.simulatedCapes;
     const particlesPerCape = CAPE.columns * CAPE.rows;
     const count = (value: number): string => value.toLocaleString('en-US');
-    this.particlesLabel.textContent = `${count(capes * particlesPerCape)} SIM PARTICLES (${capes} \u00d7 ${particlesPerCape})`;
-    this.constraintsLabel.textContent = `${count(capes * CAPE_DISTANCE_CONSTRAINTS.length)} CONSTRAINTS \u00d7 ${CAPE.solverIterations} ITER`;
+    this.particlesLabel.innerHTML = formatNumericHudText(`${count(capes * particlesPerCape)} SIM PARTICLES (${capes} \u00d7 ${particlesPerCape})`);
+    this.constraintsLabel.innerHTML = formatNumericHudText(`${count(capes * CAPE_DISTANCE_CONSTRAINTS.length)} CONSTRAINTS \u00d7 ${CAPE.solverIterations} ITER`);
     this.constraintsLabel.title = 'Distance constraints across all capes per solver iteration; excludes collision and shape guards.';
     this.simulationLabel.textContent = workloadSampleCount > 0
       ? this.workloadSnapshot.averagePhysicsMilliseconds.toFixed(2) : '--';
@@ -405,16 +470,25 @@ export class PerformanceMonitor {
       ? this.workloadSnapshot.p95PhysicsMilliseconds.toFixed(2) : '--';
     const workers = details.capeWorkers;
     this.workersLabel.hidden = !workers?.active && !workers?.failure;
+    this.workerCollidersLabel.hidden = this.workersLabel.hidden;
+    this.workerPhasesLabel.hidden = this.workersLabel.hidden;
+    this.workerCollidersLabel.innerHTML = formatNumericHudText(`${count(details.scene.worldColliders)} WORLD + ${details.scene.bodyColliders ?? '--'} BODY / CAPE`);
+    const split = workers?.stepPhases;
+    const phaseLabels = ['CONSTRAINTS', 'BODY', 'SELF + FOLD', 'WORLD + CAVE', 'OTHER'];
+    this.workerPhasesLabel.innerHTML = formatNumericHudText(WORKER_PHASES.map((phase, index) => `${phaseLabels[index]} ${split ? split.phases[phase].toFixed(2) : '--'} MS / ${split ? (split.phases[phase] / Math.max(1e-9, split.computeMilliseconds) * 100).toFixed(1) : '--'}%`).join('\n'));
+    this.workerPhasesLabel.title = 'Measured inside workers across assigned capes per worker step, including reconciliation collision calls. Other includes input updates, broadphase preparation and sleeping updates. Phase shares sampled every fourth batch and apportioned to all-step compute. Requires 30 samples across workers and at least 8 per worker; phases sum to compute time.';
     const workerTime = workers?.averageStepMilliseconds;
-    const workerHz = workers?.capeResultHz;
-    this.workersLabel.textContent = workers?.failure
-      ? 'SIM WORKERS: FAILED / MAIN FALLBACK'
-      : `SIM WORKERS: ${workers?.workers ?? 0} \u00d7 ${workerTime != null ? workerTime.toFixed(2) : '--'} MS/STEP @ ${workerHz && workerHz > 0 ? workerHz.toFixed(1) : '--'} HZ`;
+    const workerHz = workers?.workerStepHz ?? workers?.capeResultHz;
+    this.workersLabel.innerHTML = formatNumericHudText(workers?.failure
+      ? 'SIM WORKERS: FAILED\nMAIN FALLBACK\nDT -- MS / BUSY --%\nCAPES UNAVAILABLE\nPARTICLES UNAVAILABLE'
+      : `SIM WORKERS: ${workers?.workers ?? 0} / COMPUTE\n${workerTime != null ? workerTime.toFixed(2) : '--'} MS/STEP @ ${workerHz && workerHz > 0 ? workerHz.toFixed(1) : '--'} HZ\nDT ${workers?.simulatedStepMilliseconds != null ? workers.simulatedStepMilliseconds.toFixed(2) : '--'} MS / ${workers?.utilisationPercent != null ? workers.utilisationPercent.toFixed(1) : '--'}% BUSY\n${this.workerAssignmentSummary(workers?.assignments)}`);
+    this.scopeLabel.textContent = details.capeSolver?.implementation === 'webgpu-compute' ? 'MAIN: GPU PREP + CTRL + SYNC' : 'MAIN: PLAYER + CTRL + SYNC';
+    this.throughputLabel.innerHTML = formatNumericHudText(this.deliverySummary(details));
     this.triangleLabel.textContent = count(details.renderer.triangles);
     const threads = details.runtime.hardwareThreads;
     const implementation = details.capeSolver?.implementation;
     const backend = implementation ? (implementation === 'webgpu-compute' ? 'GPU' : 'CPU') : '--';
-    this.hardwareLabel.textContent = `${formatRendererDevice(details.renderer.device)}\n${threads ? count(threads) : '--'} THREADS / SIM: ${backend}`;
+    this.hardwareLabel.innerHTML = formatNumericHudText(`${formatRendererDevice(details.renderer.device)}\n${threads ? count(threads) : '--'} THREADS / SIM: ${backend}`);
     this.hardwareLabel.title = `${details.renderer.device}; hardware logical threads reported by the browser. Cloth workers: ${details.capeWorkers?.active ? details.capeWorkers.workers : 0}.`;
 
     this.historyGraphic.setAttribute(
@@ -443,15 +517,34 @@ export class PerformanceMonitor {
     this.lowHistoryPath.setAttribute('d', fpsPath(this.onePercentLowHistory));
   }
 
+  private workerAssignmentSummary(assignments: NonNullable<PerformanceReportDetails['capeWorkers']>['assignments']): string {
+    if (!assignments?.length) return 'CAPES UNAVAILABLE\nPARTICLES UNAVAILABLE';
+    const capes = assignments.map(item => item.capes);
+    const particles = assignments.map(item => item.particles);
+    const range = (values: number[]) => Math.min(...values) === Math.max(...values) ? values[0]!.toLocaleString('en-US') : `${Math.min(...values).toLocaleString('en-US')}-${Math.max(...values).toLocaleString('en-US')}`;
+    return `${range(capes)} CAPES PER WORKER\n${range(particles)} PTCL PER WORKER`;
+  }
+  private deliverySummary(details: PerformanceReportDetails): string {
+    const profile = details.capeSolver;
+    const elapsed = profile?.windowElapsedMilliseconds ?? 0;
+    const player = elapsed > 0 ? (profile?.windowTotalSteps ?? profile?.windowActiveSteps ?? 0) * 1000 / elapsed : null;
+    const bot = details.capeWorkers?.active ? details.capeWorkers.deliveredParticleStepsPerSecond : 0;
+    const gpu = details.gpuSimulation?.capeStepsPerSecond;
+    const rate = profile?.implementation === 'webgpu-compute' ? (gpu != null ? gpu * CAPE.columns * CAPE.rows : null)
+      : player !== null && bot != null ? player * CAPE.columns * CAPE.rows + bot : null;
+    return `${rate !== null ? Math.round(rate).toLocaleString('en-US') : '--'} ${profile?.implementation === 'webgpu-compute' ? 'PTCL-STEPS/S SUBMITTED' : 'PARTICLE-STEPS/S'}`;
+  }
+
   private readonly handleCopy = (): void => {
     void this.copyPerformanceReport();
   };
 
   private async copyPerformanceReport(): Promise<void> {
     try {
+      this.recalculate();
       await copyText(formatPerformanceReport({
         capturedAt: new Date().toISOString(),
-        performance: this.snapshot,
+        performance: this.getSnapshot(),
         ...this.getReportDetails(),
       }));
       this.panel.dataset.copyState = 'copied';

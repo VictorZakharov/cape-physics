@@ -56,7 +56,7 @@ export class RenderPipeline {
     private readonly scene: THREE.Scene,
     private readonly camera: THREE.Camera,
     preference: RendererPreference,
-    private readonly trackTimestamps = false,
+    private readonly trackTimestamps = true,
     private readonly webGpuBlockReason: string | null = null,
   ) {
     this.preference = preference;
@@ -107,9 +107,7 @@ export class RenderPipeline {
       observer.onStage?.(failedStage);
       if (this.webGpuBlockReason) throw new Error(this.webGpuBlockReason);
       device = await requestWebGpuDevice(navigator.gpu, {
-        requestedFeatures: this.trackTimestamps
-          ? [...WEBGPU_BASE_FEATURES, 'timestamp-query']
-          : WEBGPU_BASE_FEATURES,
+        requestedFeatures: [...WEBGPU_BASE_FEATURES, 'timestamp-query'],
         requiredLimits: WEBGPU_REQUIRED_LIMITS,
         onStage: (stage) => {
           failedStage = stage;
@@ -160,6 +158,9 @@ export class RenderPipeline {
   public renderManual(delta = 0): void {
     this.active.renderManual(delta);
   }
+
+  public getGpuTiming() { return this.active.getGpuTiming(); }
+  public resetGpuTiming() { this.active.resetGpuTiming(); }
 
   public getLastFrameRenderStats() {
     return this.active.getLastFrameRenderStats();

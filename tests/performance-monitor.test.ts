@@ -1,9 +1,16 @@
-import { describe, expect, test } from 'bun:test';
-import { formatRendererDevice, PerformanceMonitor } from '../src/core/PerformanceMonitor';
+import { describe, expect, test, spyOn } from 'bun:test';
+import { formatNumericHudText, formatRendererDevice, PerformanceMonitor } from '../src/core/PerformanceMonitor';
 import type { PerformanceReportDetails } from '../src/core/PerformanceReport';
 
 class FakeHudElement {
   public textContent = '';
+  private markup = '';
+  public set innerHTML(value: string) {
+    this.markup = value;
+    this.textContent = value.replace(/<[^>]*>/g, '').replaceAll('&amp;', '&')
+      .replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&quot;', '"').replaceAll('&apos;', "'");
+  }
+  public get innerHTML(): string { return this.markup; }
   public title = '';
   public hidden = false;
   public readonly dataset: Record<string, string> = {};
@@ -97,6 +104,45 @@ function createMonitor(): PerformanceMonitor {
 }
 
 describe('PerformanceMonitor', () => {
+  test('emphasizes numeric HUD values and escapes renderer text', () => {
+    expect(formatNumericHudText('11,934 SIM PARTICLES (51 x 234)')).toBe('<b>11,934</b> SIM PARTICLES (<b>51</b> x <b>234</b>)');
+    expect(formatNumericHudText('27.35 MS/STEP @ 24.6 HZ')).toBe('<b>27.35</b> MS/STEP @ <b>24.6</b> HZ');
+    expect(formatNumericHudText('<GPU> & 24 THREADS')).toBe('&lt;GPU&gt; &amp; <b>24</b> THREADS');
+  });
+  test('keeps previous display through repeated resizes without reusing measurement samples', () => {
+    let now = 0;
+    const clock = spyOn(performance, 'now').mockImplementation(() => now);
+    try {
+      const { monitor, elements } = createMonitorHarness();
+      monitor.recordFrame(0);
+      monitor.recordWorkload(250, { physicsMilliseconds: 2, sceneMilliseconds: 1, renderMilliseconds: 3, physicsSteps: 1 });
+      now = 250; monitor.recordFrame(now);
+      const fps = elements.get('[data-fps]')!;
+      const caption = elements.get('[data-fps-caption]')!;
+      const panel = elements.get('[data-performance-panel]')!;
+      const graph = elements.get('[data-fps-average-line]')!;
+      const previousGraph = graph.getAttribute('d');
+      now = 1000; monitor.restartMeasurement(now, 'canvas resized');
+      expect(fps.textContent).toBe('4.00');
+      expect(caption.textContent).toBe('WARMING UP / PREVIOUS STATS');
+      expect(panel.dataset.measurementState).toBe('warming-up');
+      expect(monitor.getSnapshot().sampleCount).toBe(0);
+      expect(monitor.getWorkloadSnapshot().sampleCount).toBe(0);
+      now = 1500; monitor.recordFrame(now); monitor.restartMeasurement(now, 'canvas resized');
+      expect(fps.textContent).toBe('4.00');
+      expect(graph.getAttribute('d')).toBe(previousGraph);
+      now = 4500; monitor.recordFrame(now);
+      expect(fps.textContent).toBe('4.00');
+      now = 4510;
+      monitor.recordWorkload(now, { physicsMilliseconds: 1, sceneMilliseconds: 0, renderMilliseconds: 0, physicsSteps: 1 });
+      monitor.recordFrame(now);
+      expect(fps.textContent).toBe('100.00');
+      expect(panel.dataset.measurementState).toBe('measuring');
+      expect(caption.textContent).not.toContain('WARMING UP');
+      expect(monitor.getSnapshot().sampleCount).toBe(1);
+      expect(monitor.getWorkloadSnapshot().averagePhysicsMilliseconds).toBe(1);
+    } finally { clock.mockRestore(); }
+  });
   test('keeps the ANGLE backend and GPU model without device IDs or shader/API diagnostics', () => {
     expect(formatRendererDevice('ANGLE (NVIDIA, NVIDIA GeForce RTX 4070 Ti (0x00002782) Direct3D11 vs_5_0 ps_5_0, D3D11)'))
       .toBe('ANGLE / NVIDIA GeForce RTX 4070 Ti');
@@ -265,17 +311,39 @@ describe('PerformanceMonitor', () => {
     monitor.recordFrame(250);
     const label = elements.get('[data-sim-workers]')!;
     expect(label.hidden).toBe(false);
-    expect(label.textContent).toBe('SIM WORKERS: 10 \u00d7 27.35 MS/STEP @ 24.6 HZ');
+    expect(label.textContent).toBe('SIM WORKERS: 10 / COMPUTE\n27.35 MS/STEP @ 24.6 HZ\nDT -- MS / --% BUSY\nCAPES UNAVAILABLE\nPARTICLES UNAVAILABLE');
     details = { ...details, capeWorkers: { ...details.capeWorkers!, averageStepMilliseconds: null, capeResultHz: 0 } };
     monitor.recordFrame(500);
-    expect(label.textContent).toBe('SIM WORKERS: 10 \u00d7 -- MS/STEP @ -- HZ');
+    expect(label.textContent).toBe('SIM WORKERS: 10 / COMPUTE\n-- MS/STEP @ -- HZ\nDT -- MS / --% BUSY\nCAPES UNAVAILABLE\nPARTICLES UNAVAILABLE');
     details = { ...details, capeWorkers: { ...details.capeWorkers!, active: false, failure: 'solver failed' } };
     monitor.recordFrame(750);
     expect(label.hidden).toBe(false);
-    expect(label.textContent).toBe('SIM WORKERS: FAILED / MAIN FALLBACK');
+    expect(label.textContent).toBe('SIM WORKERS: FAILED\nMAIN FALLBACK\nDT -- MS / BUSY --%\nCAPES UNAVAILABLE\nPARTICLES UNAVAILABLE');
     details = { ...details, capeWorkers: null };
     monitor.recordFrame(1000);
     expect(label.hidden).toBe(true);
+  });
+
+  test('restarts after configuration warm-up and retains genuine steady-state stalls', () => {
+    const { monitor } = createMonitorHarness();
+    monitor.recordFrame(0); monitor.recordFrame(250);
+    expect(monitor.getSnapshot().sampleCount).toBe(1);
+    monitor.restartMeasurement(1000, 'setting change', 1000);
+    expect(monitor.getSnapshot().sampleCount).toBe(0);
+    for (const time of [1100, 1300, 1800]) {
+      monitor.recordFrame(time);
+      monitor.recordWorkload(time, { physicsMilliseconds: 100, sceneMilliseconds: 0, renderMilliseconds: 0, physicsSteps: 2 });
+    }
+    monitor.recordFrame(2000);
+    monitor.recordFrame(2010);
+    monitor.recordFrame(2310);
+    const result = monitor.getSnapshot();
+    expect(result.sampleCount).toBe(2);
+    expect(result.longestFrameTime).toBe(300);
+    expect(result.averageFrameTime).toBe(155);
+    expect(result.longFrameCount).toBe(1);
+    expect(result.warmupExcludedFrames).toBe(3);
+    expect(monitor.getWorkloadSnapshot().sampleCount).toBe(0);
   });
 
 });

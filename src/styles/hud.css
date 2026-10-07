@@ -90,9 +90,29 @@
   display: none;
 }
 
+.performance-panel [data-sim-workers] {
+  white-space: pre;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+  min-height: 7em;
+}
+
+.performance-panel [data-worker-phases] {
+  white-space: pre;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+  min-height: 7em;
+}
+
 .performance-panel__hardware {
   white-space: pre-line;
   overflow-wrap: anywhere;
+}
+
+.performance-panel.is-warming-up > strong,
+.performance-panel.is-warming-up > small,
+.performance-panel.is-warming-up > svg {
+  opacity: 0.55;
 }
 
 .performance-panel small b {

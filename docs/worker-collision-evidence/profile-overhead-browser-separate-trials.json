@@ -1,0 +1,58 @@
+{
+  "order": "ABBAABBA",
+  "trials": [
+    {
+      "enabled": false,
+      "milliseconds": 11273.200000004843
+    },
+    {
+      "enabled": true,
+      "milliseconds": 10922.500000001863
+    },
+    {
+      "enabled": true,
+      "milliseconds": 11124.499999996275
+    },
+    {
+      "enabled": false,
+      "milliseconds": 11428.700000032783
+    },
+    {
+      "enabled": false,
+      "milliseconds": 10982.999999998137
+    },
+    {
+      "enabled": true,
+      "milliseconds": 11471.400000004098
+    },
+    {
+      "enabled": true,
+      "milliseconds": 10391.200000017881
+    },
+    {
+      "enabled": false,
+      "milliseconds": 9067.300000010058
+    }
+  ],
+  "offMilliseconds": 42752.20000004582,
+  "onMilliseconds": 43909.60000002012,
+  "overheadPercent": 2.7072291015972416,
+  "underTwoPercent": false,
+  "inputUpdateMillisecondsPerWorkerStep": 0.038666666687155765,
+  "endpointBytesPerCapeStep": 360,
+  "collisionDetailPerCapeStep": {
+    "self": 0.5630999999642372,
+    "fold": 0.05656666667448977,
+    "world": 0.14586666666778425,
+    "cave": 0.643400000007823
+  },
+  "phasesPerWorkerStep": {
+    "constraints": 1.855833333277454,
+    "body": 8.590333333518355,
+    "selfFold": 3.098333333193635,
+    "worldCave": 3.946333333378037,
+    "other": 0.859499999989445
+  },
+  "samples": 600,
+  "runtime": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/149.0.0.0 Safari/537.36"
+}

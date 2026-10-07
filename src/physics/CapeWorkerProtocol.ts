@@ -1,3 +1,5 @@
+import type { WorkerStepPhases } from './WorkerStepTiming';
+import type { CapePerformanceDiagnostics } from './CapePerformanceProfiler';
 import * as THREE from 'three';
 import type { CapeAnchors } from '../player/Character';
 import type { CapePhysicsSettings } from './CapeSettings';
@@ -75,6 +77,7 @@ export interface CapeWorkerStepFrame {
 
 export interface CapeWorkerInitializeMessage {
   readonly type: 'initialize';
+  readonly profiling?: boolean;
   readonly worldColliders: readonly SerializedWorldCollider[];
 }
 
@@ -106,6 +109,7 @@ export interface CapeWorkerRemoveCapeMessage {
 
 export interface CapeWorkerStepBatchMessage {
   readonly type: 'step-batch';
+  readonly measurementEpoch?: number;
   readonly requestId: number;
   readonly frames: readonly CapeWorkerStepFrame[];
 }
@@ -115,6 +119,7 @@ export interface CapeWorkerDisposeMessage {
 }
 
 export type CapeWorkerRequest =
+  | { readonly type: 'reset-performance'; readonly epoch: number }
   | CapeWorkerInitializeMessage
   | CapeWorkerAddCapeMessage
   | CapeWorkerUpdateCapeMessage
@@ -135,6 +140,9 @@ export interface CapeWorkerResultState {
 
 export interface CapeWorkerBatchResult {
   readonly type: 'batch-result';
+  readonly stepPhases?: WorkerStepPhases;
+  readonly measurementEpoch?: number;
+  readonly profile?: CapePerformanceDiagnostics;
   /** Worker-local solve/input-update time per step across its assigned capes. */
   readonly simulationStepMilliseconds: number;
   readonly requestId: number;

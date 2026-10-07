@@ -1,3 +1,4 @@
+import { workerStepTiming } from './WorkerStepTiming';
 import * as THREE from 'three';
 import { CAPE } from '../config';
 import type { CapeAnchors } from '../player/Character';
@@ -35,13 +36,17 @@ export class CapeCpuShapeGuards {
   }
 
   public solveSelfCollision(): void {
+    const phaseStart = workerStepTiming.start();
     this.selfCollision.solve(this.positions, this.previous, this.inverseMass);
+    workerStepTiming.end(2, phaseStart, 0);
   }
 
   public solveFoldAndRows(anchors: CapeAnchors, capeWidth: number): void {
+    const phaseStart = workerStepTiming.start();
     this.foldGuard.solve(this.positions, this.previous, this.inverseMass);
     this.solveRowSpanGuard(anchors, capeWidth);
     this.solveRowCurlGuard(anchors, capeWidth);
+    workerStepTiming.end(2, phaseStart, 1);
   }
 
   public solveIdleDrapeRecovery(strength: number): void {

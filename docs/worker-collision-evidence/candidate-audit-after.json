@@ -1,0 +1,66 @@
+{
+  "stage": "after",
+  "scene": {
+    "seed": "authored CaveWorld seeds",
+    "bots": 50,
+    "delta": 0.03333333333333333,
+    "warmupSteps": 90,
+    "measuredSteps": 60,
+    "worldColliders": 2062,
+    "inventory": {
+      "formation": 1835,
+      "rock": 78,
+      "torch": 77,
+      "mineral": 72
+    },
+    "bodyCapsules": 15
+  },
+  "worldAnchorPrefilter": {
+    "testedPerCapeStep": 381.44733333333335,
+    "acceptedPerCapeStep": 64.44866666666667
+  },
+  "selfHashChainVisitsPerParticleStep": 99.06259544159545,
+  "phases": {
+    "body": {
+      "testsPerParticleStep": 443.3937478632479,
+      "positiveRangeTestsPerParticleStep": 2.712045584045584,
+      "worstParticleTestsPerStep": 1482,
+      "auditedMillisecondsPerCapeStep": 9.444337666666321
+    },
+    "self": {
+      "testsPerParticleStep": 8.08428205128205,
+      "positiveRangeTestsPerParticleStep": 0.854960113960114,
+      "worstParticleTestsPerStep": 150,
+      "auditedMillisecondsPerCapeStep": 0.6381605000004201
+    },
+    "fold": {
+      "testsPerParticleStep": 18.88888888888889,
+      "positiveRangeTestsPerParticleStep": 0.06285470085470085,
+      "worstParticleTestsPerStep": 20,
+      "auditedMillisecondsPerCapeStep": 0.1221571000003217
+    },
+    "world": {
+      "testsPerParticleStep": 91.10975641025641,
+      "positiveRangeTestsPerParticleStep": 0.06536039886039886,
+      "worstParticleTestsPerStep": 2737,
+      "auditedMillisecondsPerCapeStep": 1.8657421666669738
+    },
+    "cave": {
+      "testsPerParticleStep": 45.5977094017094,
+      "positiveRangeTestsPerParticleStep": 0.1674928774928775,
+      "worstParticleTestsPerStep": 140,
+      "auditedMillisecondsPerCapeStep": 1.0671472999996938
+    }
+  },
+  "coarseTimingWithoutCounters": {
+    "runtime": "Bun 1.3.11",
+    "inputUpdateMillisecondsPerCapeStep": 0.01418016666660939,
+    "millisecondsPerCapeStep": {
+      "body": 2.2033158666667005,
+      "self": 0.6417114333337328,
+      "fold": 0.07000416666581198,
+      "world": 0.9797735333326515,
+      "cave": 0.9829287666670473
+    }
+  }
+}

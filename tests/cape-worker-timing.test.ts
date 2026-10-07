@@ -1,11 +1,14 @@
 import { expect, test } from 'bun:test';
 import * as THREE from 'three';
 import { PHYSICS_STEP } from '../src/config';
+import { workerStepTiming } from '../src/physics/WorkerStepTiming';
 import { CapeSimulation } from '../src/physics/CapeSimulation';
 import { serializeCapeAnchors, type CapeWorkerRequest, type CapeWorkerResponse } from '../src/physics/CapeWorkerProtocol';
 import type { CapeAnchors } from '../src/player/Character';
 
 test('worker snapshots describe the actual Verlet anchor frames, including skipped poses and reset', async () => {
+  const originalWorkerMode = workerStepTiming.isWorker;
+  const originalProfiling = workerStepTiming.enabled;
   const originalSelf = Object.getOwnPropertyDescriptor(globalThis, 'self');
   const responses: CapeWorkerResponse[] = [];
   const scope = {
@@ -55,7 +58,11 @@ test('worker snapshots describe the actual Verlet anchor frames, including skipp
     expect(result.states[0]!.revision).toBe(1);
     expect(result.states[0]!.previousAnchors).toEqual(serializeCapeAnchors(anchors));
   } finally {
-    if (scope.onmessage) send({ type: 'dispose' });
+    try { if (scope.onmessage) send({ type: 'dispose' }); } finally {
+      workerStepTiming.isWorker = originalWorkerMode;
+      workerStepTiming.enabled = originalProfiling;
+      workerStepTiming.beginBatch();
+    }
     if (originalSelf) Object.defineProperty(globalThis, 'self', originalSelf);
     else Reflect.deleteProperty(globalThis, 'self');
     cape.dispose();

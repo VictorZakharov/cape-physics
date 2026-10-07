@@ -1,3 +1,4 @@
+import { GpuTimingWindow } from './GpuTiming';
 import * as THREE from 'three/webgpu';
 import {
   float,
@@ -26,6 +27,7 @@ interface BackendShape {
   readonly isWebGPUBackend?: boolean;
   readonly isWebGLBackend?: boolean;
   readonly trackTimestamp?: boolean;
+  readonly timestampQueryPool?: Record<string, { frames: number[] }>;
   readonly device?: {
     readonly adapterInfo?: AdapterInfoShape;
     readonly lost?: Promise<DeviceLostInfoShape>;
@@ -77,6 +79,11 @@ export class WebGpuRenderPipeline {
     depthBuffer: false,
     stencilBuffer: false,
   });
+  private readonly gpuTiming = new GpuTimingWindow('timestamp-query (render + compute passes)');
+  private readonly renderTiming = new GpuTimingWindow('render');
+  private readonly computeTiming = new GpuTimingWindow('compute');
+  private lastTimedFrame = -1;
+  private timingPending = false;
   private resolutionScale = 1;
   private sizing: RenderSizing | null = null;
   private targetResizeCount = 0;
@@ -88,7 +95,7 @@ export class WebGpuRenderPipeline {
     scene: THREE.Scene,
     camera: THREE.Camera,
     private readonly preference: RendererPreference,
-    trackTimestamps = false,
+    trackTimestamps = true,
     private readonly ownedDevice?: GPUDevice,
   ) {
     this.renderer = new THREE.WebGPURenderer({
@@ -169,6 +176,17 @@ export class WebGpuRenderPipeline {
     this.activateMode(selectCharacterRenderMode(this.opacityNode.value));
     this.renderPipeline.render();
     this.lastFrameRenderStats = captureFrameRenderStats(this.renderer.info.render);
+    if (!this.timingPending && (this.renderer.backend as BackendShape).trackTimestamp) {
+      this.timingPending = true;
+      const epoch = this.gpuTiming.epoch;
+      void this.resolveGpuFrameTimeForLocalProfile().then(sample => {
+        if (sample) {
+          this.gpuTiming.record(sample.totalMilliseconds, epoch);
+          this.renderTiming.record(sample.renderMilliseconds, epoch);
+          this.computeTiming.record(sample.computeMilliseconds, epoch);
+        }
+      }).catch(() => undefined).finally(() => { this.timingPending = false; });
+    }
   }
 
   /** Advances TSL FRAME nodes when rendering outside requestAnimationFrame. */
@@ -177,6 +195,14 @@ export class WebGpuRenderPipeline {
     nodeFrame.update();
     this.render(delta);
   }
+
+  public getGpuTiming() {
+    const sample = { ...this.gpuTiming.getSnapshot(),
+      renderMilliseconds: this.renderTiming.getSnapshot().averageMilliseconds,
+      computeMilliseconds: this.computeTiming.getSnapshot().averageMilliseconds };
+    return (this.renderer.backend as BackendShape).trackTimestamp ? sample : { ...sample, source: 'unavailable' };
+  }
+  public resetGpuTiming() { this.gpuTiming.reset(); this.renderTiming.reset(); this.computeTiming.reset(); }
 
   public getLastFrameRenderStats(): FrameRenderStats {
     return this.lastFrameRenderStats;
@@ -349,7 +375,11 @@ export class WebGpuRenderPipeline {
     if (renderMilliseconds === null && computeMilliseconds === null) return null;
 
     const measuredRenderMilliseconds = renderMilliseconds ?? 0;
-    const measuredComputeMilliseconds = computeMilliseconds ?? 0;
+    const renderFrame = backend.timestampQueryPool?.render?.frames.at(-1);
+    const computeFrame = backend.timestampQueryPool?.compute?.frames.at(-1);
+    if (renderFrame === undefined || renderFrame <= this.lastTimedFrame) return null;
+    this.lastTimedFrame = renderFrame;
+    const measuredComputeMilliseconds = renderFrame === computeFrame ? computeMilliseconds ?? 0 : 0;
     return {
       renderMilliseconds: measuredRenderMilliseconds,
       computeMilliseconds: measuredComputeMilliseconds,
