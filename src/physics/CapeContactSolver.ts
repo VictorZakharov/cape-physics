@@ -1,3 +1,4 @@
+import { VertexBodyCandidates, bodyVertexDebug } from './VertexBodyCandidates';
 import { staticWorldCandidates } from './StaticWorldColliderIndex';
 import { workerStepTiming } from './WorkerStepTiming';
 import { prepareBodyColliders, type PreparedBodyCollider } from './CapeBodyColliderPreparation';
@@ -94,6 +95,7 @@ export class CapeContactSolver {
   private readonly activeWorldColliders: WorldCollider[] = [];
   private readonly activeWorldSpheres: WorldSphereCollider[] = [];
   private readonly activeRocks: WorldRockCollider[] = [];
+  private readonly bodyCandidates: VertexBodyCandidates;
   private readonly preparedBodyColliders: PreparedBodyCollider[] = [];
   private readonly delta = new THREE.Vector3();
   private readonly sweep = new THREE.Vector3();
@@ -129,6 +131,7 @@ export class CapeContactSolver {
     private readonly previous: readonly THREE.Vector3[],
     inverseMass: Float32Array,
   ) {
+    this.bodyCandidates = new VertexBodyCandidates(inverseMass.length);
     this.rockCorrectionUsed = new Float32Array(inverseMass.length);
     this.bodyCorrectionUsed = new Float32Array(inverseMass.length);
     this.rockSweepResolved = new Uint8Array(inverseMass.length);
@@ -184,6 +187,7 @@ export class CapeContactSolver {
     this.bodySideOrigin.copy(anchorCenter);
     this.bodyCorrectionUsed.fill(0);
     this.bodyFaceCollision.beginStep();
+    this.bodyCandidates.beginStep();
     this.rockCorrectionUsed.fill(0);
     this.rockSweepResolved.fill(0);
     this.faceCollision.beginStep();
@@ -206,7 +210,22 @@ export class CapeContactSolver {
       const position = this.positions[index];
       const previous = this.previous[index];
       if (!position || !previous) continue;
-      for (const collider of this.preparedBodyColliders) {
+      let mask = bodyVertexDebug.enabled ? this.bodyCandidates.mask(index, position, this.preparedBodyColliders) : 0xffffffff;
+      const listed = bodyVertexDebug.enabled && this.preparedBodyColliders.length <= 32;
+      for (let candidate = 0; candidate < this.preparedBodyColliders.length; candidate++) {
+        if (listed && !bodyVertexDebug.assertions) {
+          const remaining = (mask & (0xffffffff << candidate)) >>> 0;
+          if (!remaining) break;
+          candidate = 31 - Math.clz32(remaining & -remaining);
+        }
+        const collider = this.preparedBodyColliders[candidate]!;
+        if (listed && !(mask & (1 << candidate))) {
+          if (bodyVertexDebug.assertions) {
+            bodyVertexDebug.skippedAssertions++;
+            if (this.getCapsulePenetration(position, collider, back, previous, index % CAPE.columns / (CAPE.columns - 1) - 0.5) > 0) throw Error('Skipped correcting vertex/body pair');
+          }
+          continue;
+        }
         const topologySide = index % CAPE.columns / (CAPE.columns - 1) - 0.5;
         if (workerStepTiming.sampling) workerStepTiming.bodyTests.vertexTests++;
         const penetration = this.getCapsulePenetration(
@@ -222,6 +241,8 @@ export class CapeContactSolver {
         previous.addScaledVector(this.contactNormal, penetration);
         this.removeInwardMotion(position, previous, this.contactNormal);
         this.bodyCorrectionUsed[index] = (this.bodyCorrectionUsed[index] ?? 0) + penetration;
+        // Earlier contacts can exhaust skin inside this same collider sweep.
+        if (bodyVertexDebug.enabled) mask = this.bodyCandidates.mask(index, position, this.preparedBodyColliders);
       }
     }
     this.bodySolvePass += 1;

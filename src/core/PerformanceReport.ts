@@ -1,3 +1,4 @@
+import { MAIN_THREAD_PHASES, type MainThreadPhaseSnapshot } from './MainThreadPhaseTelemetry';
 import { WORKER_PHASES } from '../physics/WorkerStepTiming';
 import type { GpuTimingSnapshot } from './GpuTiming';
 import type { WebGlCapeWorkerDiagnostics } from '../physics/WebGlCapeWorkerPool';
@@ -12,6 +13,8 @@ import type { RendererPreference } from './RendererPreference';
 import type { RendererStartupDiagnostics } from './RendererStartupRecovery';
 
 export interface PerformanceReportDetails {
+  readonly mainThreadProfilingEnabled?: boolean;
+  readonly mainThreadPhases?: MainThreadPhaseSnapshot | null;
   readonly gpu?: GpuTimingSnapshot;
   readonly gpuSimulation?: { stepHz: number | null; capeStepsPerSecond: number | null; simulatedStepMilliseconds: number | null };
   readonly rendererStartup?: RendererStartupDiagnostics;
@@ -141,7 +144,7 @@ export function formatPerformanceReport(input: PerformanceReportInput): string {
             item.timing.stepPhases ? `Worker ${item.worker} phases (ms/step, ${item.timing.stepPhases.sampleCount} measured worker steps): ${WORKER_PHASES.map(phase => `${phase} ${metric(item.timing.stepPhases!.phases[phase])} ms (${metric(item.timing.stepPhases!.phases[phase] / Math.max(1e-9, item.timing.stepPhases!.computeMilliseconds) * 100, 1)}%)`).join(' | ')}`
               : `Worker ${item.worker} phases: ${capeWorkers.profilingEnabled === false ? 'disabled for overhead comparison' : 'insufficient samples (minimum 8/worker; 30 pooled)'}`,
           ]),
-          `Worker body candidates: ${formatBodyCandidates(capeWorkers.stepPhases)} | counts sampled every fourth batch; vertex/capsule calls plus 3 incident particles per triangle/sample call, including existing narrowphase bounds checks; corrections mean an applied projection; denominator includes every delivered cape step, including sleeping capes`,
+          `Worker body candidates: ${formatBodyCandidates(capeWorkers.stepPhases)} | counts sampled every fourth batch; vertex/capsule calls plus 3 incident particles per triangle/sample call, including existing narrowphase bounds checks; vertex candidate-list build checks excluded from counts but included in execution time; corrections mean an applied projection; denominator includes every delivered cape step, including sleeping capes`,
           `Worker phase mean: ${formatWorkerPhaseSplit(capeWorkers.stepPhases)} | phase shares sampled every fourth worker batch, apportioned to all-step compute; includes reconciliation collision calls; other includes input updates, prefilter/preparation and sleeping step updates`,
           ...(capeWorkers.capeResultHz !== undefined ? [`Cape worker delivery: ${metric(capeWorkers.capeResultHz)} results/s/cape | ${metric(capeWorkers.averageBatchMilliseconds ?? 0)} ms average batch latency`] : []),
         ] : []),
@@ -170,6 +173,7 @@ export function formatPerformanceReport(input: PerformanceReportInput): string {
     `Quality: ${quality.label} | ${metric(quality.scale, 3)} resolution scale | ${quality.reason ?? 'reason unavailable'} | ${quality.targetResizes} render-target resizes`,
     `Main thread: ${metric(workload.averageMainThreadMilliseconds)} ms average | p95 ${metric(workload.p95MainThreadMilliseconds)} ms | physics ${metric(workload.averagePhysicsMilliseconds)} ms | scene ${metric(workload.averageSceneMilliseconds)} ms | render submission ${metric(workload.averageRenderMilliseconds)} ms | ${metric(workload.averagePhysicsSteps)} physics steps/callback average, ${workload.maximumPhysicsSteps} maximum`,
     ...capeSolverLines,
+    formatMainThreadPhases(input.mainThreadPhases, input.mainThreadProfilingEnabled),
     `Cloth workload: ${(CAPE.columns * CAPE.rows * scene.simulatedCapes).toLocaleString('en-US')} sim particles (${scene.simulatedCapes} \u00d7 ${CAPE.columns * CAPE.rows}) | ${(CAPE_DISTANCE_CONSTRAINTS.length * scene.simulatedCapes).toLocaleString('en-US')} distance constraints \u00d7 ${CAPE.solverIterations} iterations | main-thread simulation phase ${metric(workload.averagePhysicsMilliseconds)} ms average / ${metric(workload.p95PhysicsMilliseconds)} ms p95 (excludes asynchronous worker and GPU execution)`,
     `Collider inventory per cape: ${scene.worldColliders} static world proxies (${Object.entries(scene.worldColliderKinds ?? {}).map(([kind, count]) => `${kind} ${count}`).join(', ') || 'types unavailable'}) | ${scene.bodyColliders ?? 'unavailable'} animated body capsules | cave floor/ceiling/sides sampled analytically, not included in proxy count`,
     `Constraints by type: ${Object.entries(CAPE_CONSTRAINT_COUNTS).map(([kind, count]) => `${kind} ${count * scene.simulatedCapes} (${count}/cape)`).join(' | ')} | excludes collision and shape guards`,
@@ -210,4 +214,12 @@ export function formatBodyCandidates(split: WebGlCapeWorkerDiagnostics['stepPhas
   const counts = split?.bodyTests;
   if (!counts || counts.particles <= 0) return 'insufficient samples';
   return `${metric((counts.vertexTests + 3 * counts.triangleTests) / counts.particles)} tests/particle/step | vertex ${metric(counts.vertexTests / counts.particles)} (${metric(counts.vertexCorrections / Math.max(1, counts.vertexTests) * 100, 3)}% correcting) | triangle incidence ${metric(3 * counts.triangleTests / counts.particles)} (${metric(counts.triangleCorrections / Math.max(1, counts.triangleTests) * 100, 3)}% correcting triangle/sample tests)`;
+}
+
+export function formatMainThreadPhases(snapshot: MainThreadPhaseSnapshot | null | undefined, enabled = true): string {
+  if (!enabled) return 'Main-thread simulation breakdown: profiling disabled';
+  if (!snapshot) return 'Main-thread simulation breakdown: insufficient samples (minimum 30; every fourth callback after warm-up)';
+  const phases = MAIN_THREAD_PHASES.map(phase => `${phase} ${metric(snapshot.phases[phase])} ms`).join(' | ');
+  const sum = MAIN_THREAD_PHASES.reduce((total, phase) => total + snapshot.phases[phase], 0);
+  return `Main-thread simulation breakdown: ${snapshot.sampleCount} sampled callbacks | ${phases} | sum ${metric(sum)} ms / sampled simulation phase ${metric(snapshot.averageMilliseconds)} ms; raw sampled averages per callback, not rescaled to all-frame mean. player: CPU cape only; controllers: player/bot movement and landing handling; workerInputs: bot input preparation/submission, flush and CPU bot fallback; workerResults: state reconciliation, arrival processing and completed-cape normals; presentation: player geometry and bot mesh updates; other: population, clock and remaining scheduling; excludes scene update, render submission and asynchronous worker/GPU execution`;
 }

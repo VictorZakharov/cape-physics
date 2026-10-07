@@ -1,0 +1,27 @@
+{
+  "warmup": 90,
+  "callbacks": 600,
+  "physicsStepsPerCallback": 2,
+  "controllers": 51,
+  "cpuCapes": 1,
+  "packedBotInputs": 50,
+  "withoutObserverMilliseconds": 9.78316666668281,
+  "withObserverMilliseconds": 9.789333333329608,
+  "overheadMilliseconds": 0.0061666666467985465,
+  "overheadPercent": 0.06303344159308555,
+  "phases": {
+    "sampleCount": 150,
+    "averageMilliseconds": 9.655333333313465,
+    "phases": {
+      "player": 6.177999999895692,
+      "controllers": 1.9533333333581686,
+      "workerInputs": 1.5100000000496705,
+      "workerResults": 0,
+      "presentation": 0,
+      "other": 0.014000000009934108
+    }
+  },
+  "bitIdentical": true,
+  "method": "ABBA paired Chromium CPU fixture, identical paths, two 120Hz steps per callback, player solving plus 51 controllers and 50 input packs; observer samples every fourth callback, snapshots every 15 callbacks; no async worker results or rendering",
+  "runtime": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/149.0.0.0 Safari/537.36"
+}

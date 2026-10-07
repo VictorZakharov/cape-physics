@@ -60,6 +60,7 @@ try {
   if (!await evaluate(connection.command, 'window.__CAPE_DEMO__?.ready === true')) throw Error(await evaluate(connection.command, `document.querySelector('[data-loading-error-detail]')?.textContent ?? 'Scene startup failed'`));
   await evaluate(connection.command, `(async()=>{
     const demo=window.__CAPE_INTERNAL__;
+    if (demo.mainThreadPhases) demo.mainThreadPhases.enabled = ${process.env.CAPE_PROFILE_MAIN_PHASES !== '0'};
     await window.__CAPE_DEMO__.setBotCount(50);
     window.__CAPE_DEMO__.setMovement(0, 1);
     demo.clock.reset(performance.now());

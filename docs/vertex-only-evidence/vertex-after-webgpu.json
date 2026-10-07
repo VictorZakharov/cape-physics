@@ -1,0 +1,158 @@
+{
+  "gpu": {
+    "source": "timestamp-query (render + compute passes)",
+    "sampleCount": 806,
+    "averageMilliseconds": 3.0240584813895772,
+    "renderMilliseconds": 0.4165086650124068,
+    "computeMilliseconds": 2.6075498163771713
+  },
+  "gpuSimulation": {
+    "stepHz": 95.356854690819,
+    "capeStepsPerSecond": 4863.199589231769,
+    "simulatedStepMilliseconds": 10.476356860004906
+  },
+  "rendererStartup": {
+    "current": null,
+    "failures": [],
+    "automaticReloads": 0,
+    "recoveryPending": false
+  },
+  "renderer": {
+    "backend": "WebGPU",
+    "vendor": "nvidia",
+    "device": "lovelace",
+    "preference": "webgpu",
+    "actual": "webgpu",
+    "fallback": false,
+    "drawCalls": 80,
+    "triangles": 187051,
+    "programs": 681
+  },
+  "canvas": {
+    "drawingBufferWidth": 1582,
+    "drawingBufferHeight": 748,
+    "cssWidth": 1582,
+    "cssHeight": 748
+  },
+  "quality": {
+    "label": "ADAPTIVE ULTRA",
+    "scale": 1,
+    "targetResizes": 2,
+    "reason": "CPU-bound: held"
+  },
+  "workload": {
+    "averageMainThreadMilliseconds": 8.582113821178284,
+    "p95MainThreadMilliseconds": 13.600000001490116,
+    "averagePhysicsMilliseconds": 2.66829268293941,
+    "p95PhysicsMilliseconds": 4.5,
+    "averageSceneMilliseconds": 0.7819262038289644,
+    "averageRenderMilliseconds": 5.131894934409909,
+    "averagePhysicsSteps": 1.125703564727955,
+    "maximumPhysicsSteps": 5,
+    "sampleCount": 1599
+  },
+  "mainThreadPhases": {
+    "sampleCount": 400,
+    "averageMilliseconds": 2.782750000022352,
+    "phases": {
+      "player": 0,
+      "controllers": 1.3937499999720604,
+      "workerInputs": 0.0005000000074505806,
+      "workerResults": 0,
+      "presentation": 0.0014999999944120645,
+      "other": 1.3870000000484288
+    }
+  },
+  "mainThreadProfilingEnabled": true,
+  "capeSolver": {
+    "implementation": "webgpu-compute",
+    "sampleIntervalSteps": 16,
+    "totalSteps": 1679,
+    "activeSteps": 1679,
+    "sampledActiveSteps": 0,
+    "sufficientSamples": false,
+    "windowTotalSteps": 0,
+    "windowActiveSteps": 0,
+    "windowElapsedMilliseconds": 0,
+    "averageStepMilliseconds": 0,
+    "phases": {
+      "prediction": 0,
+      "constraints": 0,
+      "selfCollision": 0,
+      "foldGuard": 0,
+      "bodyCollision": 0,
+      "worldCollision": 0,
+      "caveCollision": 0,
+      "reconciliation": 0,
+      "anchors": 0,
+      "finalization": 0
+    },
+    "dispatchesPerStep": 46,
+    "constraintColorBatches": 17
+  },
+  "capeWorkers": null,
+  "scene": {
+    "simulationSeconds": 19.01666666666623,
+    "capeSleeping": false,
+    "worldColliders": 2062,
+    "bodyColliders": 15,
+    "worldColliderKinds": {
+      "formation": 1835,
+      "rock": 78,
+      "torch": 77,
+      "mineral": 72
+    },
+    "activeRipples": 16,
+    "botCount": 50,
+    "simulatedCapes": 51
+  },
+  "page": {
+    "visibility": "visible",
+    "focused": true,
+    "devicePixelRatio": 1,
+    "multipleScreens": false,
+    "url": "http://127.0.0.1:61548/?harness=1"
+  },
+  "runtime": {
+    "hardwareThreads": 24,
+    "deviceMemory": 32,
+    "platform": "Win32",
+    "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/149.0.0.0 Safari/537.36"
+  },
+  "measurementChecks": {
+    "warmupReset": {
+      "averageFps": 0,
+      "onePercentLow": 0,
+      "averageFrameTime": 0,
+      "medianFrameTime": 0,
+      "p95FrameTime": 0,
+      "p99FrameTime": 0,
+      "refreshEstimate": 60,
+      "longFrameCount": 0,
+      "longestFrameTime": 0,
+      "sampleCount": 0,
+      "windowElapsedMilliseconds": 0,
+      "warmupExcludedMilliseconds": 7.199999999254942,
+      "warmupExcludedFrames": 0,
+      "warmupReason": "bot population change",
+      "warmingUp": true
+    },
+    "workerRowHeights": [
+      0,
+      0
+    ],
+    "panelBounds": {
+      "width": 240,
+      "height": 286.4375,
+      "viewportHeight": 748,
+      "phaseScrollWidth": 0,
+      "phaseClientWidth": 0
+    },
+    "workerWidth": {
+      "scroll": 0,
+      "client": 0
+    },
+    "numericColors": [],
+    "bodyWidths": []
+  }
+}

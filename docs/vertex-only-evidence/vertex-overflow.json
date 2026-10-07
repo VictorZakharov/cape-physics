@@ -1,0 +1,18 @@
+{
+  "capes": 1,
+  "steps": 5,
+  "colliders": 45,
+  "samples": 150,
+  "coordinatesCompared": 3510,
+  "bitIdentical": true,
+  "maximumDeviation": 0,
+  "candidates": {
+    "builds": 0,
+    "rebuilds": 0,
+    "candidates": 0,
+    "worstCandidates": 0,
+    "worstBuilds": 0,
+    "overflows": 1105
+  },
+  "skippedPairAssertions": 0
+}

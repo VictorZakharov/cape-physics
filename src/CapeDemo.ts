@@ -1,3 +1,4 @@
+import { MainThreadPhaseTelemetry } from './core/MainThreadPhaseTelemetry';
 import { SimulationTelemetry } from './core/SimulationTelemetry';
 import { buildPerformanceReportDetails } from './core/DemoPerformanceReport';
 import * as THREE from 'three';
@@ -541,17 +542,26 @@ export class CapeDemo {
   }
 
   private readonly simulationTelemetry = new SimulationTelemetry();
+  private readonly mainThreadPhases = new MainThreadPhaseTelemetry();
   private readonly gpuCapeFrame = new GpuCapeFrameBatch();
   private readonly frame = (timestamp: number): void => {
     this.performance.recordFrame(timestamp);
     const physicsStart = performance.now();
+    this.mainThreadPhases.beginFrame(timestamp);
     this.botPopulation.tick();
     const timing = this.gpuCapeFrame.run(() => this.clock.advance(timestamp, this.simulateStep,
       this.cape instanceof CapeSimulation && this.performanceBots.length > 0 ? 2 : undefined), this.simulateGpuCape);
+    let phaseStart = this.mainThreadPhases.begin();
     this.webGlCapeWorkers?.flush();
+    this.mainThreadPhases.end(2, phaseStart);
+    phaseStart = this.mainThreadPhases.begin();
     this.applyWorkerCapeResults();
+    this.mainThreadPhases.end(3, phaseStart);
+    phaseStart = this.mainThreadPhases.begin();
     this.syncCapeGeometries(timing.physicsSteps > 0, this.fixedTime + timing.interpolation * PHYSICS_STEP);
+    this.mainThreadPhases.end(4, phaseStart);
     const sceneStart = performance.now();
+    this.mainThreadPhases.finishFrame(timestamp, sceneStart - physicsStart);
     this.updateScene(timing.delta);
     this.quality.observe(this.fixedTime, this.performance.getSnapshot(), this.performance.getWorkloadSnapshot(), this.pipeline.getGpuTiming());
     const renderStart = performance.now();
@@ -567,6 +577,7 @@ export class CapeDemo {
 
   private readonly simulateStep = (step: number): void => {
     this.fixedTime += step;
+    let phaseStart = this.mainThreadPhases.begin();
     this.characterController.update(step, this.thirdPersonCamera.yaw);
     const landingImpact = this.characterController.consumeLandingImpact();
     if (landingImpact > 0) {
@@ -577,7 +588,9 @@ export class CapeDemo {
       bot.controller.update(step, 0);
     }
 
+    this.mainThreadPhases.end(1, phaseStart);
     if (this.cape instanceof CapeSimulation) {
+      phaseStart = this.mainThreadPhases.begin();
       this.cape.step(
         step,
         this.character.getCapeAnchors(),
@@ -586,6 +599,8 @@ export class CapeDemo {
         this.character.velocity,
         this.fixedTime,
       );
+      this.mainThreadPhases.end(0, phaseStart);
+      phaseStart = this.mainThreadPhases.begin();
       const workerInputs: WebGlCapeStepInput[] = [];
       for (const bot of this.performanceBots) {
         if (!bot.cape || !(bot.cape instanceof CapeSimulation)) {
@@ -617,6 +632,7 @@ export class CapeDemo {
         bot.geometryDirty = true;
       }
       this.webGlCapeWorkers?.enqueueStep(step, this.fixedTime, workerInputs);
+      this.mainThreadPhases.end(2, phaseStart);
       return;
     }
 
@@ -718,7 +734,9 @@ export class CapeDemo {
   };
 
   private restartPerformance(reason: string): void {
-    this.performance.restartMeasurement(performance.now(), reason);
+    const timestamp = performance.now();
+    this.performance.restartMeasurement(timestamp, reason);
+    this.mainThreadPhases.reset(timestamp);
     this.pipeline.resetGpuTiming(); this.cape.resetPerformanceDiagnostics(); this.simulationTelemetry.reset();
     for (const bot of this.performanceBots) bot.cape?.resetPerformanceDiagnostics();
     this.webGlCapeWorkers?.resetPerformance();
@@ -1666,7 +1684,7 @@ export class CapeDemo {
     pipeline: this.pipeline, startupRecovery: this.startupRecovery, quality: this.quality,
     performance: this.performance, ready: this.ready, cape: this.cape,
     webGlCapeWorkers: this.webGlCapeWorkers, worldColliders: this.worldColliders, performanceBots: this.performanceBots,
-    fixedTime: this.fixedTime, water: this.water, character: this.character, simulationTelemetry: this.simulationTelemetry,
+    fixedTime: this.fixedTime, water: this.water, character: this.character, simulationTelemetry: this.simulationTelemetry, mainThreadPhases: this.mainThreadPhases,
   });
 
   private enableCharacterLighting(): void {
