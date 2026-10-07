@@ -23,7 +23,7 @@
 .performance-panel {
   top: clamp(14px, 2vw, 24px);
   left: clamp(14px, 2vw, 24px);
-  width: min(320px, calc(100vw - 28px));
+  width: min(240px, calc(100vw - 28px));
   padding: 11px 13px 10px;
   color: #8ee6d0;
   text-align: left;
