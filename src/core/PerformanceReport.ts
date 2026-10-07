@@ -4,6 +4,7 @@ import type {
 } from './PerformanceMonitor';
 import type { CapePerformanceDiagnostics } from '../physics/CapePerformanceProfiler';
 import { CAPE, PHYSICS_STEP } from '../config';
+import { CAPE_DISTANCE_CONSTRAINTS } from '../physics/CapeConstraintTopology';
 import type { RendererPreference } from './RendererPreference';
 import type { RendererStartupDiagnostics } from './RendererStartupRecovery';
 
@@ -58,6 +59,7 @@ export interface PerformanceReportDetails {
     readonly url: string;
   };
   readonly runtime: {
+    readonly hardwareThreads?: number;
     readonly platform: string;
     readonly userAgent: string;
   };
@@ -129,6 +131,7 @@ export function formatPerformanceReport(input: PerformanceReportInput): string {
     `Quality: ${quality.label} | ${metric(quality.scale, 3)} resolution scale | ${quality.targetResizes} render-target resizes`,
     `Main thread: ${metric(workload.averageMainThreadMilliseconds)} ms average | p95 ${metric(workload.p95MainThreadMilliseconds)} ms | physics ${metric(workload.averagePhysicsMilliseconds)} ms | scene ${metric(workload.averageSceneMilliseconds)} ms | render submission ${metric(workload.averageRenderMilliseconds)} ms | ${metric(workload.averagePhysicsSteps)} physics steps/callback average, ${workload.maximumPhysicsSteps} maximum`,
     ...capeSolverLines,
+    `Cloth workload: ${(CAPE.columns * CAPE.rows * scene.simulatedCapes).toLocaleString('en-US')} sim particles (${scene.simulatedCapes} \u00d7 ${CAPE.columns * CAPE.rows}) | ${(CAPE_DISTANCE_CONSTRAINTS.length * scene.simulatedCapes).toLocaleString('en-US')} distance constraints \u00d7 ${CAPE.solverIterations} iterations | main-thread simulation phase ${metric(workload.averagePhysicsMilliseconds)} ms average / ${metric(workload.p95PhysicsMilliseconds)} ms p95 (excludes asynchronous worker and GPU execution)`,
     `Scene: ${metric(scene.simulationSeconds, 2)} s simulated | ${scene.botCount} performance bots | ${scene.simulatedCapes} simulated capes | ${renderer.drawCalls} draw calls | ${renderer.triangles} triangles | ${renderer.programs} programs | ${scene.worldColliders} cape colliders/cape | ${scene.activeRipples} active ripples | player cape ${scene.capeSleeping ? 'sleeping' : 'active'}`,
     `Page state: ${page.visibility} | ${page.focused ? 'focused' : 'not focused'} | DPR ${metric(page.devicePixelRatio)} | ${displayTopology}`,
     'Timing caveat: display FPS is refresh/vsync capped and therefore cannot compare backend headroom; main-thread render submission is not GPU completion',

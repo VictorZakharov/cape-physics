@@ -23,7 +23,7 @@
 .performance-panel {
   top: clamp(14px, 2vw, 24px);
   left: clamp(14px, 2vw, 24px);
-  width: 218px;
+  width: min(320px, calc(100vw - 28px));
   padding: 11px 13px 10px;
   color: #8ee6d0;
   text-align: left;
@@ -84,6 +84,10 @@
   font-size: 0.5rem;
   font-weight: 700;
   letter-spacing: 0.14em;
+}
+
+.performance-panel__hardware {
+  overflow-wrap: anywhere;
 }
 
 .performance-panel small b {
@@ -175,7 +179,7 @@
 .customization {
   top: 126px;
   right: clamp(16px, 2.6vw, 32px);
-  width: min(272px, calc(100vw - 32px));
+  width: min(320px, calc(100vw - 32px));
   color: rgb(224 235 231 / 76%);
   background: linear-gradient(145deg, rgb(3 13 15 / 88%), rgb(4 9 12 / 76%));
   border: 1px solid rgb(139 231 209 / 17%);
@@ -200,7 +204,7 @@
 .customization__toggle span,
 .customization legend {
   color: #8bd9c8;
-  font-size: 0.46rem;
+  font-size: 0.75rem;
   font-weight: 700;
   letter-spacing: 0.2em;
 }
@@ -208,7 +212,7 @@
 .customization__toggle strong {
   margin-top: 3px;
   color: rgb(235 241 238 / 86%);
-  font-size: 0.62rem;
+  font-size: 0.95rem;
   letter-spacing: 0.13em;
 }
 
@@ -231,7 +235,7 @@
 }
 
 .customization.is-collapsed {
-  width: 148px;
+  width: 210px;
 }
 
 .customization.is-collapsed .customization__toggle i::after {
@@ -282,13 +286,13 @@
   align-items: baseline;
   justify-content: space-between;
   gap: 10px;
-  font-size: 0.58rem;
+  font-size: 0.875rem;
   letter-spacing: 0.035em;
 }
 
 .customization output {
   color: rgb(142 230 208 / 76%);
-  font-size: 0.51rem;
+  font-size: 0.8125rem;
   font-variant-numeric: tabular-nums;
 }
 
@@ -358,7 +362,7 @@
   justify-items: center;
   gap: 5px;
   padding: 4px 0;
-  font-size: 0.5rem;
+  font-size: 0.8125rem;
   cursor: pointer;
 }
 
@@ -418,7 +422,7 @@
   min-height: 32px;
   padding: 6px 8px;
   color: rgb(142 230 208 / 78%);
-  font-size: 0.44rem;
+  font-size: 0.6875rem;
   font-weight: 700;
   letter-spacing: 0.1em;
   background: rgb(111 215 192 / 8%);
@@ -436,7 +440,7 @@
 
 .customization__footer span {
   color: rgb(220 244 237 / 35%);
-  font-size: 0.43rem;
+  font-size: 0.6875rem;
   text-align: right;
 }
 
@@ -550,7 +554,7 @@ kbd.key-wide {
   margin-top: 2px;
   padding: 4px;
   color: rgb(221 235 230 / 42%);
-  font-size: 0.45rem;
+  font-size: 0.6875rem;
   font-weight: 700;
   letter-spacing: 0.13em;
   background: rgb(3 10 12 / 58%);
@@ -566,7 +570,7 @@ kbd.key-wide {
 .renderer-switch button {
   padding: 5px 7px;
   color: rgb(221 235 230 / 46%);
-  font-size: 0.43rem;
+  font-size: 0.6875rem;
   font-weight: 700;
   letter-spacing: 0.08em;
   background: transparent;
@@ -637,7 +641,7 @@ kbd.key-wide {
   .customization {
     top: max(58px, calc(env(safe-area-inset-top) + 48px));
     right: max(12px, env(safe-area-inset-right));
-    width: min(260px, calc(100vw - 24px));
+    width: min(320px, calc(100vw - 24px));
   }
 
   .customization__panel {

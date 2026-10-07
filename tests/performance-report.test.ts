@@ -59,6 +59,7 @@ describe('performance report', () => {
         averageMainThreadMilliseconds: 5.4,
         p95MainThreadMilliseconds: 8.2,
         averagePhysicsMilliseconds: 2.7,
+        p95PhysicsMilliseconds: 2.7,
         averageSceneMilliseconds: 0.4,
         averageRenderMilliseconds: 2.3,
         averagePhysicsSteps: 1.98,
@@ -108,6 +109,7 @@ describe('performance report', () => {
     const report = formatPerformanceReport(input);
 
     expect(report).toContain('Cape Physics performance report');
+    expect(report).toContain('Cloth workload:');
     expect(report).toContain('Rendered FPS: 143.20 average | 118.40 1% low');
     expect(report).toContain('Frame interval: 6.98 ms average | p50 6.82 ms');
     expect(report).toContain('Renderer: WebGL 2.0 | Example Vendor | Example GPU');
@@ -183,6 +185,7 @@ describe('performance report', () => {
         averageMainThreadMilliseconds: 3,
         p95MainThreadMilliseconds: 4,
         averagePhysicsMilliseconds: 1.2,
+        p95PhysicsMilliseconds: 1.2,
         averageSceneMilliseconds: 0.3,
         averageRenderMilliseconds: 1.5,
         averagePhysicsSteps: 1,

@@ -1695,6 +1695,7 @@ export class CapeDemo {
         url: window.location.href,
       },
       runtime: {
+        hardwareThreads: navigator.hardwareConcurrency,
         platform: navigator.platform || 'Unknown platform',
         userAgent: navigator.userAgent || 'Unavailable',
       },

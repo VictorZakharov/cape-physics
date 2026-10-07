@@ -43,6 +43,7 @@ const reportDetails: PerformanceReportDetails = {
     averageMainThreadMilliseconds: 0,
     p95MainThreadMilliseconds: 0,
     averagePhysicsMilliseconds: 0,
+    p95PhysicsMilliseconds: 0,
     averageSceneMilliseconds: 0,
     averageRenderMilliseconds: 0,
     averagePhysicsSteps: 0,
@@ -68,7 +69,7 @@ const reportDetails: PerformanceReportDetails = {
   runtime: { platform: 'test', userAgent: 'test' },
 };
 
-function createMonitorHarness(): {
+function createMonitorHarness(details: () => PerformanceReportDetails = () => reportDetails): {
   readonly monitor: PerformanceMonitor;
   readonly elements: Map<string, FakeHudElement>;
 } {
@@ -84,7 +85,7 @@ function createMonitorHarness(): {
     },
   } as unknown as ParentNode;
   return {
-    monitor: new PerformanceMonitor(() => reportDetails, root),
+    monitor: new PerformanceMonitor(details, root),
     elements,
   };
 }
@@ -149,6 +150,7 @@ describe('PerformanceMonitor', () => {
       averageMainThreadMilliseconds: 6,
       p95MainThreadMilliseconds: 6,
       averagePhysicsMilliseconds: 2,
+    p95PhysicsMilliseconds: 2,
       averageSceneMilliseconds: 1,
       averageRenderMilliseconds: 3,
       averagePhysicsSteps: 2,
@@ -196,4 +198,47 @@ describe('PerformanceMonitor', () => {
     expect(elements.get('[data-fps-average-line]')?.getAttribute('d')).not.toBe('');
     expect(elements.get('[data-fps-low-line]')?.getAttribute('d')).not.toBe('');
   });
+  test('updates cloth totals and backend when the crowd or solver changes', () => {
+    let details = reportDetails;
+    const { monitor, elements } = createMonitorHarness(() => details);
+    monitor.recordFrame(0);
+    monitor.recordFrame(250);
+    expect(elements.get('[data-sim-particles]')?.textContent).toBe('234 SIM PARTICLES (1 \u00d7 234)');
+    details = {
+      ...reportDetails,
+      scene: { ...reportDetails.scene, botCount: 50, simulatedCapes: 51 },
+      runtime: { ...reportDetails.runtime, hardwareThreads: 24 },
+      capeSolver: { implementation: 'webgpu-compute' } as NonNullable<PerformanceReportDetails['capeSolver']>,
+    };
+    monitor.recordFrame(500);
+    expect(elements.get('[data-sim-particles]')?.textContent).toBe('11,934 SIM PARTICLES (51 \u00d7 234)');
+    expect(elements.get('[data-sim-constraints]')?.textContent).toBe('82,926 CONSTRAINTS \u00d7 10 ITER');
+    expect(elements.get('[data-sim-hardware]')?.textContent).toBe('test / 24 THREADS / SIM: GPU');
+    details = { ...details, capeSolver: { implementation: 'cpu-pbd' } as NonNullable<PerformanceReportDetails['capeSolver']> };
+    monitor.recordFrame(750);
+    expect(elements.get('[data-sim-hardware]')?.textContent).toBe('test / 24 THREADS / SIM: CPU');
+  });
+
+  test('uses simulation durations for simulation p95 independently of rendering', () => {
+    const { monitor, elements } = createMonitorHarness();
+    monitor.recordFrame(0);
+    for (let frame = 1; frame <= 20; frame += 1) {
+      monitor.recordWorkload(frame * 16, {
+        physicsMilliseconds: frame === 20 ? 10 : 1,
+        sceneMilliseconds: 2,
+        renderMilliseconds: 100,
+        physicsSteps: 1,
+      });
+    }
+    monitor.recordFrame(500);
+    expect(monitor.getWorkloadSnapshot().p95PhysicsMilliseconds).toBe(10);
+    expect(elements.get('[data-sim-time]')?.textContent).toBe('1.45');
+    expect(elements.get('[data-sim-p95]')?.textContent).toBe('10.00');
+    monitor.reset();
+    monitor.recordFrame(750);
+    monitor.recordFrame(1000);
+    expect(elements.get('[data-sim-time]')?.textContent).toBe('--');
+    expect(elements.get('[data-sim-p95]')?.textContent).toBe('--');
+  });
+
 });
