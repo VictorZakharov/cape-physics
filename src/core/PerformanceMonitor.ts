@@ -414,7 +414,7 @@ export class PerformanceMonitor {
     const threads = details.runtime.hardwareThreads;
     const implementation = details.capeSolver?.implementation;
     const backend = implementation ? (implementation === 'webgpu-compute' ? 'GPU' : 'CPU') : '--';
-    this.hardwareLabel.textContent = `${formatRendererDevice(details.renderer.device)} / ${threads ? count(threads) : '--'} THREADS / SIM: ${backend}`;
+    this.hardwareLabel.textContent = `${formatRendererDevice(details.renderer.device)}\n${threads ? count(threads) : '--'} THREADS / SIM: ${backend}`;
     this.hardwareLabel.title = `${details.renderer.device}; hardware logical threads reported by the browser. Cloth workers: ${details.capeWorkers?.active ? details.capeWorkers.workers : 0}.`;
 
     this.historyGraphic.setAttribute(

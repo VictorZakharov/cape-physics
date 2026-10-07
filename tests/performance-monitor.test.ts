@@ -225,11 +225,11 @@ describe('PerformanceMonitor', () => {
     monitor.recordFrame(500);
     expect(elements.get('[data-sim-particles]')?.textContent).toBe('11,934 SIM PARTICLES (51 \u00d7 234)');
     expect(elements.get('[data-sim-constraints]')?.textContent).toBe('82,926 CONSTRAINTS \u00d7 10 ITER');
-    expect(elements.get('[data-sim-hardware]')?.textContent).toBe('ANGLE / NVIDIA GeForce RTX 4070 Ti / 24 THREADS / SIM: GPU');
+    expect(elements.get('[data-sim-hardware]')?.textContent).toBe('ANGLE / NVIDIA GeForce RTX 4070 Ti\n24 THREADS / SIM: GPU');
     expect(elements.get('[data-sim-hardware]')?.title).toContain('Direct3D11 vs_5_0 ps_5_0');
     details = { ...details, capeSolver: { implementation: 'cpu-pbd' } as NonNullable<PerformanceReportDetails['capeSolver']> };
     monitor.recordFrame(750);
-    expect(elements.get('[data-sim-hardware]')?.textContent).toBe('ANGLE / NVIDIA GeForce RTX 4070 Ti / 24 THREADS / SIM: CPU');
+    expect(elements.get('[data-sim-hardware]')?.textContent).toBe('ANGLE / NVIDIA GeForce RTX 4070 Ti\n24 THREADS / SIM: CPU');
   });
 
   test('uses simulation durations for simulation p95 independently of rendering', () => {
