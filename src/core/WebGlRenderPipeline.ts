@@ -1,3 +1,4 @@
+import { WebGlGpuTimer } from './GpuTiming';
 import * as THREE from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
@@ -25,6 +26,7 @@ export class WebGlRenderPipeline {
   private readonly bloom: UnrealBloomPass;
   private readonly characterComposite: SceneLayerCompositePass;
   private readonly camera: THREE.Camera;
+  public readonly gpuTimer: WebGlGpuTimer;
   private resolutionScale = 1;
   private sizing: RenderSizing | null = null;
   private targetResizeCount = 0;
@@ -44,6 +46,7 @@ export class WebGlRenderPipeline {
       stencil: false,
       depth: true,
     });
+    this.gpuTimer = new WebGlGpuTimer(this.renderer.getContext() as WebGL2RenderingContext);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.AgXToneMapping;
     this.renderer.toneMappingExposure = 1.24;
@@ -85,13 +88,17 @@ export class WebGlRenderPipeline {
       // silhouettes and produces a one-pixel gap around foreground rocks.
       this.camera.layers.enable(CHARACTER_RENDER_LAYER);
     }
-    this.composer.render(delta);
+    this.gpuTimer.begin();
+    try { this.composer.render(delta); } finally { this.gpuTimer.end(); }
     this.lastFrameRenderStats = captureFrameRenderStats(this.renderer.info.render);
   }
 
   public renderManual(delta = 0): void {
     this.render(delta);
   }
+
+  public getGpuTiming() { return this.gpuTimer.window.getSnapshot(); }
+  public resetGpuTiming() { this.gpuTimer.window.reset(); }
 
   public getLastFrameRenderStats(): FrameRenderStats {
     return this.lastFrameRenderStats;
@@ -221,6 +228,7 @@ export class WebGlRenderPipeline {
   }
 
   public dispose(): void {
+    this.gpuTimer.dispose();
     this.composer.dispose();
     this.characterComposite.dispose();
     this.renderer.dispose();

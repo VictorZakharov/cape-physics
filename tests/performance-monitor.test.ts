@@ -265,17 +265,39 @@ describe('PerformanceMonitor', () => {
     monitor.recordFrame(250);
     const label = elements.get('[data-sim-workers]')!;
     expect(label.hidden).toBe(false);
-    expect(label.textContent).toBe('SIM WORKERS: 10\n27.35 MS/STEP @ 24.6 HZ');
+    expect(label.textContent).toBe('SIM WORKERS: 10 / COMPUTE\n27.35 MS/STEP @ 24.6 HZ\nDT -- MS / --% BUSY\nASSIGNMENTS UNAVAILABLE');
     details = { ...details, capeWorkers: { ...details.capeWorkers!, averageStepMilliseconds: null, capeResultHz: 0 } };
     monitor.recordFrame(500);
-    expect(label.textContent).toBe('SIM WORKERS: 10\n-- MS/STEP @ -- HZ');
+    expect(label.textContent).toBe('SIM WORKERS: 10 / COMPUTE\n-- MS/STEP @ -- HZ\nDT -- MS / --% BUSY\nASSIGNMENTS UNAVAILABLE');
     details = { ...details, capeWorkers: { ...details.capeWorkers!, active: false, failure: 'solver failed' } };
     monitor.recordFrame(750);
     expect(label.hidden).toBe(false);
-    expect(label.textContent).toBe('SIM WORKERS: FAILED\nMAIN FALLBACK');
+    expect(label.textContent).toBe('SIM WORKERS: FAILED\nMAIN FALLBACK\nDT -- MS / BUSY --%\nASSIGNMENTS UNAVAILABLE');
     details = { ...details, capeWorkers: null };
     monitor.recordFrame(1000);
     expect(label.hidden).toBe(true);
+  });
+
+  test('restarts after configuration warm-up and retains genuine steady-state stalls', () => {
+    const { monitor } = createMonitorHarness();
+    monitor.recordFrame(0); monitor.recordFrame(250);
+    expect(monitor.getSnapshot().sampleCount).toBe(1);
+    monitor.restartMeasurement(1000, 'setting change', 1000);
+    expect(monitor.getSnapshot().sampleCount).toBe(0);
+    for (const time of [1100, 1300, 1800]) {
+      monitor.recordFrame(time);
+      monitor.recordWorkload(time, { physicsMilliseconds: 100, sceneMilliseconds: 0, renderMilliseconds: 0, physicsSteps: 2 });
+    }
+    monitor.recordFrame(2000);
+    monitor.recordFrame(2010);
+    monitor.recordFrame(2310);
+    const result = monitor.getSnapshot();
+    expect(result.sampleCount).toBe(2);
+    expect(result.longestFrameTime).toBe(300);
+    expect(result.averageFrameTime).toBe(155);
+    expect(result.longFrameCount).toBe(1);
+    expect(result.warmupExcludedFrames).toBe(3);
+    expect(monitor.getWorkloadSnapshot().sampleCount).toBe(0);
   });
 
 });

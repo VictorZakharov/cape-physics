@@ -23,6 +23,10 @@ export const PERFORMANCE_WINDOW_MS = 15_000;
 const MAXIMUM_FRAME_SAMPLES = 8_192;
 
 export interface PerformanceSnapshot {
+  readonly warmupExcludedMilliseconds?: number;
+  readonly warmupExcludedFrames?: number;
+  readonly warmupReason?: string;
+  readonly warmingUp?: boolean;
   readonly averageFps: number;
   readonly onePercentLow: number;
   readonly averageFrameTime: number;
@@ -82,6 +86,8 @@ export class PerformanceMonitor {
   private readonly simulationLabel: HTMLElement;
   private readonly simulationP95Label: HTMLElement;
   private readonly workersLabel: HTMLElement;
+  private readonly scopeLabel: HTMLElement;
+  private readonly throughputLabel: HTMLElement;
   private readonly constraintsLabel: HTMLElement;
   private readonly hardwareLabel: HTMLElement;
   private readonly averageHistoryPath: SVGPathElement;
@@ -104,6 +110,10 @@ export class PerformanceMonitor {
   private sampleCount = 0;
   private workloadStart = 0;
   private workloadCount = 0;
+  private warmupUntil = 0;
+  private warmupStarted = 0;
+  private excludedFrames = 0;
+  private warmupReason = 'none';
   private lastTimestamp: number | null = null;
   private lastPaint = 0;
   private copyFeedbackTimer: number | null = null;
@@ -140,6 +150,8 @@ export class PerformanceMonitor {
     this.simulationLabel = invariant(root.querySelector<HTMLElement>('[data-sim-time]'), 'Simulation-time label is missing.');
     this.simulationP95Label = invariant(root.querySelector<HTMLElement>('[data-sim-p95]'), 'Simulation p95 label is missing.');
     this.workersLabel = invariant(root.querySelector<HTMLElement>('[data-sim-workers]'), 'Worker simulation label is missing.');
+    this.scopeLabel = invariant(root.querySelector<HTMLElement>('[data-sim-scope]'), 'Simulation scope label is missing.');
+    this.throughputLabel = invariant(root.querySelector<HTMLElement>('[data-sim-throughput]'), 'Simulation throughput label is missing.');
     this.constraintsLabel = invariant(root.querySelector<HTMLElement>('[data-sim-constraints]'), 'Constraint label is missing.');
     this.hardwareLabel = invariant(root.querySelector<HTMLElement>('[data-sim-hardware]'), 'Simulation hardware label is missing.');
     this.averageHistoryPath = invariant(root.querySelector<SVGPathElement>('[data-fps-average-line]'), 'Average-FPS history path is missing.');
@@ -149,7 +161,17 @@ export class PerformanceMonitor {
     this.panel.addEventListener('click', this.handleCopy);
   }
 
+  public restartMeasurement(timestamp = performance.now(), reason = 'reset', warmup = 3000): void {
+    this.reset(); this.warmupStarted = timestamp; this.warmupUntil = timestamp + warmup;
+    this.excludedFrames = 0; this.warmupReason = reason; this.paint();
+  }
+
   public recordFrame(timestamp: number): void {
+    if (timestamp < this.warmupUntil) {
+      this.excludedFrames++; this.lastTimestamp = null;
+      if (timestamp - this.lastPaint >= 250) { this.lastPaint = timestamp; this.paint(); }
+      return;
+    }
     if (this.lastTimestamp === null) {
       this.lastTimestamp = timestamp;
       return;
@@ -180,10 +202,14 @@ export class PerformanceMonitor {
   }
 
   public getSnapshot(): PerformanceSnapshot {
-    return this.snapshot;
+    return { ...this.snapshot, warmupExcludedMilliseconds: this.warmupUntil > 0
+      ? Math.max(0, Math.min(performance.now(), this.warmupUntil) - this.warmupStarted) : 0,
+      warmupExcludedFrames: this.excludedFrames, warmupReason: this.warmupReason,
+      warmingUp: performance.now() < this.warmupUntil };
   }
 
   public recordWorkload(timestamp: number, sample: FrameWorkloadSample): void {
+    if (timestamp < this.warmupUntil) return;
     const writeIndex = (this.workloadStart + this.workloadCount) % MAXIMUM_FRAME_SAMPLES;
     this.workloadTimestamps[writeIndex] = timestamp;
     this.physicsDurations[writeIndex] = Math.max(0, sample.physicsMilliseconds);
@@ -210,6 +236,7 @@ export class PerformanceMonitor {
   }
 
   public readonly reset = (): void => {
+    this.warmupUntil = 0; this.warmupStarted = 0; this.excludedFrames = 0; this.warmupReason = 'none';
     this.sampleStart = 0;
     this.sampleCount = 0;
     this.workloadStart = 0;
@@ -218,6 +245,10 @@ export class PerformanceMonitor {
     this.averageFpsHistory.length = 0;
     this.onePercentLowHistory.length = 0;
     this.lastTimestamp = null;
+    this.lastPaint = 0;
+    this.snapshot = { averageFps: 0, onePercentLow: 0, averageFrameTime: 0, medianFrameTime: 0,
+      p95FrameTime: 0, p99FrameTime: 0, refreshEstimate: 60, longFrameCount: 0, longestFrameTime: 0,
+      sampleCount: 0, windowElapsedMilliseconds: 0 };
     this.averageHistoryPath.setAttribute('d', '');
     this.lowHistoryPath.setAttribute('d', '');
   };
@@ -235,7 +266,7 @@ export class PerformanceMonitor {
     for (let index = 0; index < this.sampleCount; index += 1) {
       const sampleIndex = (this.sampleStart + index) % MAXIMUM_FRAME_SAMPLES;
       const rawDuration = this.sampleDurations[sampleIndex]!;
-      const duration = Math.min(rawDuration, 250);
+      const duration = rawDuration;
       this.durationScratch[index] = duration;
       totalDuration += duration;
       if (rawDuration >= 50) longFrameCount += 1;
@@ -379,7 +410,7 @@ export class PerformanceMonitor {
     this.lowLabel.textContent = onePercentLow > 0 ? onePercentLow.toFixed(2) : '--';
     this.fpsCaption.textContent = refreshCapped
       ? 'DISPLAY FPS / VSYNC-CAPPED'
-      : 'DISPLAY FPS / LAST 15S';
+      : performance.now() < this.warmupUntil ? 'WARMING UP / STATS PAUSED' : 'DISPLAY FPS / LAST 15S';
     this.frameTimeLabel.textContent = averageFrameTime > 0
       ? averageFrameTime.toFixed(2)
       : '--';
@@ -406,10 +437,12 @@ export class PerformanceMonitor {
     const workers = details.capeWorkers;
     this.workersLabel.hidden = !workers?.active && !workers?.failure;
     const workerTime = workers?.averageStepMilliseconds;
-    const workerHz = workers?.capeResultHz;
+    const workerHz = workers?.workerStepHz ?? workers?.capeResultHz;
     this.workersLabel.textContent = workers?.failure
-      ? 'SIM WORKERS: FAILED\nMAIN FALLBACK'
-      : `SIM WORKERS: ${workers?.workers ?? 0}\n${workerTime != null ? workerTime.toFixed(2) : '--'} MS/STEP @ ${workerHz && workerHz > 0 ? workerHz.toFixed(1) : '--'} HZ`;
+      ? 'SIM WORKERS: FAILED\nMAIN FALLBACK\nDT -- MS / BUSY --%\nASSIGNMENTS UNAVAILABLE'
+      : `SIM WORKERS: ${workers?.workers ?? 0} / COMPUTE\n${workerTime != null ? workerTime.toFixed(2) : '--'} MS/STEP @ ${workerHz && workerHz > 0 ? workerHz.toFixed(1) : '--'} HZ\nDT ${workers?.simulatedStepMilliseconds != null ? workers.simulatedStepMilliseconds.toFixed(2) : '--'} MS / ${workers?.utilisationPercent != null ? workers.utilisationPercent.toFixed(1) : '--'}% BUSY\n${this.workerAssignmentSummary(workers?.assignments)}`;
+    this.scopeLabel.textContent = details.capeSolver?.implementation === 'webgpu-compute' ? 'MAIN: GPU PREP + CTRL + SYNC' : 'MAIN: PLAYER + CTRL + SYNC';
+    this.throughputLabel.textContent = this.deliverySummary(details);
     this.triangleLabel.textContent = count(details.renderer.triangles);
     const threads = details.runtime.hardwareThreads;
     const implementation = details.capeSolver?.implementation;
@@ -443,15 +476,34 @@ export class PerformanceMonitor {
     this.lowHistoryPath.setAttribute('d', fpsPath(this.onePercentLowHistory));
   }
 
+  private workerAssignmentSummary(assignments: NonNullable<PerformanceReportDetails['capeWorkers']>['assignments']): string {
+    if (!assignments?.length) return 'ASSIGNMENTS UNAVAILABLE';
+    const capes = assignments.map(item => item.capes);
+    const particles = assignments.map(item => item.particles);
+    const range = (values: number[]) => Math.min(...values) === Math.max(...values) ? String(values[0]) : `${Math.min(...values)}-${Math.max(...values)}`;
+    return `${range(capes)} CAPES / ${range(particles)} PTCL PER WORKER`;
+  }
+  private deliverySummary(details: PerformanceReportDetails): string {
+    const profile = details.capeSolver;
+    const elapsed = profile?.windowElapsedMilliseconds ?? 0;
+    const player = elapsed > 0 ? (profile?.windowActiveSteps ?? 0) * 1000 / elapsed : null;
+    const bot = details.capeWorkers?.active ? details.capeWorkers.deliveredParticleStepsPerSecond : 0;
+    const gpu = details.gpuSimulation?.capeStepsPerSecond;
+    const rate = profile?.implementation === 'webgpu-compute' ? (gpu != null ? gpu * CAPE.columns * CAPE.rows : null)
+      : player !== null && bot != null ? player * CAPE.columns * CAPE.rows + bot : null;
+    return `${rate !== null ? Math.round(rate).toLocaleString('en-US') : '--'} ${profile?.implementation === 'webgpu-compute' ? 'PTCL-STEPS/S SUBMITTED' : 'PARTICLE-STEPS/S'}`;
+  }
+
   private readonly handleCopy = (): void => {
     void this.copyPerformanceReport();
   };
 
   private async copyPerformanceReport(): Promise<void> {
     try {
+      this.recalculate();
       await copyText(formatPerformanceReport({
         capturedAt: new Date().toISOString(),
-        performance: this.snapshot,
+        performance: this.getSnapshot(),
         ...this.getReportDetails(),
       }));
       this.panel.dataset.copyState = 'copied';

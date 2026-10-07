@@ -71,6 +71,7 @@ describe('cape solver facade contract', () => {
       'getMaximumParticleMotionDiagnostics',
       'isSleeping',
       'getWorldContactDiagnostics',
+      'resetPerformanceDiagnostics',
       'getPerformanceDiagnostics',
       'getClosestActiveRockSurfaceContact',
     ]);
@@ -128,6 +129,7 @@ describe('cape solver facade contract', () => {
       'getMaximumParticleMotionDiagnostics',
       'isSleeping',
       'getWorldContactDiagnostics',
+      'resetPerformanceDiagnostics',
       'getPerformanceDiagnostics',
       'profileKernelBreakdown',
       'getClosestActiveRockSurfaceContact',

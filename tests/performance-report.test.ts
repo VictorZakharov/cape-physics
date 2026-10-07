@@ -121,10 +121,23 @@ describe('performance report', () => {
     expect(report).toContain('2260 cape colliders/cape');
     expect(report).toContain('Main thread: 5.40 ms average | p95 8.20 ms');
     expect(report).toContain('Timing caveat: display FPS is refresh/vsync capped');
-    expect(report).toContain('sequential CPU PBD Gauss-Seidel at 120 Hz');
+    expect(report).toContain('sequential CPU PBD Gauss-Seidel at nominal 120 Hz');
     expect(report).toContain('sampled 1/32 active steps (113 samples)');
     expect(report).toContain('main-thread render submission is not GPU completion');
     expect(report).not.toContain('undefined');
+    const sparse = formatPerformanceReport({ ...input,
+      performance: { ...input.performance, warmupExcludedMilliseconds: 3000, warmupExcludedFrames: 180, warmupReason: 'setting change' },
+      capeSolver: { ...input.capeSolver, sampledActiveSteps: 3 },
+      quality: { ...input.quality, reason: 'CPU-bound: held' },
+      runtime: { ...input.runtime, hardwareThreads: 24, deviceMemory: 8 },
+    });
+    expect(sparse).toContain('insufficient samples (3/30');
+    expect(sparse).not.toContain('1.35 ms/step');
+    expect(sparse).toContain('Warm-up excluded: 3.00 s | 180 frames | setting change');
+    expect(sparse).toContain('GPU frame execution: unavailable');
+    expect(sparse).toContain('CPU-bound: held');
+    expect(sparse).toContain('24 logical cores | navigator.deviceMemory 8 GiB');
+    expect(sparse).toContain('Constraints by type:');
 
     const gpuReport = formatPerformanceReport({
       ...input,
@@ -143,7 +156,7 @@ describe('performance report', () => {
     });
     expect(gpuReport).toContain('10 PBD iterations with 17 constraint colors');
     expect(gpuReport).toContain('46 dispatches in at most 1 compute submission/rendered frame');
-    expect(gpuReport).toContain('frame-coalesced steps (at most 33.3 ms), scene at 120 Hz');
+    expect(gpuReport).toContain('frame-coalesced steps (at most 33.3 ms), scene at nominal 120 Hz');
     expect(gpuReport).not.toContain('25 dispatches');
   });
 
@@ -240,7 +253,7 @@ describe('performance report', () => {
       runtime: { platform: 'Test', userAgent: 'Test' },
     });
 
-    expect(report).toContain('player at 120 Hz on main thread, bots on adaptive worker steps (at most 33.3 ms) across 8 workers');
+    expect(report).toContain('player at nominal 120 Hz on main thread, bots on adaptive worker steps (at most 33.3 ms) across 8 workers');
     expect(report).toContain('19.25 ms/step/worker average');
     expect(report).toContain('32.50 results/s/cape | 27.00 ms average batch latency');
     expect(report).toContain('Cape workers: 8 active | 6 busy | 2 queued fixed steps | healthy');

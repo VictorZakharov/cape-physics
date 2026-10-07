@@ -929,6 +929,8 @@ export class GpuCapeSimulation {
     };
   }
 
+  public resetPerformanceDiagnostics(): void { this.diagnosticMirror.resetPerformanceDiagnostics(); }
+
   public getPerformanceDiagnostics() {
     return {
       ...this.diagnosticMirror.getPerformanceDiagnostics(),

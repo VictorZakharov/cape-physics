@@ -599,6 +599,8 @@ export class CapeSimulation {
     return this.contactSolver.getDiagnostics();
   }
 
+  public resetPerformanceDiagnostics(): void { this.profiler.restart(); }
+
   public getPerformanceDiagnostics(): CapePerformanceDiagnostics {
     return this.profiler.getDiagnostics();
   }

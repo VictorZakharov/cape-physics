@@ -50,3 +50,10 @@ function createCapeDistanceConstraintDefinitions(): CapeDistanceConstraintDefini
 
 export const CAPE_DISTANCE_CONSTRAINTS: readonly CapeDistanceConstraintDefinition[] =
   createCapeDistanceConstraintDefinitions();
+
+export const CAPE_CONSTRAINT_COUNTS = { structural: 0, shear: 0, bending: 0 };
+for (const link of CAPE_DISTANCE_CONSTRAINTS) {
+  const kind = link.structural ? 'structural'
+    : Math.abs(link.firstColumn - link.secondColumn) === 1 && Math.abs(link.firstRow - link.secondRow) === 1 ? 'shear' : 'bending';
+  CAPE_CONSTRAINT_COUNTS[kind]++;
+}

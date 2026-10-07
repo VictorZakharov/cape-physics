@@ -1,3 +1,5 @@
+import { SimulationTelemetry } from './core/SimulationTelemetry';
+import { buildPerformanceReportDetails } from './core/DemoPerformanceReport';
 import * as THREE from 'three';
 import { CAMERA_NEAR_OPACITY, CAPE, PHYSICS_STEP, PLAYER } from './config';
 import { ThirdPersonCamera } from './camera/ThirdPersonCamera';
@@ -205,7 +207,7 @@ export class CapeDemo {
   private readonly qualityLabel: HTMLElement;
   private readonly urlParameters = new URLSearchParams(window.location.search);
   private readonly harnessMode = this.urlParameters.get('harness') === '1';
-  private readonly gpuTimestampProfile = this.urlParameters.get('gpuTimestamps') === '1';
+  private readonly gpuTimestampProfile = true;
   private input!: InputController;
   private mobileControls!: MobileControls;
   private character!: Character;
@@ -519,12 +521,14 @@ export class CapeDemo {
     await this.pipeline.synchronizeForLocalProfile();
 
     window.addEventListener('resize', this.handleResize);
+    window.addEventListener('focus', this.handleFocus);
     document.addEventListener('visibilitychange', this.handleVisibilityChange);
     window.addEventListener('beforeunload', this.dispose, { once: true });
     window.setTimeout(this.dismissOnboarding, 7_500);
     this.installHarness();
     await this.loading.reveal();
     this.ready = true;
+    this.restartPerformance('page load');
     if (window.__CAPE_DEMO__) window.__CAPE_DEMO__.ready = true;
     if (this.harnessMode) {
       this.updateScene(0);
@@ -534,6 +538,7 @@ export class CapeDemo {
     }
   }
 
+  private readonly simulationTelemetry = new SimulationTelemetry();
   private readonly gpuCapeFrame = new GpuCapeFrameBatch();
   private readonly frame = (timestamp: number): void => {
     this.performance.recordFrame(timestamp);
@@ -546,7 +551,7 @@ export class CapeDemo {
     this.syncCapeGeometries(timing.physicsSteps > 0, this.fixedTime + timing.interpolation * PHYSICS_STEP);
     const sceneStart = performance.now();
     this.updateScene(timing.delta);
-    this.quality.observe(this.fixedTime, this.performance.getSnapshot());
+    this.quality.observe(this.fixedTime, this.performance.getSnapshot(), this.performance.getWorkloadSnapshot(), this.pipeline.getGpuTiming());
     const renderStart = performance.now();
     this.pipeline.render(timing.delta);
     const frameEnd = performance.now();
@@ -617,6 +622,7 @@ export class CapeDemo {
   };
 
   private readonly simulateGpuCape = (step: number): void => {
+    this.simulationTelemetry.record(1 + this.performanceBots.length, step);
     this.submitGpuCapeBatch(step, [
       {
         anchors: this.character.getCapeAnchors(),
@@ -698,15 +704,24 @@ export class CapeDemo {
     synchronizePerspectiveCameraAspect(this.camera, window.innerWidth, window.innerHeight);
     this.pipeline.resize();
     this.atmosphere.resize();
+    if (this.ready) this.restartPerformance('canvas resized');
   };
 
   private readonly handleVisibilityChange = (): void => {
     if (!document.hidden) {
       const timestamp = performance.now();
       this.clock.reset(timestamp);
-      this.performance.resume(timestamp);
+      this.restartPerformance('visibility restored');
     }
   };
+
+  private restartPerformance(reason: string): void {
+    this.performance.restartMeasurement(performance.now(), reason);
+    this.pipeline.resetGpuTiming(); this.cape.resetPerformanceDiagnostics(); this.simulationTelemetry.reset();
+    for (const bot of this.performanceBots) bot.cape?.resetPerformanceDiagnostics();
+    this.webGlCapeWorkers?.resetPerformance();
+  }
+  private readonly handleFocus = (): void => { if (this.ready) this.restartPerformance('focus restored'); };
 
   private readonly dismissOnboarding = (): void => {
     document.querySelector<HTMLElement>('[data-onboarding]')?.classList.add('is-dismissed');
@@ -769,6 +784,7 @@ export class CapeDemo {
   ): void => {
     const populationOnly = isPopulationOnlyChange(this.customizationSettings, settings);
     this.customizationSettings = settings;
+    if (this.ready) this.restartPerformance('setting change/reset');
     if (!this.cape || !this.character) return;
     this.botPopulation.request(settings.bots);
     if (populationOnly && !settleDimensions) return;
@@ -838,6 +854,7 @@ export class CapeDemo {
 
   private reconcilePerformanceBots(requestedCount: number): void {
     const targetCount = normalizeBotCount(requestedCount);
+    if (this.ready && targetCount !== this.performanceBots.length) this.restartPerformance('bot population change');
     while (this.performanceBots.length < targetCount) {
       this.performanceBots.push(this.createPerformanceBot(this.performanceBots.length));
     }
@@ -1643,64 +1660,12 @@ export class CapeDemo {
     this.pipeline.setCharacterOpacity(opacity);
   }
 
-  private readonly getPerformanceReportDetails = (): PerformanceReportDetails => {
-    const backend = this.pipeline.getBackendDiagnostics();
-    const sizing = this.pipeline.getSizingDiagnostics();
-    const frameRenderStats = this.pipeline.getLastFrameRenderStats();
-    const screenWithTopology = window.screen as Screen & { readonly isExtended?: boolean };
-    const multipleScreens = typeof screenWithTopology.isExtended === 'boolean'
-      ? screenWithTopology.isExtended
-      : null;
-
-    return {
-      rendererStartup: this.startupRecovery.getDiagnostics(),
-      renderer: {
-        backend: backend.backend,
-        vendor: backend.vendor,
-        device: backend.device,
-        preference: backend.preference,
-        actual: backend.actual,
-        fallback: backend.fallback,
-        drawCalls: frameRenderStats.calls,
-        triangles: frameRenderStats.triangles,
-        programs: this.pipeline.getProgramCount(),
-      },
-      canvas: {
-        drawingBufferWidth: sizing.drawingBufferWidth,
-        drawingBufferHeight: sizing.drawingBufferHeight,
-        cssWidth: window.innerWidth,
-        cssHeight: window.innerHeight,
-      },
-      quality: {
-        label: this.quality.getState().label,
-        scale: this.quality.getState().scale,
-        targetResizes: sizing.targetResizeCount,
-      },
-      workload: this.performance.getWorkloadSnapshot(),
-      capeSolver: this.ready ? this.cape.getPerformanceDiagnostics() : null,
-      capeWorkers: this.webGlCapeWorkers?.getDiagnostics() ?? null,
-      scene: {
-        simulationSeconds: this.fixedTime,
-        capeSleeping: this.ready ? this.cape.isSleeping() : false,
-        worldColliders: this.worldColliders.length,
-        activeRipples: this.ready ? this.water.getDiagnostics().activeRipples : 0,
-        botCount: this.performanceBots.length,
-        simulatedCapes: 1 + this.performanceBots.length,
-      },
-      page: {
-        visibility: document.visibilityState,
-        focused: document.hasFocus(),
-        devicePixelRatio: window.devicePixelRatio,
-        multipleScreens,
-        url: window.location.href,
-      },
-      runtime: {
-        hardwareThreads: navigator.hardwareConcurrency,
-        platform: navigator.platform || 'Unknown platform',
-        userAgent: navigator.userAgent || 'Unavailable',
-      },
-    };
-  };
+  private readonly getPerformanceReportDetails = (): PerformanceReportDetails => buildPerformanceReportDetails({
+    pipeline: this.pipeline, startupRecovery: this.startupRecovery, quality: this.quality,
+    performance: this.performance, ready: this.ready, cape: this.cape,
+    webGlCapeWorkers: this.webGlCapeWorkers, worldColliders: this.worldColliders, performanceBots: this.performanceBots,
+    fixedTime: this.fixedTime, water: this.water, simulationTelemetry: this.simulationTelemetry,
+  });
 
   private enableCharacterLighting(): void {
     this.scene.traverse((object) => {
@@ -1743,5 +1708,6 @@ export class CapeDemo {
     this.pipeline.dispose();
     window.removeEventListener('resize', this.handleResize);
     document.removeEventListener('visibilitychange', this.handleVisibilityChange);
+    window.removeEventListener('focus', this.handleFocus);
   };
 }

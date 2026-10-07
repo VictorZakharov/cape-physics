@@ -1,0 +1,23 @@
+Cape Physics performance report
+Captured: 2026-10-07T12:00:01.992Z
+Window: last 15.00 s of 15 s | 601 frames
+Rendered FPS: 40.04 average | 25.17 1% low | 60 callback/s estimate
+Frame interval: 24.97 ms average | p50 27.70 ms | p95 34.70 ms | p99 34.80 ms | worst 41.70 ms
+Long frames: 0 at or above 50 ms
+Renderer: WebGL 2.0 (OpenGL ES 3.0 Chromium) | Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 4070 Ti (0x00002782) Direct3D11 vs_5_0 ps_5_0, D3D11)
+Renderer selection: requested WEBGL | active WEBGL | no fallback
+Canvas: 1360x643 drawing buffer / 1582x748 CSS px
+Quality: ADAPTIVE HIGH | 0.860 resolution scale | 3 render-target resizes
+Main thread: 23.48 ms average | p95 31.20 ms | physics 18.34 ms | scene 0.67 ms | render submission 4.47 ms | 2.00 physics steps/callback average, 2 maximum
+Cape solver: CPU PBD Gauss-Seidel | player at 120 Hz on main thread, bots on adaptive worker steps (at most 33.3 ms) across 10 workers | 10 projection passes | sampled 1/32 player steps (49 samples)
+Cape step sampled average: 5.16 ms | prediction 0.10 | constraints 0.50 | self 0.94 | fold 0.11 | body 1.49 | world 0.39 | cave 0.65 | reconcile 0.87
+Cape workers: 10 active | 10 busy | 6 queued fixed steps | healthy
+Cape worker execution: 10 workers | 28.50 ms/step/worker average across each worker's assigned capes (excludes result packing and message latency)
+Cape worker delivery: 21.97 results/s/cape | 45.53 ms average batch latency
+Cloth workload: 11,934 sim particles (51 × 234) | 82,926 distance constraints × 10 iterations | main-thread simulation phase 18.34 ms average / 23.90 ms p95 (excludes asynchronous worker and GPU execution)
+Scene: 12.78 s simulated | 50 performance bots | 51 simulated capes | 304 draw calls | 235696 triangles | 47 programs | 2062 cape colliders/cape | 16 active ripples | player cape active
+Page state: visible | focused | DPR 1.00 | single screen reported
+Timing caveat: display FPS is refresh/vsync capped and therefore cannot compare backend headroom; main-thread render submission is not GPU completion
+Page: http://127.0.0.1:64060/?harness=1
+Runtime: Win32
+User agent (raw): Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36

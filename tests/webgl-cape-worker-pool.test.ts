@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test, spyOn } from 'bun:test';
 import * as THREE from 'three';
 import { CapeSimulation } from '../src/physics/CapeSimulation';
 import type {
@@ -6,7 +6,7 @@ import type {
   CapeWorkerRequest,
   CapeWorkerResponse,
 } from '../src/physics/CapeWorkerProtocol';
-import { WebGlCapeWorkerPool } from '../src/physics/WebGlCapeWorkerPool';
+import { workerLimit, WebGlCapeWorkerPool } from '../src/physics/WebGlCapeWorkerPool';
 import type { CapsuleCollider } from '../src/physics/colliders';
 import type { CapeAnchors } from '../src/player/Character';
 
@@ -48,9 +48,12 @@ class FakeWorker {
 }
 
 const originalWorker = globalThis.Worker;
+let now = 1000;
+let clock: ReturnType<typeof spyOn>;
 
 describe('WebGlCapeWorkerPool', () => {
   beforeEach(() => {
+    now = 1000; clock = spyOn(performance, 'now').mockImplementation(() => now);
     FakeWorker.instances.length = 0;
     Object.defineProperty(globalThis, 'Worker', {
       configurable: true,
@@ -60,6 +63,7 @@ describe('WebGlCapeWorkerPool', () => {
   });
 
   afterEach(() => {
+    clock.mockRestore();
     Object.defineProperty(globalThis, 'Worker', {
       configurable: true,
       writable: true,
@@ -99,6 +103,7 @@ describe('WebGlCapeWorkerPool', () => {
       expect(worker.posted.filter((message) => message.type === 'step-batch')).toHaveLength(1);
     });
 
+    now = 5000;
     FakeWorker.instances.forEach((worker, workerIndex) => {
       const add = worker.posted.find((message) => message.type === 'add-cape');
       const firstBatch = worker.posted.find((message) => message.type === 'step-batch');
@@ -143,7 +148,9 @@ describe('WebGlCapeWorkerPool', () => {
     secondCape.dispose();
   });
 
-  test('bounds a 50-bot backlog and sends recent poses when overloaded workers finish', () => {
+  for (const threads of [4, 24]) test(`bounds a 50-bot backlog with ${threads} reported logical cores`, () => {
+    const descriptor = Object.getOwnPropertyDescriptor(navigator, 'hardwareConcurrency');
+    Object.defineProperty(navigator, 'hardwareConcurrency', { configurable: true, value: threads });
     const pool = new WebGlCapeWorkerPool([]);
     const cape = new CapeSimulation(anchors, {}, undefined, { renderResources: false });
     try {
@@ -157,6 +164,7 @@ describe('WebGlCapeWorkerPool', () => {
         pool.enqueueStep(1 / 120, step / 120, inputs);
         pool.flush();
       }
+      expect(pool.getDiagnostics().workers).toBe(workerLimit(threads));
       expect(pool.getDiagnostics().queuedSteps).toBe(FakeWorker.instances.length);
       for (const worker of FakeWorker.instances) {
         const batch = worker.posted.find((message) => message.type === 'step-batch');
@@ -173,6 +181,15 @@ describe('WebGlCapeWorkerPool', () => {
     } finally {
       pool.dispose();
       cape.dispose();
+      if (descriptor) Object.defineProperty(navigator, 'hardwareConcurrency', descriptor);
+      else Reflect.deleteProperty(navigator, 'hardwareConcurrency');
     }
   });
+  test('reserves two logical cores with a bounded worker pool', () => {
+    expect(workerLimit(4)).toBe(2);
+    expect(workerLimit(2)).toBe(1);
+    expect(workerLimit(1)).toBe(1);
+    expect(workerLimit(24)).toBe(10);
+  });
+
 });

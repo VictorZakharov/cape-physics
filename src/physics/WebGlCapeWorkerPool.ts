@@ -1,3 +1,5 @@
+import { CAPE } from '../config';
+import { WorkerTelemetry } from './WorkerTelemetry';
 import type { CapeAnchors } from '../player/Character';
 import type { CapeSimulation, PackedCapeState } from './CapeSimulation';
 import {
@@ -28,8 +30,18 @@ export interface WebGlCapeWorkerDiagnostics {
   readonly queuedSteps: number;
   readonly failure: string | null;
   readonly capeResultHz: number;
+  readonly workerStepHz: number;
   readonly averageBatchMilliseconds: number;
   readonly averageStepMilliseconds: number | null;
+  readonly logicalCores: number;
+  readonly workerLimit: number;
+  readonly selectionRule: string;
+  readonly simulatedStepMilliseconds: number | null;
+  readonly utilisationPercent: number | null;
+  readonly cpuMillisecondsPerSecond: number | null;
+  readonly deliveredParticleStepsPerSecond: number | null;
+  readonly assignments: ReadonlyArray<{ worker: number; capes: number; particles: number; timing: ReturnType<WorkerTelemetry['getSnapshot']> }>;
+
 }
 
 interface CapeRegistration {
@@ -55,14 +67,11 @@ interface WorkerSlot {
   busy: boolean;
   nextRequestId: number;
   dispatchedAt: number;
-  lastResultAt: number;
-  resultInterval: number;
-  batchMilliseconds: number;
-  simulationStepMilliseconds: number | null;
+  readonly telemetry: WorkerTelemetry;
 }
 
-function workerLimit(): number {
-  const hardwareThreads = Math.max(2, navigator.hardwareConcurrency || 4);
+export function workerLimit(threads = navigator.hardwareConcurrency || 4): number {
+  const hardwareThreads = Math.max(1, threads);
   return Math.max(1, Math.min(10, hardwareThreads - 2));
 }
 
@@ -72,6 +81,7 @@ export class WebGlCapeWorkerPool {
   private readonly slots: WorkerSlot[] = [];
   private readonly registrations = new Map<number, CapeRegistration>();
   private readonly drainWaiters = new Set<() => void>();
+  private measurementEpoch = 0;
   private failure: string | null = null;
   private disposed = false;
 
@@ -97,6 +107,7 @@ export class WebGlCapeWorkerPool {
     };
     this.registrations.set(capeId, registration);
     slot.capeIds.add(capeId);
+    slot.telemetry.reset();
     const state = cape.copyPackedState();
     this.post(slot.worker, {
       type: 'add-cape',
@@ -137,6 +148,7 @@ export class WebGlCapeWorkerPool {
     if (!registration) return;
     this.registrations.delete(capeId);
     registration.slot.capeIds.delete(capeId);
+    registration.slot.telemetry.reset();
     this.post(registration.slot.worker, { type: 'remove-cape', capeId });
   }
 
@@ -192,22 +204,38 @@ export class WebGlCapeWorkerPool {
     await new Promise<void>((resolve) => this.drainWaiters.add(resolve));
   }
 
+  public resetPerformance(): void {
+    this.measurementEpoch++;
+    for (const slot of this.slots) {
+      slot.telemetry.reset();
+      this.post(slot.worker, { type: 'reset-performance', epoch: this.measurementEpoch });
+    }
+  }
   public getDiagnostics(): WebGlCapeWorkerDiagnostics {
     const activeSlots = this.slots.filter((slot) => slot.capeIds.size > 0);
-    const measured = activeSlots.filter((slot) => slot.resultInterval > 0);
-    const timed = activeSlots.filter((slot) => slot.simulationStepMilliseconds !== null);
+    const assignments = activeSlots.map((slot, index) => ({ worker: index + 1, capes: slot.capeIds.size,
+      particles: slot.capeIds.size * (CAPE.columns * CAPE.rows), timing: slot.telemetry.getSnapshot() }));
+    const complete = assignments.length > 0 && assignments.every(item => item.timing.stepHz !== null);
+    const mean = (get: (item: typeof assignments[number]) => number | null): number | null =>
+      assignments.length && assignments.every(item => get(item) !== null)
+        ? assignments.reduce((sum, item) => sum + get(item)!, 0) / assignments.length : null;
     return {
       active: !this.disposed && !this.failure && this.registrations.size > 0,
       workers: activeSlots.length,
-      busyWorkers: this.slots.filter((slot) => slot.busy).length,
-      queuedSteps: this.slots.reduce((sum, slot) => sum + slot.pendingFrames.length, 0),
+      busyWorkers: activeSlots.filter((slot) => slot.busy).length,
+      queuedSteps: activeSlots.reduce((sum, slot) => sum + slot.pendingFrames.length, 0),
       failure: this.failure,
-      capeResultHz: measured.length === activeSlots.length
-        ? measured.reduce((sum, slot) => sum + 1_000 / slot.resultInterval, 0) / Math.max(1, measured.length) : 0,
-      averageStepMilliseconds: timed.length > 0 && timed.length === activeSlots.length
-        ? timed.reduce((sum, slot) => sum + slot.simulationStepMilliseconds!, 0) / timed.length
-        : null,
-      averageBatchMilliseconds: measured.reduce((sum, slot) => sum + slot.batchMilliseconds, 0) / Math.max(1, measured.length),
+      logicalCores: navigator.hardwareConcurrency || 4, workerLimit: this.maximumWorkers,
+      selectionRule: 'min(10, max(1, logical cores - 2)); unknown cores: assume 4',
+      assignments,
+      workerStepHz: mean(item => item.timing.stepHz) ?? 0,
+      capeResultHz: complete ? assignments.reduce((sum, item) => sum + item.timing.capeStepsPerSecond!, 0) / Math.max(1, this.registrations.size) : 0,
+      averageStepMilliseconds: mean(item => item.timing.computeMilliseconds),
+      simulatedStepMilliseconds: mean(item => item.timing.simulatedStepMilliseconds),
+      utilisationPercent: mean(item => item.timing.utilisationPercent),
+      cpuMillisecondsPerSecond: complete ? assignments.reduce((sum, item) => sum + item.timing.utilisationPercent! * 10, 0) : null,
+      deliveredParticleStepsPerSecond: complete ? assignments.reduce((sum, item) => sum + item.timing.capeStepsPerSecond! * (CAPE.columns * CAPE.rows), 0) : null,
+      averageBatchMilliseconds: mean(item => item.timing.batchLatencyMilliseconds) ?? 0,
     };
   }
 
@@ -235,10 +263,7 @@ export class WebGlCapeWorkerPool {
       busy: false,
       nextRequestId: 1,
       dispatchedAt: 0,
-      lastResultAt: 0,
-      resultInterval: 0,
-      batchMilliseconds: 0,
-      simulationStepMilliseconds: null,
+      telemetry: new WorkerTelemetry(),
     };
     worker.onmessage = (event: MessageEvent<CapeWorkerResponse>) => {
       this.handleResponse(slot, event.data);
@@ -277,6 +302,7 @@ export class WebGlCapeWorkerPool {
     this.post(slot.worker, {
       type: 'step-batch',
       requestId: slot.nextRequestId,
+      measurementEpoch: this.measurementEpoch,
       frames,
     }, transfer);
     slot.nextRequestId += 1;
@@ -289,19 +315,13 @@ export class WebGlCapeWorkerPool {
     }
     slot.busy = false;
     const solveTime = response.simulationStepMilliseconds;
-    if (Number.isFinite(solveTime) && solveTime >= 0) {
-      slot.simulationStepMilliseconds = slot.simulationStepMilliseconds === null
-        ? solveTime : slot.simulationStepMilliseconds * 0.9 + solveTime * 0.1;
-    }
     const now = performance.now();
     const batchMilliseconds = now - slot.dispatchedAt;
-    slot.batchMilliseconds = slot.batchMilliseconds > 0
-      ? slot.batchMilliseconds * 0.9 + batchMilliseconds * 0.1 : batchMilliseconds;
-    if (slot.lastResultAt > 0) {
-      const interval = now - slot.lastResultAt;
-      slot.resultInterval = slot.resultInterval > 0 ? slot.resultInterval * 0.9 + interval * 0.1 : interval;
+    if ((response.measurementEpoch ?? this.measurementEpoch) === this.measurementEpoch) {
+      slot.telemetry.record({ time: now, compute: solveTime, latency: batchMilliseconds,
+        simulatedStep: response.states.length ? response.states.reduce((sum, state) => sum + state.deltaTime * 1000, 0) / response.states.length : 0,
+        capes: response.states.length, profile: response.profile });
     }
-    slot.lastResultAt = now;
     for (const state of response.states) {
       const registration = this.registrations.get(state.capeId);
       if (!registration || registration.slot !== slot) continue;
