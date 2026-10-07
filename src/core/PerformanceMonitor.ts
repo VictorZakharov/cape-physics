@@ -7,6 +7,17 @@ import {
   type PerformanceReportDetails,
 } from './PerformanceReport';
 
+export function formatRendererDevice(device: string): string {
+  // ANGLE reports vendor, model, and graphics API in a diagnostic wrapper.
+  const angle = /^ANGLE\s*\((.*)\)$/i.exec(device.trim());
+  const model = angle ? angle[1]!.split(',')[1]?.trim() ?? device : device;
+  return model
+    .replace(/^ANGLE Metal Renderer:\s*/i, '')
+    .replace(/\s*\(0x[\da-f]+\)/gi, '')
+    .replace(/\s+(?:Direct3D\d*|D3D\d*|OpenGL(?: ES)?|Vulkan)\b.*$/i, '')
+    .trim() || 'GPU unavailable';
+}
+
 export const PERFORMANCE_WINDOW_MS = 15_000;
 const MAXIMUM_FRAME_SAMPLES = 8_192;
 
@@ -393,7 +404,7 @@ export class PerformanceMonitor {
     const threads = details.runtime.hardwareThreads;
     const implementation = details.capeSolver?.implementation;
     const backend = implementation ? (implementation === 'webgpu-compute' ? 'GPU' : 'CPU') : '--';
-    this.hardwareLabel.textContent = `${details.renderer.device} / ${threads ? count(threads) : '--'} THREADS / SIM: ${backend}`;
+    this.hardwareLabel.textContent = `${formatRendererDevice(details.renderer.device)} / ${threads ? count(threads) : '--'} THREADS / SIM: ${backend}`;
     this.hardwareLabel.title = `${details.renderer.device}; hardware logical threads reported by the browser. Cloth workers: ${details.capeWorkers?.active ? details.capeWorkers.workers : 0}.`;
 
     this.historyGraphic.setAttribute(

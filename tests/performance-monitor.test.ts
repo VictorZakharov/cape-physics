@@ -1,9 +1,10 @@
 import { describe, expect, test } from 'bun:test';
-import { PerformanceMonitor } from '../src/core/PerformanceMonitor';
+import { formatRendererDevice, PerformanceMonitor } from '../src/core/PerformanceMonitor';
 import type { PerformanceReportDetails } from '../src/core/PerformanceReport';
 
 class FakeHudElement {
   public textContent = '';
+  public title = '';
   public readonly dataset: Record<string, string> = {};
   public readonly classList = { toggle: (): void => undefined };
   private readonly attributes = new Map<string, string>();
@@ -95,6 +96,15 @@ function createMonitor(): PerformanceMonitor {
 }
 
 describe('PerformanceMonitor', () => {
+  test('shows the GPU model without ANGLE, device IDs, or shader/API diagnostics', () => {
+    expect(formatRendererDevice('ANGLE (NVIDIA, NVIDIA GeForce RTX 4070 Ti (0x00002782) Direct3D11 vs_5_0 ps_5_0, D3D11)'))
+      .toBe('NVIDIA GeForce RTX 4070 Ti');
+    expect(formatRendererDevice('ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)'))
+      .toBe('Apple M1');
+    expect(formatRendererDevice('AMD Radeon RX 7900 XTX')).toBe('AMD Radeon RX 7900 XTX');
+    expect(formatRendererDevice('')).toBe('GPU unavailable');
+  });
+
   test('keeps a stable 15-second window during a sustained 144 Hz stream', () => {
     const monitor = createMonitor();
     const frameTime = 1_000 / 144;
@@ -206,6 +216,7 @@ describe('PerformanceMonitor', () => {
     expect(elements.get('[data-sim-particles]')?.textContent).toBe('234 SIM PARTICLES (1 \u00d7 234)');
     details = {
       ...reportDetails,
+      renderer: { ...reportDetails.renderer, device: 'ANGLE (NVIDIA, NVIDIA GeForce RTX 4070 Ti (0x00002782) Direct3D11 vs_5_0 ps_5_0, D3D11)' },
       scene: { ...reportDetails.scene, botCount: 50, simulatedCapes: 51 },
       runtime: { ...reportDetails.runtime, hardwareThreads: 24 },
       capeSolver: { implementation: 'webgpu-compute' } as NonNullable<PerformanceReportDetails['capeSolver']>,
@@ -213,10 +224,11 @@ describe('PerformanceMonitor', () => {
     monitor.recordFrame(500);
     expect(elements.get('[data-sim-particles]')?.textContent).toBe('11,934 SIM PARTICLES (51 \u00d7 234)');
     expect(elements.get('[data-sim-constraints]')?.textContent).toBe('82,926 CONSTRAINTS \u00d7 10 ITER');
-    expect(elements.get('[data-sim-hardware]')?.textContent).toBe('test / 24 THREADS / SIM: GPU');
+    expect(elements.get('[data-sim-hardware]')?.textContent).toBe('NVIDIA GeForce RTX 4070 Ti / 24 THREADS / SIM: GPU');
+    expect(elements.get('[data-sim-hardware]')?.title).toContain('Direct3D11 vs_5_0 ps_5_0');
     details = { ...details, capeSolver: { implementation: 'cpu-pbd' } as NonNullable<PerformanceReportDetails['capeSolver']> };
     monitor.recordFrame(750);
-    expect(elements.get('[data-sim-hardware]')?.textContent).toBe('test / 24 THREADS / SIM: CPU');
+    expect(elements.get('[data-sim-hardware]')?.textContent).toBe('NVIDIA GeForce RTX 4070 Ti / 24 THREADS / SIM: CPU');
   });
 
   test('uses simulation durations for simulation p95 independently of rendering', () => {
