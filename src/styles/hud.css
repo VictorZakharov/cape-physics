@@ -646,8 +646,8 @@ kbd.key-wide {
   }
 
   .customization {
-    top: max(58px, calc(env(safe-area-inset-top) + 48px));
-    max-height: calc(100dvh - 150px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+    top: max(94px, calc(env(safe-area-inset-top) + 84px));
+    max-height: calc(100dvh - 186px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
     right: max(12px, env(safe-area-inset-right));
     width: min(320px, calc(100vw - 24px));
   }
@@ -682,12 +682,5 @@ kbd.key-wide {
   .customization fieldset {
     gap: 4px;
     padding: 6px 0;
-  }
-}
-
-@media (max-height: 720px) and (min-width: 721px) {
-  .customization {
-    top: 84px;
-    max-height: calc(100dvh - 108px);
   }
 }
