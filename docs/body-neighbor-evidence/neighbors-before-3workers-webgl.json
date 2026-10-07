@@ -1,0 +1,292 @@
+{
+  "gpu": {
+    "source": "EXT_disjoint_timer_query_webgl2 (all render passes)",
+    "sampleCount": 858,
+    "averageMilliseconds": 6.0267476736596715
+  },
+  "gpuSimulation": {
+    "stepHz": null,
+    "capeStepsPerSecond": null,
+    "simulatedStepMilliseconds": null
+  },
+  "rendererStartup": {
+    "current": null,
+    "failures": [],
+    "automaticReloads": 0,
+    "recoveryPending": false
+  },
+  "renderer": {
+    "backend": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+    "vendor": "Google Inc. (NVIDIA)",
+    "device": "ANGLE (NVIDIA, NVIDIA GeForce RTX 4070 Ti (0x00002782) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+    "preference": "webgl",
+    "actual": "webgl",
+    "fallback": false,
+    "drawCalls": 180,
+    "triangles": 159988,
+    "programs": 47
+  },
+  "canvas": {
+    "drawingBufferWidth": 1582,
+    "drawingBufferHeight": 748,
+    "cssWidth": 1582,
+    "cssHeight": 748
+  },
+  "quality": {
+    "label": "ADAPTIVE ULTRA",
+    "scale": 1,
+    "targetResizes": 2,
+    "reason": "CPU-bound: held"
+  },
+  "workload": {
+    "averageMainThreadMilliseconds": 14.986845168739348,
+    "p95MainThreadMilliseconds": 22.799999997019768,
+    "averagePhysicsMilliseconds": 11.573806752048528,
+    "p95PhysicsMilliseconds": 19.5,
+    "averageSceneMilliseconds": 0.37532013973461875,
+    "averageRenderMilliseconds": 3.0377182769562023,
+    "averagePhysicsSteps": 2,
+    "maximumPhysicsSteps": 2,
+    "sampleCount": 859
+  },
+  "capeSolver": {
+    "implementation": "cpu-pbd",
+    "sampleIntervalSteps": 16,
+    "totalSteps": 2179,
+    "activeSteps": 2179,
+    "sampledActiveSteps": 108,
+    "sufficientSamples": true,
+    "windowTotalSteps": 1716,
+    "windowActiveSteps": 1716,
+    "windowElapsedMilliseconds": 14994.699999999255,
+    "averageStepMilliseconds": 3.3944444443547614,
+    "phases": {
+      "prediction": 0.039814814614752926,
+      "constraints": 0.4277777778743594,
+      "selfCollision": 0.5574074075384828,
+      "foldGuard": 0.04444444448583657,
+      "bodyCollision": 0.8240740741430616,
+      "worldCollision": 0.4879629627491037,
+      "caveCollision": 0.4361111112283888,
+      "reconciliation": 0.5537037035726289,
+      "anchors": 0.0027777777846764635,
+      "finalization": 0.020370370363471675
+    }
+  },
+  "capeWorkers": {
+    "stepPhases": {
+      "bodyTests": {
+        "particles": 11700,
+        "vertexTests": 1996523.75,
+        "vertexCorrections": 7110.770833333334,
+        "triangleTests": 1058264.6470588236,
+        "triangleCorrections": 9238.792892156862
+      },
+      "sampleCount": 147,
+      "computeMilliseconds": 68.81198280693324,
+      "phases": {
+        "constraints": 6.712702185041262,
+        "body": 30.69783152830941,
+        "selfFold": 11.84125421518508,
+        "worldCave": 17.306481960638866,
+        "other": 2.253712917758623
+      }
+    },
+    "active": true,
+    "workers": 3,
+    "busyWorkers": 3,
+    "queuedSteps": 3,
+    "failure": null,
+    "logicalCores": 24,
+    "workerLimit": 3,
+    "selectionRule": "URL workers override, capped at 10 and logical cores - 1 (minimum 1); worker budget only, CPU speed unchanged",
+    "overridden": true,
+    "requestedWorkers": 3,
+    "profilingEnabled": true,
+    "assignments": [
+      {
+        "worker": 1,
+        "capes": 17,
+        "particles": 3978,
+        "timing": {
+          "stepPhases": {
+            "bodyTests": {
+              "particles": 3978,
+              "vertexTests": 679298.75,
+              "vertexCorrections": 2405.3958333333335,
+              "triangleTests": 358739,
+              "triangleCorrections": 3075.75
+            },
+            "sampleCount": 48,
+            "computeMilliseconds": 70.92356020941628,
+            "phases": {
+              "constraints": 6.944487049449526,
+              "body": 31.425245520145005,
+              "selfFold": 12.066355165068908,
+              "worldCave": 18.174702913058574,
+              "other": 2.31276956169427
+            }
+          },
+          "sampleCount": 191,
+          "windowMilliseconds": 14932.60000000149,
+          "computeMilliseconds": 70.92356020941628,
+          "simulatedStepMilliseconds": 33.333333333333265,
+          "batchLatencyMilliseconds": 78.45340314136905,
+          "stepHz": 12.723839117098231,
+          "utilisationPercent": 90.18188393179122,
+          "capeStepsPerSecond": 216.3052649906699
+        }
+      },
+      {
+        "worker": 2,
+        "capes": 17,
+        "particles": 3978,
+        "timing": {
+          "stepPhases": {
+            "bodyTests": {
+              "particles": 3978,
+              "vertexTests": 677365,
+              "vertexCorrections": 2397.0416666666665,
+              "triangleTests": 360968,
+              "triangleCorrections": 3153.7291666666665
+            },
+            "sampleCount": 48,
+            "computeMilliseconds": 70.2645833332402,
+            "phases": {
+              "constraints": 6.689403383042037,
+              "body": 31.62940161176727,
+              "selfFold": 12.009908771457429,
+              "worldCave": 17.51651811122822,
+              "other": 2.41935145574524
+            }
+          },
+          "sampleCount": 192,
+          "windowMilliseconds": 14912.70000000298,
+          "computeMilliseconds": 70.2645833332402,
+          "simulatedStepMilliseconds": 33.333333333333265,
+          "batchLatencyMilliseconds": 77.92604166657354,
+          "stepHz": 12.807875166801574,
+          "utilisationPercent": 89.9803523170096,
+          "capeStepsPerSecond": 217.73387783562674
+        }
+      },
+      {
+        "worker": 3,
+        "capes": 16,
+        "particles": 3744,
+        "timing": {
+          "stepPhases": {
+            "bodyTests": {
+              "particles": 3744,
+              "vertexTests": 639860,
+              "vertexCorrections": 2308.3333333333335,
+              "triangleTests": 338557.64705882355,
+              "triangleCorrections": 3009.3137254901962
+            },
+            "sampleCount": 51,
+            "computeMilliseconds": 65.24780487814327,
+            "phases": {
+              "constraints": 6.504216122632224,
+              "body": 29.03884745301597,
+              "selfFold": 11.447498709028899,
+              "worldCave": 16.22822485762981,
+              "other": 2.0290177358363586
+            }
+          },
+          "sampleCount": 205,
+          "windowMilliseconds": 14984.10000000149,
+          "computeMilliseconds": 65.24780487814327,
+          "simulatedStepMilliseconds": 33.33333333333325,
+          "batchLatencyMilliseconds": 73.0912195121188,
+          "stepHz": 13.61443129717365,
+          "utilisationPercent": 88.80880399904088,
+          "capeStepsPerSecond": 217.8309007547784
+        }
+      }
+    ],
+    "workerStepHz": 13.048715193691152,
+    "capeResultHz": 13.0374008716215,
+    "averageStepMilliseconds": 68.81198280693324,
+    "simulatedStepMilliseconds": 33.33333333333326,
+    "utilisationPercent": 89.65701341594723,
+    "cpuMillisecondsPerSecond": 2689.7104024784167,
+    "deliveredParticleStepsPerSecond": 152537.59019797159,
+    "averageBatchMilliseconds": 76.49022144002048
+  },
+  "scene": {
+    "simulationSeconds": 18.05833333333295,
+    "capeSleeping": false,
+    "worldColliders": 2062,
+    "bodyColliders": 15,
+    "worldColliderKinds": {
+      "formation": 1835,
+      "rock": 78,
+      "torch": 77,
+      "mineral": 72
+    },
+    "activeRipples": 16,
+    "botCount": 50,
+    "simulatedCapes": 51
+  },
+  "page": {
+    "visibility": "visible",
+    "focused": true,
+    "devicePixelRatio": 1,
+    "multipleScreens": false,
+    "url": "http://127.0.0.1:57436/?harness=1&workers=3"
+  },
+  "runtime": {
+    "hardwareThreads": 24,
+    "deviceMemory": 32,
+    "platform": "Win32",
+    "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/149.0.0.0 Safari/537.36"
+  },
+  "measurementChecks": {
+    "warmupReset": {
+      "averageFps": 0,
+      "onePercentLow": 0,
+      "averageFrameTime": 0,
+      "medianFrameTime": 0,
+      "p95FrameTime": 0,
+      "p99FrameTime": 0,
+      "refreshEstimate": 60,
+      "longFrameCount": 0,
+      "longestFrameTime": 0,
+      "sampleCount": 0,
+      "windowElapsedMilliseconds": 0,
+      "warmupExcludedMilliseconds": 16.600000001490116,
+      "warmupExcludedFrames": 0,
+      "warmupReason": "bot population change",
+      "warmingUp": true
+    },
+    "workerRowHeights": [
+      56,
+      56
+    ],
+    "panelBounds": {
+      "width": 240,
+      "height": 426.4375,
+      "viewportHeight": 748,
+      "phaseScrollWidth": 212,
+      "phaseClientWidth": 212
+    },
+    "workerWidth": {
+      "scroll": 212,
+      "client": 212
+    },
+    "numericColors": [
+      "rgba(220, 244, 237, 0.7)",
+      "rgba(220, 244, 237, 0.7)"
+    ],
+    "bodyWidths": [
+      {
+        "scroll": 212,
+        "client": 212
+      },
+      {
+        "scroll": 212,
+        "client": 212
+      }
+    ]
+  }
+}

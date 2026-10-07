@@ -1,0 +1,45 @@
+{
+  "baseline": "d4530db",
+  "steps": 600,
+  "capes": 50,
+  "particles": 234,
+  "delta": 0.03333333333333333,
+  "coordinatesCompared": 21060000,
+  "maximumDeviation": 0,
+  "bitIdentical": true,
+  "stress": "steps 181-240: all 50 capes driven 0.22 scene units into the body every five steps; same fixed bot paths",
+  "contact": {
+    "normal": {
+      "steps": 6750,
+      "vertexCorrections": 858314,
+      "triangleCorrections": 1238826
+    },
+    "stress": {
+      "steps": 750,
+      "vertexCorrections": 287729,
+      "triangleCorrections": 257820
+    }
+  },
+  "assertionMode": false,
+  "skin": 0.026,
+  "colliderConstancy": {
+    "stepsChecked": 30000,
+    "bodyCalls": 361863,
+    "changed": 0
+  },
+  "candidates": {
+    "vertexBuilds": 11110355,
+    "vertexRebuilds": 4480355,
+    "vertexCandidates": 12041657,
+    "vertexWorst": 5,
+    "triangleBuilds": 17441361,
+    "triangleRebuilds": 5530449,
+    "triangleCandidates": 70543612,
+    "triangleWorst": 43,
+    "overflows": 0,
+    "vertexRebuildWorst": 35,
+    "triangleRebuildWorst": 46,
+    "vertexSkippedAssertions": 0,
+    "triangleSkippedAssertions": 0
+  }
+}

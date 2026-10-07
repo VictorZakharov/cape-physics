@@ -1,0 +1,53 @@
+{
+  "baseline": "d4530db",
+  "capes": 5,
+  "warmup": 90,
+  "measured": 600,
+  "delta": 0.03333333333333333,
+  "before": {
+    "compute": 18.315999999952812,
+    "body": 8.553333334177733,
+    "triangle": 6.097333333368103,
+    "vertex": 2.4560000008096297
+  },
+  "after": {
+    "compute": 19.36583333325262,
+    "body": 9.641999999135733,
+    "triangle": 8.461999999657273,
+    "vertex": 1.1799999994784593
+  },
+  "skin": 0.104,
+  "counts": {
+    "before": {
+      "particles": 175500,
+      "vertexTests": 29848260,
+      "vertexCorrections": 104153,
+      "triangleTests": 15478080,
+      "triangleCorrections": 150977
+    },
+    "after": {
+      "particles": 175500,
+      "vertexTests": 4258730,
+      "vertexCorrections": 104153,
+      "triangleTests": 10094136,
+      "triangleCorrections": 150977
+    }
+  },
+  "candidates": {
+    "vertexBuilds": 714979,
+    "vertexRebuilds": 51979,
+    "vertexCandidates": 1530574,
+    "vertexWorst": 6,
+    "triangleBuilds": 1351977,
+    "triangleRebuilds": 155889,
+    "triangleCandidates": 12236608,
+    "triangleWorst": 31,
+    "overflows": 0,
+    "vertexRebuildWorst": 25,
+    "triangleRebuildWorst": 23,
+    "vertexSkippedAssertions": 0,
+    "triangleSkippedAssertions": 0
+  },
+  "method": "same-state paired ABBA ordering in a dedicated Chromium worker",
+  "runtime": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/149.0.0.0 Safari/537.36"
+}

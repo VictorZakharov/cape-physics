@@ -1,0 +1,53 @@
+{
+  "baseline": "d4530db",
+  "capes": 5,
+  "warmup": 90,
+  "measured": 600,
+  "delta": 0.03333333333333333,
+  "before": {
+    "compute": 19.06349999997144,
+    "body": 9.376666667188207,
+    "triangle": 6.620666666304071,
+    "vertex": 2.7560000008841357
+  },
+  "after": {
+    "compute": 19.195166666700196,
+    "body": 9.386000000710288,
+    "triangle": 8.402666667699814,
+    "vertex": 0.9833333330104749
+  },
+  "skin": 0.026,
+  "counts": {
+    "before": {
+      "particles": 175500,
+      "vertexTests": 29848260,
+      "vertexCorrections": 104153,
+      "triangleTests": 15478080,
+      "triangleCorrections": 150977
+    },
+    "after": {
+      "particles": 175500,
+      "vertexTests": 1812485,
+      "vertexCorrections": 104153,
+      "triangleTests": 5992768,
+      "triangleCorrections": 150977
+    }
+  },
+  "candidates": {
+    "vertexBuilds": 1055746,
+    "vertexRebuilds": 392746,
+    "vertexCandidates": 1044890,
+    "vertexWorst": 4,
+    "triangleBuilds": 1745020,
+    "triangleRebuilds": 548932,
+    "triangleCandidates": 6996937,
+    "triangleWorst": 19,
+    "overflows": 0,
+    "vertexRebuildWorst": 33,
+    "triangleRebuildWorst": 37,
+    "vertexSkippedAssertions": 0,
+    "triangleSkippedAssertions": 0
+  },
+  "method": "same-state paired ABBA ordering in a dedicated Chromium worker",
+  "runtime": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/149.0.0.0 Safari/537.36"
+}
